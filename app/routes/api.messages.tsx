@@ -23,8 +23,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     select: { id: true, role: true, content: true, createdAt: true },
   });
 
+  // Hide "synthetic" user rows that only carry tool_result blocks — these are
+  // internal plumbing between agent turns, not something the merchant wrote.
+  const visible = rows.filter((m) => {
+    const blocks = m.content as unknown as Array<{ type?: string }> | null;
+    if (!Array.isArray(blocks) || blocks.length === 0) return false;
+    if (m.role === "user" && blocks.every((b) => b?.type === "tool_result")) {
+      return false;
+    }
+    return true;
+  });
+
   return {
-    messages: rows.map((m) => ({
+    messages: visible.map((m) => ({
       id: m.id,
       role: m.role,
       content: m.content,

@@ -1,5 +1,6 @@
 import { BlockStack, Box, InlineStack, Text } from "@shopify/polaris";
 import type { ChatMessage } from "../../hooks/useChat";
+import { isApprovalRequiredWrite } from "../../lib/agent/tool-classifier";
 
 type Props = { message: ChatMessage };
 
@@ -11,10 +12,15 @@ export function MessageBubble({ message }: Props) {
     .map((b) => b.text)
     .join("");
 
-  const toolUses = message.content.filter(
-    (b): b is { type: "tool_use"; id: string; name: string; input: unknown } =>
-      b.type === "tool_use",
-  );
+  // Only surface WRITE tool_uses in the bubble — they need approval.
+  // READ tool_uses are internal plumbing (Claude asking the server to fetch
+  // data); the merchant shouldn't see them at all.
+  const toolUses = message.content
+    .filter(
+      (b): b is { type: "tool_use"; id: string; name: string; input: unknown } =>
+        b.type === "tool_use",
+    )
+    .filter((b) => isApprovalRequiredWrite(b.name));
 
   return (
     <InlineStack align={isUser ? "end" : "start"} blockAlign="start">
@@ -34,8 +40,8 @@ export function MessageBubble({ message }: Props) {
               {text || (message.status === "streaming" ? "…" : " ")}
             </Text>
             {toolUses.length > 0 ? (
-              <Text as="p" variant="bodySm" tone="subdued">
-                (pending action: {toolUses.map((t) => t.name).join(", ")})
+              <Text as="p" variant="bodySm" tone="caution">
+                Awaiting your approval: {toolUses.map((t) => t.name).join(", ")}
               </Text>
             ) : null}
             {message.status === "error" ? (

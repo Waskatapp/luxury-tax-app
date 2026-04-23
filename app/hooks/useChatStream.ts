@@ -76,7 +76,13 @@ function handleFrame(raw: string, messageId: string, dispatch: Dispatch<ChatActi
   }
   if (!event || dataStr === null) return;
 
-  let data: { delta?: string; tool_call_id?: string; tool_name?: string; tool_input?: unknown };
+  let data: {
+    delta?: string;
+    tool_call_id?: string;
+    tool_name?: string;
+    tool_input?: unknown;
+    message?: string;
+  };
   try {
     data = JSON.parse(dataStr);
   } catch {
@@ -94,6 +100,12 @@ function handleFrame(raw: string, messageId: string, dispatch: Dispatch<ChatActi
         toolCallId: String(data.tool_call_id ?? ""),
         toolName: String(data.tool_name ?? ""),
         toolInput: data.tool_input,
+      });
+      return;
+    case "error":
+      dispatch({
+        type: "ERROR",
+        error: String(data.message ?? "Stream error"),
       });
       return;
     case "done":
