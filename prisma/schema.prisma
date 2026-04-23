@@ -1,34 +1,162 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// WAT framework: see CLAUDE.md section 7. Every tenant-owned model has storeId + @@index([storeId]).
 
 generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
+// ---- Enums ----
+
+enum UserRole {
+  STORE_OWNER
+  STORE_ADMIN
+  VIEW_ONLY
+}
+
+enum PendingActionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXECUTED
+  FAILED
+}
+
+enum MemoryCategory {
+  BRAND_VOICE
+  PRICING_RULES
+  PRODUCT_RULES
+  CUSTOMER_RULES
+  STORE_CONTEXT
+  OPERATOR_PREFS
+}
+
+// ---- Shopify session storage (managed by @shopify/shopify-app-session-storage-prisma; do not alter fields) ----
+
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+// ---- Tenant root ----
+
+model Store {
+  id            String    @id @default(cuid())
+  shopDomain    String    @unique
+  accessToken   String
+  scopes        String?
+  ownerEmail    String?
+  installedAt   DateTime  @default(now())
+  uninstalledAt DateTime?
+  updatedAt     DateTime  @updatedAt
+
+  conversations  Conversation[]
+  pendingActions PendingAction[]
+  storeMemories  StoreMemory[]
+  auditLogs      AuditLog[]
+}
+
+// ---- Chat thread per store+user ----
+
+model Conversation {
+  id        String   @id @default(cuid())
+  storeId   String
+  userId    String
+  userRole  UserRole
+  title     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store    Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([storeId])
+  @@index([storeId, userId])
+}
+
+// content holds the exact Anthropic ContentBlock[] array — no translation (CLAUDE.md rule 3).
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String
+  content        Json
+  model          String?
+  usage          Json?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+}
+
+// toolCallId @unique prevents double-execution (CLAUDE.md rule 10, section 7).
+model PendingAction {
+  id             String              @id @default(cuid())
+  storeId        String
+  conversationId String
+  toolCallId     String              @unique
+  toolName       String
+  toolInput      Json
+  status         PendingActionStatus @default(PENDING)
+  beforeSnapshot Json?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([conversationId])
+  @@index([status])
+}
+
+// Persistent brand facts. Upsert-safe via [storeId, key] unique.
+model StoreMemory {
+  id        String         @id @default(cuid())
+  storeId   String
+  category  MemoryCategory
+  key       String
+  value     String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, key])
+  @@index([storeId])
+  @@index([storeId, category])
+}
+
+// Immutable. before + after snapshots. Never deleted.
+model AuditLog {
+  id        String   @id @default(cuid())
+  storeId   String
+  userId    String?
+  action    String
+  toolName  String?
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([storeId, createdAt])
 }
