@@ -20,21 +20,25 @@ export type StoreAccess = {
 
 // Shopify-authenticates the request, upserts the tenant Store row (idempotent),
 // derives the user's role, and enforces an optional minimum role.
-// Every authenticated admin loader/action should call this instead of authenticate.admin directly.
-//
-// TODO(phase-2): once we add online tokens for multi-user stores, derive role from
-// session.onlineAccessInfo?.associated_user (account_owner / collaborator). v1 is
-// owner-only per CLAUDE.md; we default to STORE_OWNER here.
+// Every authenticated admin loader/action must call this instead of authenticate.admin directly.
 export async function requireStoreAccess(
   request: Request,
   minRole?: UserRole,
 ): Promise<StoreAccess> {
   const { admin, session } = await authenticate.admin(request);
 
+  // Role derivation:
+  // - Online session: use onlineAccessInfo.associated_user (populated during OAuth).
+  //   account_owner → STORE_OWNER, collaborator → VIEW_ONLY, otherwise STORE_ADMIN.
+  // - Offline session (v1 default): no per-request user identity. The app-level
+  //   token was obtained during install by the shop owner, so default STORE_OWNER.
   const associatedUser = session.onlineAccessInfo?.associated_user;
-  const userRole: UserRole = associatedUser?.collaborator
-    ? UserRole.VIEW_ONLY
-    : UserRole.STORE_OWNER;
+  let userRole: UserRole = UserRole.STORE_OWNER;
+  if (associatedUser) {
+    if (associatedUser.collaborator) userRole = UserRole.VIEW_ONLY;
+    else if (associatedUser.account_owner) userRole = UserRole.STORE_OWNER;
+    else userRole = UserRole.STORE_ADMIN;
+  }
 
   if (minRole && ROLE_RANK[userRole] < ROLE_RANK[minRole]) {
     throw new Response("Forbidden", { status: 403 });
