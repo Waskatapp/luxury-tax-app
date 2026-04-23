@@ -1,0 +1,34 @@
+import type { LoaderFunctionArgs } from "react-router";
+
+import prisma from "../db.server";
+import { requireStoreAccess } from "../lib/auth.server";
+
+// GET /api/messages?conversationId=X → messages for a conversation (tenant-scoped).
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const { store } = await requireStoreAccess(request);
+
+  const url = new URL(request.url);
+  const conversationId = url.searchParams.get("conversationId");
+  if (!conversationId) return new Response("Missing conversationId", { status: 400 });
+
+  const conversation = await prisma.conversation.findFirst({
+    where: { id: conversationId, storeId: store.id },
+    select: { id: true },
+  });
+  if (!conversation) return new Response("Not found", { status: 404 });
+
+  const rows = await prisma.message.findMany({
+    where: { conversationId },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, role: true, content: true, createdAt: true },
+  });
+
+  return {
+    messages: rows.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      status: "complete" as const,
+    })),
+  };
+};

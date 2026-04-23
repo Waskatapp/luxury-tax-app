@@ -27,11 +27,13 @@ export default function Index() {
           descriptions, discounts, analytics — and approve each action before it goes
           live on your store.
         </s-paragraph>
+        <s-paragraph>
+          <s-link href="/app/copilot">Open Copilot →</s-link>
+        </s-paragraph>
       </s-section>
 
       <s-section heading="Coming soon">
         <s-unordered-list>
-          <s-list-item>Chat with the copilot (Phase 3)</s-list-item>
           <s-list-item>Price changes with approval cards (Phase 5)</s-list-item>
           <s-list-item>Product descriptions &amp; discount creation (Phase 6)</s-list-item>
           <s-list-item>Brand voice memory across sessions (Phase 8)</s-list-item>
