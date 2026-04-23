@@ -140,6 +140,23 @@ export default function CopilotPage() {
   const handleSend = useCallback(
     (text: string) => {
       if (!activeId) return;
+      // Mirror the server-side title logic (api.chat.tsx sets title to the first
+      // 60 chars of the first user message when title is still null). Doing it
+      // optimistically here avoids a refresh-to-see-the-title flicker.
+      const nowIso = new Date().toISOString();
+      setConversations((prev) => {
+        const next = prev.map((c) =>
+          c.id === activeId
+            ? {
+                ...c,
+                title: c.title ?? text.slice(0, 60),
+                updatedAt: nowIso,
+              }
+            : c,
+        );
+        next.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+        return next;
+      });
       sendChatMessage({ conversationId: activeId, text, dispatch });
     },
     [activeId],
