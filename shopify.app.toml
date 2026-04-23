@@ -2,12 +2,11 @@
 
 client_id = "dee783ee7f2d7c6662fe6b2676da35a1"
 name = "luxury-tax-app"
-application_url = "https://example.com"
+application_url = "https://luxury-tax-app-production.up.railway.app"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-07"
@@ -25,7 +24,7 @@ api_version = "2026-07"
 scopes = "write_products,write_metaobjects,write_metaobject_definitions"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://luxury-tax-app-production.up.railway.app/api/auth" ]
 
 [product.metafields.app.demo_info]
 type = "single_line_text_field"
