@@ -34,7 +34,7 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "get_analytics",
     description:
-      "Sales and inventory analytics. Three metrics: `top_products` returns the 5 best-selling products (Shopify's BEST_SELLING sort); `revenue` sums order totals over the last `days` days (default 30, max 365); `inventory_at_risk` returns variants with inventory below `threshold` (default 5). Read-only — no approval card. Use this for sales questions, low-stock audits, and 'how am I doing' questions.",
+      "Sales and inventory analytics. Three metrics: `top_products` returns the top 5 best-selling products by units sold across orders in the last `days` days — use this when the merchant asks for 'top sellers', 'best sellers', 'top N products', or 'most sold' (NOT for plain 'list my products' — that's read_products); `revenue` sums order totals over the last `days` days (default 30, max 365); `inventory_at_risk` returns variants with inventory below `threshold` (default 5). Read-only — no approval card.",
     parametersJsonSchema: {
       type: "object",
       properties: {

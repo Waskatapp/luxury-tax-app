@@ -27,41 +27,50 @@ const GetAnalyticsInput = z.object({
   threshold: z.number().int().min(0).max(1000).default(5),
 });
 
-const TOP_PRODUCTS_QUERY = `#graphql
-  query AnalyticsTopProducts($first: Int!) {
-    products(first: $first, sortKey: BEST_SELLING) {
+// Best-selling = most units sold in the window, aggregated from orders'
+// line items. The root `products(sortKey: BEST_SELLING)` is INVALID at API
+// 2026-04 — BEST_SELLING is a CollectionSortKeys value, not ProductSortKeys.
+const TOP_PRODUCTS_FROM_ORDERS_QUERY = `#graphql
+  query AnalyticsTopProductsFromOrders($first: Int!, $query: String!, $after: String) {
+    orders(first: $first, query: $query, after: $after, sortKey: CREATED_AT) {
       edges {
+        cursor
         node {
           id
-          title
-          handle
-          status
-          totalInventory
-          priceRangeV2 {
-            minVariantPrice { amount currencyCode }
-            maxVariantPrice { amount currencyCode }
+          lineItems(first: 10) {
+            edges {
+              node {
+                quantity
+                title
+                product { id title handle }
+              }
+            }
           }
         }
       }
+      pageInfo { hasNextPage endCursor }
     }
   }
 `;
 
-type TopProductsResponse = {
-  products: {
+type TopProductsFromOrdersResponse = {
+  orders: {
     edges: Array<{
+      cursor: string;
       node: {
         id: string;
-        title: string;
-        handle: string;
-        status: string;
-        totalInventory: number | null;
-        priceRangeV2: {
-          minVariantPrice: { amount: string; currencyCode: string };
-          maxVariantPrice: { amount: string; currencyCode: string };
+        lineItems: {
+          edges: Array<{
+            node: {
+              quantity: number;
+              title: string;
+              product: { id: string; title: string; handle: string } | null;
+            };
+          }>;
         };
       };
     }>;
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
   };
 };
 
@@ -134,6 +143,12 @@ const REVENUE_MAX_PAGES = 4; // hard cap → 1000 orders
 const INVENTORY_AT_RISK_LIMIT = 50;
 const TOP_PRODUCTS_LIMIT = 5;
 
+// Smaller pages for top_products: each order pulls lineItems(first:10), so
+// per-order GraphQL cost is ~12. Keep page-size × cost-per-order under the
+// 1000-point bucket. 50 × 12 + overhead ≈ 650 — fits one bucket per page.
+const TOP_PRODUCTS_ORDERS_PAGE_SIZE = 50;
+const TOP_PRODUCTS_ORDERS_MAX_PAGES = 4; // hard cap → 200 orders scanned
+
 export async function getAnalytics(
   admin: ShopifyAdmin,
   rawInput: unknown,
@@ -146,24 +161,70 @@ export async function getAnalytics(
   const { metric, days, threshold } = parsed.data;
 
   if (metric === "top_products") {
-    const result = await graphqlRequest<TopProductsResponse>(
-      admin,
-      TOP_PRODUCTS_QUERY,
-      { first: TOP_PRODUCTS_LIMIT },
-    );
-    if (!result.ok) return { ok: false, error: result.error };
+    const startsAtDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const queryFilter = `created_at:>=${startsAtDate.toISOString()}`;
 
-    const products = result.data.products.edges.map((edge) => ({
-      id: edge.node.id,
-      title: edge.node.title,
-      handle: edge.node.handle,
-      status: edge.node.status,
-      totalInventory: edge.node.totalInventory,
-      priceRange: {
-        min: edge.node.priceRangeV2.minVariantPrice,
-        max: edge.node.priceRangeV2.maxVariantPrice,
-      },
-    }));
+    type Tally = {
+      productId: string;
+      title: string;
+      handle: string | null;
+      unitsSold: number;
+      orderIds: Set<string>;
+    };
+    const tallies = new Map<string, Tally>();
+
+    let after: string | null = null;
+    let cappedAtPageLimit = false;
+
+    for (let page = 0; page < TOP_PRODUCTS_ORDERS_MAX_PAGES; page++) {
+      const result: GraphQLResult<TopProductsFromOrdersResponse> =
+        await graphqlRequest<TopProductsFromOrdersResponse>(
+          admin,
+          TOP_PRODUCTS_FROM_ORDERS_QUERY,
+          {
+            first: TOP_PRODUCTS_ORDERS_PAGE_SIZE,
+            query: queryFilter,
+            after,
+          },
+        );
+      if (!result.ok) return { ok: false, error: result.error };
+
+      for (const edge of result.data.orders.edges) {
+        const orderId = edge.node.id;
+        for (const li of edge.node.lineItems.edges) {
+          const product = li.node.product;
+          if (!product) continue; // line item from a deleted product
+          const existing = tallies.get(product.id);
+          if (existing) {
+            existing.unitsSold += li.node.quantity;
+            existing.orderIds.add(orderId);
+          } else {
+            tallies.set(product.id, {
+              productId: product.id,
+              title: product.title,
+              handle: product.handle,
+              unitsSold: li.node.quantity,
+              orderIds: new Set([orderId]),
+            });
+          }
+        }
+      }
+
+      if (!result.data.orders.pageInfo.hasNextPage) break;
+      after = result.data.orders.pageInfo.endCursor;
+      if (page === TOP_PRODUCTS_ORDERS_MAX_PAGES - 1) cappedAtPageLimit = true;
+    }
+
+    const products = Array.from(tallies.values())
+      .sort((a, b) => b.unitsSold - a.unitsSold)
+      .slice(0, TOP_PRODUCTS_LIMIT)
+      .map((t) => ({
+        id: t.productId,
+        title: t.title,
+        handle: t.handle,
+        unitsSold: t.unitsSold,
+        orderCount: t.orderIds.size,
+      }));
 
     return {
       ok: true,
@@ -171,8 +232,10 @@ export async function getAnalytics(
         metric: "top_products",
         rangeDays: days,
         products,
-        note:
-          "Ranking is Shopify's BEST_SELLING sort (a recency-weighted velocity score), not a strict N-day count.",
+        cappedAtPageLimit,
+        note: cappedAtPageLimit
+          ? `Ranking based on the most recent ${TOP_PRODUCTS_ORDERS_PAGE_SIZE * TOP_PRODUCTS_ORDERS_MAX_PAGES} orders in the window. Older orders weren't counted; ranking may be incomplete for high-volume stores.`
+          : `Ranked by units sold across all orders in the last ${days} days.`,
       },
     };
   }

@@ -5,17 +5,17 @@
 export type AnalyticsTopProductsResult = {
   metric: "top_products";
   rangeDays: number;
+  // Aggregated from orders' line items in the window. Products with no
+  // surviving Shopify product reference (deleted) are excluded from the
+  // ranking.
   products: Array<{
     id: string;
     title: string;
-    handle: string;
-    status: string;
-    totalInventory: number | null;
-    priceRange: {
-      min: { amount: string; currencyCode: string };
-      max: { amount: string; currencyCode: string };
-    };
+    handle: string | null;
+    unitsSold: number;
+    orderCount: number;
   }>;
+  cappedAtPageLimit: boolean;
   note: string;
 };
 

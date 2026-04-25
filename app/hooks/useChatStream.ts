@@ -1,6 +1,11 @@
 import type { Dispatch } from "react";
 import type { ChatAction, ChatMessage } from "./useChat";
 
+// Final outcome of a streamed turn. Callers use this to decide whether to
+// reload persisted messages (only on "done" — reloading after "error" would
+// clobber the just-set state.error and the merchant would see nothing).
+export type StreamOutcome = "done" | "error" | "truncated";
+
 // Raw-fetch SSE consumer. useFetcher buffers until complete; EventSource is
 // GET-only. Both are wrong for streaming chat (CLAUDE.md rule #4).
 export async function sendChatMessage(params: {
@@ -8,7 +13,7 @@ export async function sendChatMessage(params: {
   text: string;
   dispatch: Dispatch<ChatAction>;
   signal?: AbortSignal;
-}): Promise<void> {
+}): Promise<StreamOutcome> {
   const { conversationId, text, dispatch, signal } = params;
 
   const assistantId = generateId("assistant");
@@ -21,7 +26,7 @@ export async function sendChatMessage(params: {
 
   dispatch({ type: "SEND_START", userMessage, assistantId });
 
-  await streamChatTurn({
+  return streamChatTurn({
     body: { conversationId, text },
     assistantId,
     dispatch,
@@ -36,13 +41,13 @@ export async function continueChat(params: {
   conversationId: string;
   dispatch: Dispatch<ChatAction>;
   signal?: AbortSignal;
-}): Promise<void> {
+}): Promise<StreamOutcome> {
   const { conversationId, dispatch, signal } = params;
 
   const assistantId = generateId("assistant");
   dispatch({ type: "CONTINUE_START", assistantId });
 
-  await streamChatTurn({
+  return streamChatTurn({
     body: { conversationId },
     assistantId,
     dispatch,
@@ -55,7 +60,7 @@ async function streamChatTurn(params: {
   assistantId: string;
   dispatch: Dispatch<ChatAction>;
   signal?: AbortSignal;
-}): Promise<void> {
+}): Promise<StreamOutcome> {
   const { body, assistantId, dispatch, signal } = params;
 
   let response: Response;
@@ -68,7 +73,7 @@ async function streamChatTurn(params: {
     });
   } catch (err) {
     dispatch({ type: "ERROR", error: errorMessage(err) });
-    return;
+    return "error";
   }
 
   if (!response.ok || !response.body) {
@@ -76,12 +81,14 @@ async function streamChatTurn(params: {
       type: "ERROR",
       error: `Stream request failed (${response.status} ${response.statusText})`,
     });
-    return;
+    return "error";
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  // handleFrame mutates this via the closure when it sees done/error.
+  const tracker: { outcome: StreamOutcome } = { outcome: "truncated" };
 
   try {
     while (true) {
@@ -93,16 +100,23 @@ async function streamChatTurn(params: {
       while (sep !== -1) {
         const rawFrame = buffer.slice(0, sep);
         buffer = buffer.slice(sep + 2);
-        handleFrame(rawFrame, assistantId, dispatch);
+        handleFrame(rawFrame, assistantId, dispatch, tracker);
         sep = buffer.indexOf("\n\n");
       }
     }
   } catch (err) {
     dispatch({ type: "ERROR", error: errorMessage(err) });
+    return "error";
   }
+  return tracker.outcome;
 }
 
-function handleFrame(raw: string, messageId: string, dispatch: Dispatch<ChatAction>) {
+function handleFrame(
+  raw: string,
+  messageId: string,
+  dispatch: Dispatch<ChatAction>,
+  tracker: { outcome: StreamOutcome },
+) {
   let event: string | null = null;
   let dataStr: string | null = null;
 
@@ -140,12 +154,14 @@ function handleFrame(raw: string, messageId: string, dispatch: Dispatch<ChatActi
       });
       return;
     case "error":
+      tracker.outcome = "error";
       dispatch({
         type: "ERROR",
         error: String(data.message ?? "Stream error"),
       });
       return;
     case "done":
+      tracker.outcome = "done";
       dispatch({ type: "DONE", messageId });
       return;
   }

@@ -177,10 +177,15 @@ export default function CopilotPage() {
         next.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
         return next;
       });
-      await sendChatMessage({ conversationId: activeId, text, dispatch });
-      // Replace streamed bubbles with persisted state. Picks up synthetic
-      // tool_result rows so analytics cards (Phase 9) render inline.
-      await reloadMessages();
+      const outcome = await sendChatMessage({
+        conversationId: activeId,
+        text,
+        dispatch,
+      });
+      // Replace streamed bubbles with persisted state ONLY on success.
+      // LOAD_MESSAGES clears state.error, so reloading after an error would
+      // wipe the banner the merchant needs to see.
+      if (outcome === "done") await reloadMessages();
     },
     [activeId, reloadMessages],
   );
@@ -210,8 +215,11 @@ export default function CopilotPage() {
         }
         // Trigger continuation either way — Gemini summarizes success or
         // explains the error from the synthesized tool_result row.
-        await continueChat({ conversationId: activeId, dispatch });
-        await reloadMessages();
+        const outcome = await continueChat({
+          conversationId: activeId,
+          dispatch,
+        });
+        if (outcome === "done") await reloadMessages();
       } catch (err) {
         dispatch({
           type: "ERROR",
@@ -232,8 +240,11 @@ export default function CopilotPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ toolCallId }),
         });
-        await continueChat({ conversationId: activeId, dispatch });
-        await reloadMessages();
+        const outcome = await continueChat({
+          conversationId: activeId,
+          dispatch,
+        });
+        if (outcome === "done") await reloadMessages();
       } catch (err) {
         dispatch({
           type: "ERROR",

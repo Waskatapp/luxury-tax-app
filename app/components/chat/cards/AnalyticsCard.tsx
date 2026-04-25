@@ -43,12 +43,6 @@ function formatMoney(amount: string, currency: string): string {
   }
 }
 
-function priceRangeLabel(p: AnalyticsTopProductsResult["products"][number]["priceRange"]): string {
-  const min = formatMoney(p.min.amount, p.min.currencyCode);
-  const max = formatMoney(p.max.amount, p.max.currencyCode);
-  return min === max ? min : `${min} – ${max}`;
-}
-
 function statusBadgeTone(status: string): "success" | "info" | "attention" {
   if (status === "ACTIVE") return "success";
   if (status === "DRAFT") return "info";
@@ -61,23 +55,22 @@ function TopProductsCard({ data }: { data: AnalyticsTopProductsResult }) {
       <Card>
         <BlockStack gap="200">
           <Text as="h3" variant="headingSm">
-            Top products
+            Top products (last {data.rangeDays} days)
           </Text>
           <Text as="p" tone="subdued">
-            No products found.
+            No orders in the last {data.rangeDays} days, so no products to
+            rank yet.
           </Text>
         </BlockStack>
       </Card>
     );
   }
 
-  const rows = data.products.map((p) => [
+  const rows = data.products.map((p, i) => [
+    String(i + 1),
     p.title,
-    <Badge key={`s-${p.id}`} tone={statusBadgeTone(p.status)}>
-      {p.status}
-    </Badge>,
-    typeof p.totalInventory === "number" ? String(p.totalInventory) : "—",
-    priceRangeLabel(p.priceRange),
+    String(p.unitsSold),
+    String(p.orderCount),
   ]);
 
   return (
@@ -85,17 +78,29 @@ function TopProductsCard({ data }: { data: AnalyticsTopProductsResult }) {
       <BlockStack gap="300">
         <BlockStack gap="100">
           <Text as="h3" variant="headingSm">
-            Top products
+            Top products (last {data.rangeDays} days)
           </Text>
           <Text as="p" variant="bodySm" tone="subdued">
             {data.note}
           </Text>
         </BlockStack>
         <DataTable
-          columnContentTypes={["text", "text", "numeric", "text"]}
-          headings={["Product", "Status", "Inventory", "Price"]}
+          columnContentTypes={["numeric", "text", "numeric", "numeric"]}
+          headings={["#", "Product", "Units sold", "Orders"]}
           rows={rows}
         />
+        {data.cappedAtPageLimit ? (
+          <Box
+            padding="200"
+            background="bg-surface-caution"
+            borderRadius="200"
+          >
+            <Text as="p" variant="bodySm">
+              ⚠ Order scan capped — high-volume stores may have additional
+              top sellers outside the recent window.
+            </Text>
+          </Box>
+        ) : null}
       </BlockStack>
     </Card>
   );
