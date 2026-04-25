@@ -129,6 +129,36 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "update_store_memory",
+    description:
+      "Save or update a durable fact about the merchant's store, brand, or preferences. Executes inline — NO approval card, because this only updates the Copilot's own memory, not the store. Call this when the merchant says 'remember', 'always', 'from now on', 'by default', or corrects a fact you have wrong. Use canonical snake_case keys (brand_voice, default_discount_percent, store_location) so the same key reuses (overwrites) prior values for the same concept.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        category: {
+          type: "string",
+          enum: [
+            "BRAND_VOICE",
+            "PRICING_RULES",
+            "PRODUCT_RULES",
+            "CUSTOMER_RULES",
+            "STORE_CONTEXT",
+            "OPERATOR_PREFS",
+          ],
+        },
+        key: {
+          type: "string",
+          description: "Canonical snake_case key, e.g. 'brand_voice'.",
+        },
+        value: {
+          type: "string",
+          description: "Short declarative fact, under 500 characters.",
+        },
+      },
+      required: ["category", "key", "value"],
+    },
+  },
+  {
     name: "create_discount",
     description:
       "Create a percentage-off automatic discount. REQUIRES HUMAN APPROVAL. Provide the discount title, percent off (1-100), start date, and optional end date.",

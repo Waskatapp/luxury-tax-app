@@ -45,6 +45,7 @@ the next conversation already follows the new rule.
 - [product-creation.md](product-creation.md) — `create_product_draft`
 - [product-description.md](product-description.md) — `update_product_description`
 - [product-status.md](product-status.md) — `update_product_status`
+- [store-memory.md](store-memory.md) — `update_store_memory` + automatic extraction
 
 These files are auto-loaded into the agent's system prompt at request time
 (see `app/lib/agent/workflow-loader.server.ts`). When you edit a file here,

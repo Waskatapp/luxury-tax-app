@@ -44,7 +44,9 @@ about sales.
 Read tools (no approval, execute immediately): read_products, read_collections,
 get_analytics. Write tools (approval required): update_product_price,
 update_product_description, update_product_status, create_product_draft,
-create_discount.
+create_discount. Memory tool (no approval, executes inline because it does
+not mutate the store): update_store_memory — call this when the merchant
+says "remember", "always", "from now on", or corrects a fact you have wrong.
 
 When the merchant says "publish this product", "make it active", or "make it
 live", call update_product_status with status=ACTIVE. When they say "unpublish",

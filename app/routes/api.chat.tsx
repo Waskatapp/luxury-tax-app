@@ -13,9 +13,15 @@ import { buildSystemInstruction } from "../lib/agent/system-prompt";
 import { TOOL_DECLARATIONS } from "../lib/agent/tools";
 import {
   isApprovalRequiredWrite,
+  isInlineWrite,
   isReadTool,
 } from "../lib/agent/tool-classifier";
 import { executeTool } from "../lib/agent/executor.server";
+import {
+  formatMemoryAsMarkdown,
+  listMemoryForPrompt,
+} from "../lib/memory/store-memory.server";
+import { extractAndStoreMemory } from "../lib/memory/memory-extractor.server";
 import {
   AssistantTurnAccumulator,
   bareToolCallUuid,
@@ -124,9 +130,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     content: row.content as unknown as ContentBlock[],
   }));
 
+  const memoryEntries = await listMemoryForPrompt(store.id);
+  const memoryMarkdown = formatMemoryAsMarkdown(memoryEntries);
   const systemInstruction = buildSystemInstruction({
     shopDomain: store.shopDomain,
-    memoryMarkdown: null, // Phase 8 wires real memory
+    memoryMarkdown: memoryMarkdown.length > 0 ? memoryMarkdown : null,
   });
 
   const stream = new ReadableStream<Uint8Array>({
@@ -141,6 +149,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           // controller already closed
         }
       };
+
+      // Accumulates every text_delta across the whole user→assistant cycle
+      // (multiple Gemini turns when tools run). Used to feed the post-stream
+      // memory extractor with the merchant's full reply context.
+      let assistantTextBuffer = "";
 
       try {
         const ai = getGeminiClient();
@@ -176,7 +189,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           for await (const chunk of responseStream) {
             const candidate = chunk.candidates?.[0];
             const delta = accumulator.consumeChunkParts(candidate?.content?.parts);
-            if (delta.length > 0) emit("text_delta", { delta });
+            if (delta.length > 0) {
+              emit("text_delta", { delta });
+              assistantTextBuffer += delta;
+            }
             if (chunk.usageMetadata) lastUsageMetadata = chunk.usageMetadata;
           }
 
@@ -233,7 +249,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               break;
             }
 
-            if (isReadTool(tu.name)) {
+            if (isReadTool(tu.name) || isInlineWrite(tu.name)) {
+              // Inline-execute path: reads + safe writes that don't mutate
+              // the store (e.g. update_store_memory). No approval card.
               const result = await executeTool(tu.name, tu.input, {
                 admin,
                 storeId: store.id,
@@ -287,6 +305,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           controller.close();
         } catch {
           // already closed
+        }
+
+        // Fire-and-forget memory extraction. Skipped on continuation-mode
+        // requests (post-approve/reject) — the merchant didn't say anything
+        // new in that round. Also skipped if the assistant produced no text
+        // (pure tool-call turn). Errors are swallowed inside the extractor.
+        if (typeof text === "string" && assistantTextBuffer.trim().length > 0) {
+          void extractAndStoreMemory({
+            storeId: store.id,
+            userText: text,
+            assistantText: assistantTextBuffer,
+          });
         }
       }
     },

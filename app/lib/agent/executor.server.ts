@@ -14,6 +14,26 @@ import { createDiscount } from "../shopify/discounts.server";
 import { readCollections } from "../shopify/collections.server";
 import { getAnalytics } from "../shopify/analytics.server";
 import type { ShopifyAdmin } from "../shopify/graphql-client.server";
+import { upsertMemory } from "../memory/store-memory.server";
+import type { MemoryCategory } from "@prisma/client";
+import { z } from "zod";
+
+const UpdateStoreMemoryInput = z.object({
+  category: z.enum([
+    "BRAND_VOICE",
+    "PRICING_RULES",
+    "PRODUCT_RULES",
+    "CUSTOMER_RULES",
+    "STORE_CONTEXT",
+    "OPERATOR_PREFS",
+  ]),
+  key: z
+    .string()
+    .min(1)
+    .max(80)
+    .regex(/^[a-z0-9_]+$/, "key must be snake_case"),
+  value: z.string().min(1).max(500),
+});
 
 export type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
 
@@ -40,6 +60,27 @@ export async function executeTool(
 
       case "get_analytics":
         return await getAnalytics(ctx.admin, input);
+
+      case "update_store_memory": {
+        const parsed = UpdateStoreMemoryInput.safeParse(input);
+        if (!parsed.success) {
+          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+        }
+        const saved = await upsertMemory(ctx.storeId, {
+          category: parsed.data.category as MemoryCategory,
+          key: parsed.data.key,
+          value: parsed.data.value,
+        });
+        return {
+          ok: true,
+          data: {
+            category: saved.category,
+            key: saved.key,
+            value: saved.value,
+            updatedAt: saved.updatedAt.toISOString(),
+          },
+        };
+      }
 
       case "update_product_price":
       case "update_product_description":
