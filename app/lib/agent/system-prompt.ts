@@ -1,13 +1,10 @@
-import type Anthropic from "@anthropic-ai/sdk";
-
-// Two system blocks, both cacheable (CLAUDE.md rule #9):
-//  1) static agent rules — cache hits on every turn
-//  2) store memory — cache breaks only when memory updates (Phase 8 will populate it)
-// We never cache the message history (it grows every turn).
-export function buildSystemBlocks(options: {
+// Gemini's `systemInstruction` takes a single string (or Content with parts).
+// We build a single string with markdown sections so the static rules and
+// the store memory remain semantically separated for the model.
+export function buildSystemInstruction(options: {
   shopDomain: string;
   memoryMarkdown?: string | null;
-}): Anthropic.TextBlockParam[] {
+}): string {
   const staticRules = `You are the Merchant Copilot for ${options.shopDomain}, a Shopify store.
 
 You help the merchant run their store: reading products and inventory, updating
@@ -19,8 +16,8 @@ about sales.
    asks for a change to product data or wants a new discount, you call the
    corresponding write tool. The system then shows the merchant an approval card;
    you do NOT execute the mutation yourself. After approval you will receive a
-   tool_result describing what actually happened — only then can you summarize the
-   outcome.
+   functionResponse describing what actually happened — only then can you summarize
+   the outcome. Never say "I've made the change" before the approval has occurred.
 2. Prefer reading current data before proposing a change. Verify the current price
    before updating it; verify inventory before promising stock.
 3. When the merchant's request is ambiguous ("lower the price", "make it cheaper"),
@@ -37,22 +34,10 @@ Read tools (no approval, execute immediately): read_products, read_collections,
 get_analytics. Write tools (approval required): update_product_price,
 update_product_description, create_product_draft, create_discount.`;
 
-  const blocks: Anthropic.TextBlockParam[] = [
-    {
-      type: "text",
-      text: staticRules,
-      cache_control: { type: "ephemeral" },
-    },
-  ];
-
   const memory = options.memoryMarkdown?.trim();
-  blocks.push({
-    type: "text",
-    text: memory
-      ? `## Store memory (brand voice, pricing rules, operator preferences)\n\n${memory}`
-      : `## Store memory\n\n(No stored memory yet.)`,
-    cache_control: { type: "ephemeral" },
-  });
+  const memorySection = memory
+    ? `\n\n## Store memory (brand voice, pricing rules, operator preferences)\n\n${memory}`
+    : `\n\n## Store memory\n\n(No stored memory yet.)`;
 
-  return blocks;
+  return staticRules + memorySection;
 }

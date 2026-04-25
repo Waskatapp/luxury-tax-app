@@ -1,26 +1,35 @@
 import type { ActionFunctionArgs } from "react-router";
-import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 
 import prisma from "../db.server";
 import { requireStoreAccess } from "../lib/auth.server";
 import { sanitizeUserInput } from "../lib/security/sanitize.server";
-import { CLAUDE_CHAT_MODEL, getAnthropicClient } from "../lib/agent/claude.server";
-import { buildSystemBlocks } from "../lib/agent/system-prompt";
-import { TOOL_DEFINITIONS } from "../lib/agent/tools";
+import { GEMINI_CHAT_MODEL, getGeminiClient } from "../lib/agent/gemini.server";
+import { buildSystemInstruction } from "../lib/agent/system-prompt";
+import { TOOL_DECLARATIONS } from "../lib/agent/tools";
 import {
   isApprovalRequiredWrite,
   isReadTool,
 } from "../lib/agent/tool-classifier";
 import { executeTool } from "../lib/agent/executor.server";
+import {
+  AssistantTurnAccumulator,
+  bareToolCallUuid,
+  toGeminiContent,
+  toGeminiContents,
+  type ContentBlock,
+  type StoredMessage,
+  type ToolResultBlock,
+  type ToolUseBlock,
+} from "../lib/agent/translate.server";
 
 const BodySchema = z.object({
   conversationId: z.string().min(1),
   text: z.string().min(1).max(4000),
 });
 
-const HISTORY_LIMIT = 40; // CLAUDE.md §5 & Phase 4 plan
-const MAX_TURNS = 8; // safety cap on the tool-use loop within a single user message
+const HISTORY_LIMIT = 40;
+const MAX_TURNS = 8;
 const MAX_OUTPUT_TOKENS = 4096;
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -38,11 +47,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const sanitized = sanitizeUserInput(text);
 
-  // Persist user turn BEFORE streaming so reload shows it even if the stream
-  // errors mid-flight.
-  const userContent: Anthropic.ContentBlockParam[] = [
-    { type: "text", text: sanitized },
-  ];
+  // Persist user turn before streaming so reload shows it even on stream error.
+  const userContent: ContentBlock[] = [{ type: "text", text: sanitized }];
   await prisma.$transaction([
     prisma.message.create({
       data: {
@@ -60,7 +66,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }),
   ]);
 
-  // Load last N messages (reversed to chronological order) as Claude context.
+  // Load last N messages for context (chronological).
   const historyRows = await prisma.message.findMany({
     where: { conversationId },
     orderBy: { createdAt: "desc" },
@@ -69,12 +75,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
   historyRows.reverse();
 
-  const messages: Anthropic.MessageParam[] = historyRows.map((row) => ({
+  const stored: StoredMessage[] = historyRows.map((row) => ({
     role: row.role === "user" ? "user" : "assistant",
-    content: row.content as unknown as Anthropic.MessageParam["content"],
+    content: row.content as unknown as ContentBlock[],
   }));
 
-  const systemBlocks = buildSystemBlocks({
+  const systemInstruction = buildSystemInstruction({
     shopDomain: store.shopDomain,
     memoryMarkdown: null, // Phase 8 wires real memory
   });
@@ -88,53 +94,67 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
           );
         } catch {
-          // controller already closed — ignore
+          // controller already closed
         }
       };
 
       try {
-        const anthropic = getAnthropicClient();
+        const ai = getGeminiClient();
+        const contents = toGeminiContents(stored);
 
         for (let turn = 0; turn < MAX_TURNS; turn++) {
-          const claudeStream = anthropic.messages.stream({
-            model: CLAUDE_CHAT_MODEL,
-            max_tokens: MAX_OUTPUT_TOKENS,
-            system: systemBlocks,
-            messages,
-            tools: TOOL_DEFINITIONS,
+          const accumulator = new AssistantTurnAccumulator();
+
+          const responseStream = await ai.models.generateContentStream({
+            model: GEMINI_CHAT_MODEL,
+            contents,
+            config: {
+              systemInstruction,
+              tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+              maxOutputTokens: MAX_OUTPUT_TOKENS,
+            },
           });
 
-          claudeStream.on("text", (delta: string) => {
-            if (delta) emit("text_delta", { delta });
-          });
+          let lastUsageMetadata: unknown = null;
+          for await (const chunk of responseStream) {
+            const candidate = chunk.candidates?.[0];
+            const delta = accumulator.consumeChunkParts(candidate?.content?.parts);
+            if (delta.length > 0) emit("text_delta", { delta });
+            if (chunk.usageMetadata) lastUsageMetadata = chunk.usageMetadata;
+          }
 
-          const finalMessage = await claudeStream.finalMessage();
+          const assistantContent = accumulator.finalize();
 
-          // Persist the assistant turn verbatim (CLAUDE.md rule #3 — no translation).
+          // Persist assistant turn verbatim (CLAUDE.md rule #3 — internal shape).
           await prisma.message.create({
             data: {
               conversationId,
               role: "assistant",
-              content: finalMessage.content as unknown as object,
-              model: finalMessage.model,
-              usage: finalMessage.usage as unknown as object,
+              content: assistantContent as unknown as object,
+              model: GEMINI_CHAT_MODEL,
+              ...(lastUsageMetadata
+                ? { usage: lastUsageMetadata as unknown as object }
+                : {}),
             },
           });
-          messages.push({ role: "assistant", content: finalMessage.content });
 
-          const toolUses = finalMessage.content.filter(
-            (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
+          // Push the assistant turn onto Gemini contents for any next loop.
+          contents.push(
+            toGeminiContent({ role: "assistant", content: assistantContent }),
+          );
+
+          const toolUses = assistantContent.filter(
+            (b): b is ToolUseBlock => b.type === "tool_use",
           );
 
           if (toolUses.length === 0) break;
 
-          const toolResults: Anthropic.ToolResultBlockParam[] = [];
+          const toolResults: ToolResultBlock[] = [];
           let stoppedForApproval = false;
 
           for (const tu of toolUses) {
             if (isApprovalRequiredWrite(tu.name)) {
-              // Create PendingAction row; approval UI + execution land in Phase 5.
-              // toolCallId @unique makes this idempotent (CLAUDE.md rule #10).
+              // Idempotent upsert; toolCallId @unique is the dedupe key.
               await prisma.pendingAction.upsert({
                 where: { toolCallId: tu.id },
                 create: {
@@ -172,7 +192,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               continue;
             }
 
-            // Unknown tool (shouldn't happen — TOOL_DEFINITIONS lists only classified tools).
+            // Unknown / not-yet-wired
             toolResults.push({
               type: "tool_result",
               tool_use_id: tu.id,
@@ -184,8 +204,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           if (stoppedForApproval) break;
           if (toolResults.length === 0) break;
 
-          // Synthesize the user-turn with tool_results so Claude can continue.
-          // api.messages filters these rows from the UI — they're internal plumbing.
+          // Synthesize a user-turn with the tool_results. This row is filtered
+          // from the UI by api.messages.tsx (internal plumbing, not user-visible).
           await prisma.message.create({
             data: {
               conversationId,
@@ -193,7 +213,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               content: toolResults as unknown as object,
             },
           });
-          messages.push({ role: "user", content: toolResults });
+          contents.push(
+            toGeminiContent({ role: "user", content: toolResults }),
+          );
+
+          // continue loop
+          void bareToolCallUuid; // imported for future logging; suppress unused-warning
         }
 
         emit("done", {});
