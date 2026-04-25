@@ -23,9 +23,13 @@ import {
   type ToolUseBlock,
 } from "../lib/agent/translate.server";
 
+// `text` is optional: when absent, the request is a "continuation" triggered
+// by the client after an approve/reject roundtrip. The server then streams
+// the assistant summary based on history (which already contains the
+// synthesized tool_result Message persisted by api.tool-approve / api.tool-reject).
 const BodySchema = z.object({
   conversationId: z.string().min(1),
-  text: z.string().min(1).max(4000),
+  text: z.string().min(1).max(4000).optional(),
 });
 
 const HISTORY_LIMIT = 40;
@@ -45,26 +49,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
   if (!conversation) return new Response("Not found", { status: 404 });
 
-  const sanitized = sanitizeUserInput(text);
-
-  // Persist user turn before streaming so reload shows it even on stream error.
-  const userContent: ContentBlock[] = [{ type: "text", text: sanitized }];
-  await prisma.$transaction([
-    prisma.message.create({
-      data: {
-        conversationId,
-        role: "user",
-        content: userContent as unknown as object,
-      },
-    }),
-    prisma.conversation.update({
-      where: { id: conversationId },
-      data: {
-        title: conversation.title ?? sanitized.slice(0, 60),
-        updatedAt: new Date(),
-      },
-    }),
-  ]);
+  // Continuation mode (no text): skip user-message persistence; history
+  // already includes the synthesized tool_result row from approve/reject.
+  if (typeof text === "string") {
+    const sanitized = sanitizeUserInput(text);
+    const userContent: ContentBlock[] = [{ type: "text", text: sanitized }];
+    await prisma.$transaction([
+      prisma.message.create({
+        data: {
+          conversationId,
+          role: "user",
+          content: userContent as unknown as object,
+        },
+      }),
+      prisma.conversation.update({
+        where: { id: conversationId },
+        data: {
+          title: conversation.title ?? sanitized.slice(0, 60),
+          updatedAt: new Date(),
+        },
+      }),
+    ]);
+  }
 
   // Load last N messages for context (chronological).
   const historyRows = await prisma.message.findMany({

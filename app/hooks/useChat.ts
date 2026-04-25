@@ -1,8 +1,8 @@
 import { useReducer } from "react";
 
-// ContentBlock mirrors @anthropic-ai/sdk message content block shapes.
-// We persist messages verbatim (CLAUDE.md rule #3) so this type doubles
-// as the on-disk schema and the UI's render shape.
+// ContentBlock is our internal, provider-agnostic shape (mirrors what is
+// persisted in Message.content). The translate.server.ts boundary handles
+// converting to/from Gemini Part[].
 export type TextBlock = { type: "text"; text: string };
 export type ToolUseBlock = {
   type: "tool_use";
@@ -26,15 +26,29 @@ export type ChatMessage = {
 
 export type ChatPhase = "idle" | "streaming" | "awaitingApproval" | "error";
 
+// PendingAction status values mirrored on the client. Server is authoritative.
+export type PendingActionStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "EXECUTED"
+  | "FAILED";
+
 export type ChatState = {
   phase: ChatPhase;
   messages: ChatMessage[];
+  pendingByToolCallId: Record<string, PendingActionStatus>;
   error: string | null;
 };
 
 export type ChatAction =
-  | { type: "LOAD_MESSAGES"; messages: ChatMessage[] }
+  | {
+      type: "LOAD_MESSAGES";
+      messages: ChatMessage[];
+      pendingByToolCallId: Record<string, PendingActionStatus>;
+    }
   | { type: "SEND_START"; userMessage: ChatMessage; assistantId: string }
+  | { type: "CONTINUE_START"; assistantId: string }
   | { type: "TEXT_DELTA"; messageId: string; delta: string }
   | {
       type: "TOOL_USE_START";
@@ -45,11 +59,17 @@ export type ChatAction =
     }
   | { type: "DONE"; messageId: string }
   | { type: "ERROR"; error: string }
+  | {
+      type: "TOOL_STATUS";
+      toolCallId: string;
+      status: PendingActionStatus;
+    }
   | { type: "RESET" };
 
 export const INITIAL_CHAT_STATE: ChatState = {
   phase: "idle",
   messages: [],
+  pendingByToolCallId: {},
   error: null,
 };
 
@@ -66,7 +86,12 @@ function appendTextDelta(message: ChatMessage, delta: string): ChatMessage {
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case "LOAD_MESSAGES":
-      return { phase: "idle", messages: action.messages, error: null };
+      return {
+        phase: "idle",
+        messages: action.messages,
+        pendingByToolCallId: action.pendingByToolCallId,
+        error: null,
+      };
 
     case "SEND_START": {
       const placeholder: ChatMessage = {
@@ -76,8 +101,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         status: "streaming",
       };
       return {
+        ...state,
         phase: "streaming",
         messages: [...state.messages, action.userMessage, placeholder],
+        error: null,
+      };
+    }
+
+    case "CONTINUE_START": {
+      const placeholder: ChatMessage = {
+        id: action.assistantId,
+        role: "assistant",
+        content: [],
+        status: "streaming",
+      };
+      return {
+        ...state,
+        phase: "streaming",
+        messages: [...state.messages, placeholder],
         error: null,
       };
     }
@@ -92,6 +133,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case "TOOL_USE_START":
       return {
+        ...state,
         phase: "awaitingApproval",
         messages: state.messages.map((m) =>
           m.id === action.messageId
@@ -109,6 +151,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
               }
             : m,
         ),
+        pendingByToolCallId: {
+          ...state.pendingByToolCallId,
+          [action.toolCallId]: "PENDING",
+        },
         error: null,
       };
 
@@ -121,8 +167,22 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ),
       };
 
+    case "TOOL_STATUS":
+      return {
+        ...state,
+        pendingByToolCallId: {
+          ...state.pendingByToolCallId,
+          [action.toolCallId]: action.status,
+        },
+        // Once any pending action moves out of PENDING, we leave the
+        // awaitingApproval phase. The continuation stream will move us back to
+        // streaming via CONTINUE_START.
+        phase: action.status === "PENDING" ? state.phase : "idle",
+      };
+
     case "ERROR":
       return {
+        ...state,
         phase: "error",
         messages: state.messages.map((m) =>
           m.status === "streaming" ? { ...m, status: "error" } : m,

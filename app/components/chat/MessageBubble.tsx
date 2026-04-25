@@ -1,10 +1,21 @@
 import { BlockStack, Box, InlineStack, Text } from "@shopify/polaris";
-import type { ChatMessage } from "../../hooks/useChat";
+import type { ChatMessage, PendingActionStatus } from "../../hooks/useChat";
 import { isApprovalRequiredWrite } from "../../lib/agent/tool-classifier";
+import { ApprovalCard } from "./ApprovalCard";
 
-type Props = { message: ChatMessage };
+type Props = {
+  message: ChatMessage;
+  pendingByToolCallId: Record<string, PendingActionStatus>;
+  onApprove: (toolCallId: string) => Promise<void> | void;
+  onReject: (toolCallId: string) => Promise<void> | void;
+};
 
-export function MessageBubble({ message }: Props) {
+export function MessageBubble({
+  message,
+  pendingByToolCallId,
+  onApprove,
+  onReject,
+}: Props) {
   const isUser = message.role === "user";
 
   const text = message.content
@@ -13,7 +24,7 @@ export function MessageBubble({ message }: Props) {
     .join("");
 
   // Only surface WRITE tool_uses in the bubble — they need approval.
-  // READ tool_uses are internal plumbing (Claude asking the server to fetch
+  // READ tool_uses are internal plumbing (the agent asking the server to fetch
   // data); the merchant shouldn't see them at all.
   const toolUses = message.content
     .filter(
@@ -32,18 +43,26 @@ export function MessageBubble({ message }: Props) {
           borderWidth="025"
           borderRadius="300"
         >
-          <BlockStack gap="150">
+          <BlockStack gap="200">
             <Text as="span" variant="bodySm" tone="subdued">
               {isUser ? "You" : "Copilot"}
             </Text>
-            <Text as="p" variant="bodyMd">
-              {text || (message.status === "streaming" ? "…" : " ")}
-            </Text>
-            {toolUses.length > 0 ? (
-              <Text as="p" variant="bodySm" tone="caution">
-                Awaiting your approval: {toolUses.map((t) => t.name).join(", ")}
+            {text || (message.status === "streaming" && toolUses.length === 0) ? (
+              <Text as="p" variant="bodyMd">
+                {text || "…"}
               </Text>
             ) : null}
+            {toolUses.map((tu) => (
+              <ApprovalCard
+                key={tu.id}
+                toolCallId={tu.id}
+                toolName={tu.name}
+                toolInput={(tu.input ?? {}) as Record<string, unknown>}
+                status={pendingByToolCallId[tu.id]}
+                onApprove={onApprove}
+                onReject={onReject}
+              />
+            ))}
             {message.status === "error" ? (
               <Text as="p" variant="bodySm" tone="critical">
                 Something went wrong with this message.

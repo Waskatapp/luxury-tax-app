@@ -34,6 +34,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return true;
   });
 
+  // Pending-action status sidecar so ApprovalCards know whether to show
+  // Approve/Reject buttons or "Approved" / "Rejected" badges on reload.
+  const pending = await prisma.pendingAction.findMany({
+    where: { conversationId, storeId: store.id },
+    select: { toolCallId: true, status: true },
+  });
+  const pendingByToolCallId: Record<string, string> = {};
+  for (const p of pending) pendingByToolCallId[p.toolCallId] = p.status;
+
   return {
     messages: visible.map((m) => ({
       id: m.id,
@@ -41,5 +50,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       content: m.content,
       status: "complete" as const,
     })),
+    pendingByToolCallId,
   };
 };

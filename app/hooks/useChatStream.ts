@@ -21,12 +21,49 @@ export async function sendChatMessage(params: {
 
   dispatch({ type: "SEND_START", userMessage, assistantId });
 
+  await streamChatTurn({
+    body: { conversationId, text },
+    assistantId,
+    dispatch,
+    signal,
+  });
+}
+
+// Triggered by the client after a Phase 5 approve/reject roundtrip. The server
+// reads history (which now contains the synthesized tool_result Message) and
+// streams the human-readable summary into a NEW assistant bubble.
+export async function continueChat(params: {
+  conversationId: string;
+  dispatch: Dispatch<ChatAction>;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const { conversationId, dispatch, signal } = params;
+
+  const assistantId = generateId("assistant");
+  dispatch({ type: "CONTINUE_START", assistantId });
+
+  await streamChatTurn({
+    body: { conversationId },
+    assistantId,
+    dispatch,
+    signal,
+  });
+}
+
+async function streamChatTurn(params: {
+  body: { conversationId: string; text?: string };
+  assistantId: string;
+  dispatch: Dispatch<ChatAction>;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const { body, assistantId, dispatch, signal } = params;
+
   let response: Response;
   try {
     response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId, text }),
+      body: JSON.stringify(body),
       signal,
     });
   } catch (err) {

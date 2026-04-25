@@ -1,4 +1,14 @@
-import { readProducts } from "../shopify/products.server";
+import {
+  createProductDraft,
+  fetchProductDescription,
+  readProducts,
+  updateProductDescription,
+} from "../shopify/products.server";
+import {
+  fetchVariantPrice,
+  updateProductPrice,
+} from "../shopify/pricing.server";
+import { createDiscount } from "../shopify/discounts.server";
 import type { ShopifyAdmin } from "../shopify/graphql-client.server";
 
 export type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
@@ -8,9 +18,9 @@ export type ToolContext = {
   storeId: string;
 };
 
-// Dispatch a tool call by name. Tools return typed result tuples; unknown or
-// not-yet-wired tools return a user-visible "not implemented" error rather
-// than throwing (CLAUDE.md WAT: "never throw raw errors to the agent").
+// READ tools — called inline by the agent loop in api.chat.tsx.
+// WRITE tools intentionally return an error here; they go through the approval
+// flow via executeApprovedWrite below (CLAUDE.md rule #1).
 export async function executeTool(
   name: string,
   input: unknown,
@@ -37,14 +47,70 @@ export async function executeTool(
       case "update_product_description":
       case "create_product_draft":
       case "create_discount":
-        // Write tools execute via the approval flow in Phase 5, not inline here.
         return {
           ok: false,
-          error: `${name} must route through the approval flow (Phase 5). executeTool should not be called for write tools in v1.`,
+          error: `${name} must route through the approval flow. executeTool should not be called for write tools.`,
         };
 
       default:
         return { ok: false, error: `unknown tool: ${name}` };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// Snapshot the "before" state for AuditLog (CLAUDE.md rule #10). Returns null
+// for create operations (nothing existed yet) or when the snapshot fetch fails
+// — null is a valid before-snapshot meaning "no prior state".
+export async function snapshotBefore(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<unknown | null> {
+  try {
+    switch (toolName) {
+      case "update_product_price": {
+        const variantId = String(toolInput.variantId ?? "");
+        if (!variantId) return null;
+        const r = await fetchVariantPrice(ctx.admin, variantId);
+        return r.ok ? r.data : null;
+      }
+      case "update_product_description": {
+        const productId = String(toolInput.productId ?? "");
+        if (!productId) return null;
+        const r = await fetchProductDescription(ctx.admin, productId);
+        return r.ok ? r.data : null;
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+// WRITE tools, dispatched from the approve route only.
+export async function executeApprovedWrite(
+  name: string,
+  input: unknown,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    switch (name) {
+      case "update_product_price":
+        return await updateProductPrice(ctx.admin, input);
+      case "update_product_description":
+        return await updateProductDescription(ctx.admin, input);
+      case "create_product_draft":
+        return await createProductDraft(ctx.admin, input);
+      case "create_discount":
+        return await createDiscount(ctx.admin, input);
+      default:
+        return { ok: false, error: `unknown write tool: ${name}` };
     }
   } catch (err) {
     return {

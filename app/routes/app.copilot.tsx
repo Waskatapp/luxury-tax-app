@@ -18,8 +18,9 @@ import {
   INITIAL_CHAT_STATE,
   type ChatMessage,
   type ContentBlock,
+  type PendingActionStatus,
 } from "../hooks/useChat";
-import { sendChatMessage } from "../hooks/useChatStream";
+import { continueChat, sendChatMessage } from "../hooks/useChatStream";
 import {
   ConversationSidebar,
   type ConversationSummary,
@@ -61,7 +62,7 @@ export default function CopilotPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [state.messages]);
 
-  // Load messages when active conversation changes.
+  // Load messages + pending action statuses when active conversation changes.
   useEffect(() => {
     if (!activeId) {
       dispatch({ type: "RESET" });
@@ -86,6 +87,7 @@ export default function CopilotPage() {
             content: ContentBlock[];
             status: "complete";
           }>;
+          pendingByToolCallId?: Record<string, PendingActionStatus>;
         };
         const messages: ChatMessage[] = data.messages.map((m) => ({
           id: m.id,
@@ -93,7 +95,11 @@ export default function CopilotPage() {
           content: m.content,
           status: "complete",
         }));
-        dispatch({ type: "LOAD_MESSAGES", messages });
+        dispatch({
+          type: "LOAD_MESSAGES",
+          messages,
+          pendingByToolCallId: data.pendingByToolCallId ?? {},
+        });
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
         dispatch({
@@ -114,7 +120,11 @@ export default function CopilotPage() {
       const data = (await res.json()) as { conversation: ConversationSummary };
       setConversations((prev) => [data.conversation, ...prev]);
       setActiveId(data.conversation.id);
-      dispatch({ type: "LOAD_MESSAGES", messages: [] });
+      dispatch({
+        type: "LOAD_MESSAGES",
+        messages: [],
+        pendingByToolCallId: {},
+      });
     } finally {
       setCreating(false);
     }
@@ -140,9 +150,7 @@ export default function CopilotPage() {
   const handleSend = useCallback(
     (text: string) => {
       if (!activeId) return;
-      // Mirror the server-side title logic (api.chat.tsx sets title to the first
-      // 60 chars of the first user message when title is still null). Doing it
-      // optimistically here avoids a refresh-to-see-the-title flicker.
+      // Mirror the server-side title logic optimistically.
       const nowIso = new Date().toISOString();
       setConversations((prev) => {
         const next = prev.map((c) =>
@@ -158,6 +166,63 @@ export default function CopilotPage() {
         return next;
       });
       sendChatMessage({ conversationId: activeId, text, dispatch });
+    },
+    [activeId],
+  );
+
+  const handleApprove = useCallback(
+    async (toolCallId: string) => {
+      if (!activeId) return;
+      // Optimistic: mark APPROVED while the server runs the mutation.
+      dispatch({ type: "TOOL_STATUS", toolCallId, status: "APPROVED" });
+      try {
+        const res = await fetch("/api/tool-approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ toolCallId }),
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          status?: PendingActionStatus;
+          error?: string;
+          conversationId?: string;
+        };
+        const finalStatus: PendingActionStatus =
+          body.status ?? (body.ok ? "EXECUTED" : "FAILED");
+        dispatch({ type: "TOOL_STATUS", toolCallId, status: finalStatus });
+        if (!body.ok && body.error) {
+          dispatch({ type: "ERROR", error: body.error });
+        }
+        // Trigger continuation either way — Gemini summarizes success or
+        // explains the error from the synthesized tool_result row.
+        await continueChat({ conversationId: activeId, dispatch });
+      } catch (err) {
+        dispatch({
+          type: "ERROR",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [activeId],
+  );
+
+  const handleReject = useCallback(
+    async (toolCallId: string) => {
+      if (!activeId) return;
+      dispatch({ type: "TOOL_STATUS", toolCallId, status: "REJECTED" });
+      try {
+        await fetch("/api/tool-reject", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ toolCallId }),
+        });
+        await continueChat({ conversationId: activeId, dispatch });
+      } catch (err) {
+        dispatch({
+          type: "ERROR",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     },
     [activeId],
   );
@@ -207,7 +272,13 @@ export default function CopilotPage() {
                 >
                   <BlockStack gap="300">
                     {state.messages.map((m) => (
-                      <MessageBubble key={m.id} message={m} />
+                      <MessageBubble
+                        key={m.id}
+                        message={m}
+                        pendingByToolCallId={state.pendingByToolCallId}
+                        onApprove={handleApprove}
+                        onReject={handleReject}
+                      />
                     ))}
                     <div ref={messagesEndRef} />
                   </BlockStack>
