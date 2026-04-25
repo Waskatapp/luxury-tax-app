@@ -76,6 +76,9 @@ export async function createDiscount(
   // Shopify expects percentage as a decimal between 0 and 1 (e.g. 0.10 for 10%).
   const percentageDecimal = parsed.data.percentOff / 100;
 
+  // DiscountAutomaticBasicInput does NOT accept customerSelection (that's
+  // only on DiscountCodeBasicInput) or minimumRequirement at this level.
+  // Automatic discounts apply to all customers by default; no minimum needed.
   const result = await graphqlRequest<DiscountCreateResponse>(
     admin,
     DISCOUNT_AUTOMATIC_BASIC_CREATE_MUTATION,
@@ -87,10 +90,6 @@ export async function createDiscount(
         customerGets: {
           value: { percentage: percentageDecimal },
           items: { all: true },
-        },
-        customerSelection: { all: true },
-        minimumRequirement: {
-          subtotal: { greaterThanOrEqualToSubtotal: "0" },
         },
       },
     },

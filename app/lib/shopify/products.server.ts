@@ -252,6 +252,9 @@ const PRODUCT_CREATE_MUTATION = `#graphql
         vendor
         productType
         createdAt
+        variants(first: 1) {
+          edges { node { id title price } }
+        }
       }
       userErrors { field message }
     }
@@ -269,6 +272,11 @@ type ProductCreateResponse = {
       vendor: string | null;
       productType: string | null;
       createdAt: string;
+      variants: {
+        edges: Array<{
+          node: { id: string; title: string; price: string };
+        }>;
+      };
     } | null;
     userErrors: Array<{ field: string[] | null; message: string }>;
   };
@@ -281,6 +289,10 @@ export type CreatedProductDraft = {
   status: string;
   vendor: string | null;
   productType: string | null;
+  // Shopify auto-creates a default variant when no variants are specified.
+  // Returning it here lets the agent immediately call update_product_price
+  // on a follow-up turn without needing read_products first.
+  defaultVariant: { id: string; title: string; price: string } | null;
 };
 
 export async function createProductDraft(
@@ -321,6 +333,8 @@ export async function createProductDraft(
   const created = result.data.productCreate.product;
   if (!created) return { ok: false, error: "productCreate returned no product" };
 
+  const variantNode = created.variants.edges[0]?.node ?? null;
+
   return {
     ok: true,
     data: {
@@ -330,6 +344,9 @@ export async function createProductDraft(
       status: created.status,
       vendor: created.vendor,
       productType: created.productType,
+      defaultVariant: variantNode
+        ? { id: variantNode.id, title: variantNode.title, price: variantNode.price }
+        : null,
     },
   };
 }

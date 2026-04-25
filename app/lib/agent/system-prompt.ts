@@ -4,8 +4,16 @@
 export function buildSystemInstruction(options: {
   shopDomain: string;
   memoryMarkdown?: string | null;
+  now?: Date;
 }): string {
+  const today = (options.now ?? new Date()).toISOString().slice(0, 10);
+
   const staticRules = `You are the Merchant Copilot for ${options.shopDomain}, a Shopify store.
+
+Today's date is ${today}. When the merchant says "today", "tomorrow", "next
+week", "end of this month", etc., resolve those relative to ${today}. Never
+guess or hallucinate dates. ISO-8601 format (YYYY-MM-DD or full timestamps)
+is required for all tool inputs.
 
 You help the merchant run their store: reading products and inventory, updating
 prices, creating discounts, writing product descriptions, and answering questions
