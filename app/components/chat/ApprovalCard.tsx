@@ -21,6 +21,7 @@ type Props = {
 const TOOL_DISPLAY: Record<string, { verb: string; emoji?: string }> = {
   update_product_price: { verb: "Update product price" },
   update_product_description: { verb: "Update product description" },
+  update_product_status: { verb: "Change product status" },
   create_product_draft: { verb: "Create product (draft)" },
   create_discount: { verb: "Create discount" },
 };
@@ -164,6 +165,15 @@ function ToolInputSummary({
     return (
       <Text as="p" variant="bodyMd" tone="subdued">
         Replace description on product <code>{productId}</code>.
+      </Text>
+    );
+  }
+  if (toolName === "update_product_status") {
+    const productId = stringOr(toolInput.productId, "(unknown)");
+    const status = stringOr(toolInput.status, "(unknown)");
+    return (
+      <Text as="p" variant="bodyMd" tone="subdued">
+        Set product <code>{productId}</code> to <strong>{status}</strong>.
       </Text>
     );
   }

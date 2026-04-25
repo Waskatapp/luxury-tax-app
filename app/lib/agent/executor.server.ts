@@ -1,8 +1,10 @@
 import {
   createProductDraft,
   fetchProductDescription,
+  fetchProductStatus,
   readProducts,
   updateProductDescription,
+  updateProductStatus,
 } from "../shopify/products.server";
 import {
   fetchVariantPrice,
@@ -45,6 +47,7 @@ export async function executeTool(
 
       case "update_product_price":
       case "update_product_description":
+      case "update_product_status":
       case "create_product_draft":
       case "create_discount":
         return {
@@ -85,6 +88,12 @@ export async function snapshotBefore(
         const r = await fetchProductDescription(ctx.admin, productId);
         return r.ok ? r.data : null;
       }
+      case "update_product_status": {
+        const productId = String(toolInput.productId ?? "");
+        if (!productId) return null;
+        const r = await fetchProductStatus(ctx.admin, productId);
+        return r.ok ? r.data : null;
+      }
       default:
         return null;
     }
@@ -105,6 +114,8 @@ export async function executeApprovedWrite(
         return await updateProductPrice(ctx.admin, input);
       case "update_product_description":
         return await updateProductDescription(ctx.admin, input);
+      case "update_product_status":
+        return await updateProductStatus(ctx.admin, input);
       case "create_product_draft":
         return await createProductDraft(ctx.admin, input);
       case "create_discount":

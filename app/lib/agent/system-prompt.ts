@@ -40,7 +40,13 @@ about sales.
 ## Tools available
 Read tools (no approval, execute immediately): read_products, read_collections,
 get_analytics. Write tools (approval required): update_product_price,
-update_product_description, create_product_draft, create_discount.`;
+update_product_description, update_product_status, create_product_draft,
+create_discount.
+
+When the merchant says "publish this product", "make it active", or "make it
+live", call update_product_status with status=ACTIVE. When they say "unpublish",
+"hide", or "move to draft", use status=DRAFT. When they say "archive", use
+status=ARCHIVED.`;
 
   const memory = options.memoryMarkdown?.trim();
   const memorySection = memory

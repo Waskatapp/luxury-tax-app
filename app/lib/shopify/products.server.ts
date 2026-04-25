@@ -230,6 +230,125 @@ export async function updateProductDescription(
 }
 
 // ----------------------------------------------------------------------------
+// update_product_status (write — runs from approval route, never inline)
+// ----------------------------------------------------------------------------
+
+const UpdateProductStatusInput = z.object({
+  productId: z.string().min(1),
+  status: z.enum(["DRAFT", "ACTIVE", "ARCHIVED"]),
+});
+
+const FETCH_PRODUCT_STATUS_QUERY = `#graphql
+  query FetchProductStatus($id: ID!) {
+    product(id: $id) {
+      id
+      title
+      status
+    }
+  }
+`;
+
+const PRODUCT_STATUS_UPDATE_MUTATION = `#graphql
+  mutation ProductStatusUpdate($product: ProductUpdateInput!) {
+    productUpdate(product: $product) {
+      product {
+        id
+        title
+        status
+        updatedAt
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type FetchStatusResponse = {
+  product: { id: string; title: string; status: string } | null;
+};
+
+type ProductStatusUpdateResponse = {
+  productUpdate: {
+    product: {
+      id: string;
+      title: string;
+      status: string;
+      updatedAt: string;
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type ProductStatusSnapshot = {
+  productId: string;
+  title: string;
+  status: string;
+};
+
+export async function fetchProductStatus(
+  admin: ShopifyAdmin,
+  productId: string,
+): Promise<ToolModuleResult<ProductStatusSnapshot>> {
+  const result = await graphqlRequest<FetchStatusResponse>(
+    admin,
+    FETCH_PRODUCT_STATUS_QUERY,
+    { id: productId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.data.product) {
+    return { ok: false, error: `product not found: ${productId}` };
+  }
+  return {
+    ok: true,
+    data: {
+      productId: result.data.product.id,
+      title: result.data.product.title,
+      status: result.data.product.status,
+    },
+  };
+}
+
+export async function updateProductStatus(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<ProductStatusSnapshot>> {
+  const parsed = UpdateProductStatusInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<ProductStatusUpdateResponse>(
+    admin,
+    PRODUCT_STATUS_UPDATE_MUTATION,
+    {
+      product: {
+        id: parsed.data.productId,
+        status: parsed.data.status,
+      },
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.productUpdate.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const updated = result.data.productUpdate.product;
+  if (!updated) return { ok: false, error: "productUpdate returned no product" };
+
+  return {
+    ok: true,
+    data: {
+      productId: updated.id,
+      title: updated.title,
+      status: updated.status,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
 // create_product_draft (write — runs from approval route, never inline)
 // ----------------------------------------------------------------------------
 

@@ -11,6 +11,7 @@ export const READ_TOOLS = new Set<string>([
 export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   "update_product_price",
   "update_product_description",
+  "update_product_status",
   "create_product_draft",
   "create_discount",
 ]);

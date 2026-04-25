@@ -83,6 +83,25 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "update_product_status",
+    description:
+      "Change a product's lifecycle status. Use ACTIVE to publish a draft so shoppers can buy it; DRAFT to unpublish; ARCHIVED to retire an old product. When the merchant says \"publish it\", \"make it active\", \"make it live\", or \"archive this\", call this tool. REQUIRES HUMAN APPROVAL — moving a product to ACTIVE makes it visible on the storefront.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        productId: {
+          type: "string",
+          description: "Product GID, e.g. gid://shopify/Product/12345",
+        },
+        status: {
+          type: "string",
+          enum: ["DRAFT", "ACTIVE", "ARCHIVED"],
+        },
+      },
+      required: ["productId", "status"],
+    },
+  },
+  {
     name: "create_product_draft",
     description:
       "Create a new product in DRAFT status so the merchant can review before publishing. REQUIRES HUMAN APPROVAL.",
