@@ -15,8 +15,9 @@ export type GraphQLResult<T> =
 // Thin wrapper over admin.graphql that:
 //  - unwraps the JSON body
 //  - surfaces Shopify `errors` as a typed failure (never throws)
-//  - logs `extensions.cost.throttleStatus.currentlyAvailable` so Railway logs
-//    show rate-limit headroom (real rate limiting is Phase 7)
+//  - logs `extensions.cost.throttleStatus.currentlyAvailable` for visibility
+// Per-store throttling lives in lib/shopify/rate-limiter.server.ts and is
+// applied transparently when admin is wrapped in requireStoreAccess.
 export async function graphqlRequest<T>(
   admin: ShopifyAdmin,
   query: string,

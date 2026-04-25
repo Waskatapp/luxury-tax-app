@@ -4,6 +4,7 @@ import type { Store } from "@prisma/client";
 import prisma from "../db.server";
 import { authenticate } from "../shopify.server";
 import { encrypt } from "./security/encrypt.server";
+import { rateLimitedAdmin } from "./shopify/rate-limiter.server";
 
 const ROLE_RANK: Record<UserRole, number> = {
   VIEW_ONLY: 0,
@@ -60,5 +61,9 @@ export async function requireStoreAccess(
     },
   });
 
-  return { admin, session, store, userRole };
+  // Wrap admin once at the boundary so every downstream Shopify call goes
+  // through the per-storeId token bucket. Tool modules see a normal admin.
+  const limitedAdmin = rateLimitedAdmin(admin, store.id) as typeof admin;
+
+  return { admin: limitedAdmin, session, store, userRole };
 }

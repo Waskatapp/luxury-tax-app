@@ -3,6 +3,10 @@ import { z } from "zod";
 
 import prisma from "../db.server";
 import { requireStoreAccess } from "../lib/auth.server";
+import {
+  checkChatRateLimit,
+  checkGeminiRateLimit,
+} from "../lib/security/rate-limit.server";
 import { sanitizeUserInput } from "../lib/security/sanitize.server";
 import { GEMINI_CHAT_MODEL, getGeminiClient } from "../lib/agent/gemini.server";
 import { buildSystemInstruction } from "../lib/agent/system-prompt";
@@ -36,12 +40,46 @@ const HISTORY_LIMIT = 40;
 const MAX_TURNS = 8;
 const MAX_OUTPUT_TOKENS = 4096;
 
+// Translate provider-thrown rate-limit errors into the same friendly message
+// the local guard emits, so the merchant doesn't see "RESOURCE_EXHAUSTED".
+function friendlyErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/429|RESOURCE_EXHAUSTED|rate.?limit|too many requests/i.test(raw)) {
+    return "Copilot is briefly resting — try again in a few seconds.";
+  }
+  return raw;
+}
+
+function sseErrorResponse(message: string): Response {
+  const body =
+    `event: error\ndata: ${JSON.stringify({ message })}\n\n` +
+    `event: done\ndata: {}\n\n`;
+  return new Response(body, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, store } = await requireStoreAccess(request);
 
   const parsed = BodySchema.safeParse(await request.json());
   if (!parsed.success) return new Response("Invalid body", { status: 400 });
   const { conversationId, text } = parsed.data;
+
+  // Per-(storeId,userId) chat rate limit. Stops the request before any DB
+  // writes or Gemini calls. Surfaced as a one-shot SSE error stream so the
+  // existing client error handler renders it like any other failure.
+  const chatLimit = checkChatRateLimit(store.id, null);
+  if (!chatLimit.ok) {
+    const seconds = Math.max(1, Math.ceil(chatLimit.retryAfterMs / 1000));
+    return sseErrorResponse(
+      `You're sending messages too fast. Try again in ${seconds}s.`,
+    );
+  }
 
   const conversation = await prisma.conversation.findFirst({
     where: { id: conversationId, storeId: store.id },
@@ -109,6 +147,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const contents = toGeminiContents(stored);
 
         for (let turn = 0; turn < MAX_TURNS; turn++) {
+          // Per-storeId Gemini RPM guard. Free-tier 2.5 Flash is 10 RPM;
+          // a single chat message can fan out to multiple Gemini calls when
+          // tools run, so we check on every loop iteration. Defense-in-depth
+          // for SDK-thrown 429s lives in the catch block below.
+          const geminiLimit = checkGeminiRateLimit(store.id);
+          if (!geminiLimit.ok) {
+            const seconds = Math.max(1, Math.ceil(geminiLimit.retryAfterMs / 1000));
+            emit("error", {
+              message: `Copilot is briefly resting — try again in ${seconds}s.`,
+            });
+            break;
+          }
+
           const accumulator = new AssistantTurnAccumulator();
 
           const responseStream = await ai.models.generateContentStream({
@@ -230,9 +281,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         emit("done", {});
       } catch (err) {
         console.error("[api.chat] stream error:", err);
-        emit("error", {
-          message: err instanceof Error ? err.message : String(err),
-        });
+        emit("error", { message: friendlyErrorMessage(err) });
       } finally {
         try {
           controller.close();
