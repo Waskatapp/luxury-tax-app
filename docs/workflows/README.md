@@ -36,15 +36,16 @@ the next conversation already follows the new rule.
 - **Workflows** (this directory) — your rules in plain English. Read by the
   agent on every relevant turn.
 
-> **Phase note (2026-04-25):** These workflows are written but not yet auto-
-> loaded into the agent's system prompt at runtime. That wiring lands in
-> Phase 6. Until then, they serve as documentation for future agent sessions
-> and as the source of truth when we wire them up.
-
 ## Files
 
+- [analytics.md](analytics.md) — `get_analytics` (top products, revenue)
 - [discount-creation.md](discount-creation.md) — `create_discount`
+- [inventory-audit.md](inventory-audit.md) — `get_analytics` (inventory at risk)
 - [price-change.md](price-change.md) — `update_product_price`
 - [product-creation.md](product-creation.md) — `create_product_draft`
 - [product-description.md](product-description.md) — `update_product_description`
 - [product-status.md](product-status.md) — `update_product_status`
+
+These files are auto-loaded into the agent's system prompt at request time
+(see `app/lib/agent/workflow-loader.server.ts`). When you edit a file here,
+the next conversation already follows the new rule — no deploy needed.

@@ -11,6 +11,8 @@ import {
   updateProductPrice,
 } from "../shopify/pricing.server";
 import { createDiscount } from "../shopify/discounts.server";
+import { readCollections } from "../shopify/collections.server";
+import { getAnalytics } from "../shopify/analytics.server";
 import type { ShopifyAdmin } from "../shopify/graphql-client.server";
 
 export type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
@@ -34,16 +36,10 @@ export async function executeTool(
         return await readProducts(ctx.admin, input);
 
       case "read_collections":
-        return {
-          ok: false,
-          error: "read_collections is not implemented yet (planned for Phase 6).",
-        };
+        return await readCollections(ctx.admin, input);
 
       case "get_analytics":
-        return {
-          ok: false,
-          error: "get_analytics is not implemented yet (planned for Phase 9).",
-        };
+        return await getAnalytics(ctx.admin, input);
 
       case "update_product_price":
       case "update_product_description":

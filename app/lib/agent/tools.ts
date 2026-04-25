@@ -22,18 +22,19 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "read_collections",
     description:
-      "List collections (product groupings) in the store. Not yet implemented; returns an error until Phase 6.",
+      "List collections (product groupings) in the store. Returns id, title, handle, productsCount, and updatedAt for each. Defaults to the first 20.",
     parametersJsonSchema: {
       type: "object",
       properties: {
         first: { type: "integer", minimum: 1, maximum: 50 },
+        after: { type: "string" },
       },
     },
   },
   {
     name: "get_analytics",
     description:
-      "Sales analytics: top products, revenue over a period, or inventory at risk of stocking out. Not yet implemented; returns an error until Phase 9.",
+      "Sales and inventory analytics. Three metrics: `top_products` returns the 5 best-selling products (Shopify's BEST_SELLING sort); `revenue` sums order totals over the last `days` days (default 30, max 365); `inventory_at_risk` returns variants with inventory below `threshold` (default 5). Read-only — no approval card. Use this for sales questions, low-stock audits, and 'how am I doing' questions.",
     parametersJsonSchema: {
       type: "object",
       properties: {
@@ -41,7 +42,18 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
           type: "string",
           enum: ["top_products", "revenue", "inventory_at_risk"],
         },
-        days: { type: "integer", minimum: 1, maximum: 90 },
+        days: {
+          type: "integer",
+          minimum: 1,
+          maximum: 365,
+          description: "Lookback window in days. Defaults to 30. Used by `revenue`; ignored by `inventory_at_risk`.",
+        },
+        threshold: {
+          type: "integer",
+          minimum: 0,
+          maximum: 1000,
+          description: "Inventory threshold for `inventory_at_risk`. Variants with quantity below this are flagged. Defaults to 5.",
+        },
       },
       required: ["metric"],
     },

@@ -1,6 +1,9 @@
+import { loadWorkflowsMarkdown } from "./workflow-loader.server";
+
 // Gemini's `systemInstruction` takes a single string (or Content with parts).
-// We build a single string with markdown sections so the static rules and
-// the store memory remain semantically separated for the model.
+// We build a single string with markdown sections so the static rules, the
+// workflow SOPs (owned by the merchant), and the store memory remain
+// semantically separated for the model.
 export function buildSystemInstruction(options: {
   shopDomain: string;
   memoryMarkdown?: string | null;
@@ -48,10 +51,15 @@ live", call update_product_status with status=ACTIVE. When they say "unpublish",
 "hide", or "move to draft", use status=DRAFT. When they say "archive", use
 status=ARCHIVED.`;
 
+  const workflows = loadWorkflowsMarkdown().trim();
+  const workflowsSection = workflows
+    ? `\n\n## Operating procedures\n\nThe following are the merchant's standard operating procedures for each tool. Follow them as authoritative business rules — they override your general training when they conflict.\n\n${workflows}`
+    : "";
+
   const memory = options.memoryMarkdown?.trim();
   const memorySection = memory
     ? `\n\n## Store memory (brand voice, pricing rules, operator preferences)\n\n${memory}`
     : `\n\n## Store memory\n\n(No stored memory yet.)`;
 
-  return staticRules + memorySection;
+  return staticRules + workflowsSection + memorySection;
 }
