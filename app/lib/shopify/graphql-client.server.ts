@@ -1,3 +1,5 @@
+import { log } from "../log.server";
+
 // Structural type for the Shopify Admin context returned by
 // authenticate.admin(request). Kept minimal (only the graphql method) so we
 // don't couple to a specific SDK version's type naming.
@@ -57,7 +59,7 @@ export async function graphqlRequest<T>(
 
   const cost = body.extensions?.cost?.throttleStatus?.currentlyAvailable ?? null;
   if (cost !== null) {
-    console.log(`[shopify] graphql cost: ${cost}/1000 available`);
+    log.debug("shopify graphql cost", { costAvailable: cost, capacity: 1000 });
   }
 
   if (body.errors && body.errors.length > 0) {

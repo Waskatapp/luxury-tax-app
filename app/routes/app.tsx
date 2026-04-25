@@ -37,6 +37,7 @@ export default function App() {
           <Link to="/app/copilot">Copilot</Link>
           <Link to="/app/dashboard">Dashboard</Link>
           <Link to="/app/settings/memory">Memory</Link>
+          <Link to="/app/settings/audit">Audit log</Link>
         </NavMenu>
         <Outlet />
       </PolarisAppProvider>

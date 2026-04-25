@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { log } from "../log.server";
+
 // Loads `docs/workflows/*.md` (skipping README.md) and concatenates them into
 // a single string for injection into Gemini's systemInstruction. Files are
 // read once at first call and cached for the life of the process; merchants
@@ -18,7 +20,7 @@ export function loadWorkflowsMarkdown(): string {
   if (cached !== null) return cached;
 
   if (!existsSync(WORKFLOWS_DIR)) {
-    console.warn(`[workflow-loader] directory missing: ${WORKFLOWS_DIR}`);
+    log.warn("workflow-loader: directory missing", { dir: WORKFLOWS_DIR });
     cached = "";
     return cached;
   }
@@ -36,7 +38,7 @@ export function loadWorkflowsMarkdown(): string {
     cached = sections.join("\n\n---\n\n");
     return cached;
   } catch (err) {
-    console.error("[workflow-loader] failed to load workflow docs:", err);
+    log.error("workflow-loader: failed to load workflow docs", { err });
     cached = "";
     return cached;
   }

@@ -2,6 +2,7 @@ import { MemoryCategory } from "@prisma/client";
 import { z } from "zod";
 
 import { GEMINI_MEMORY_MODEL, getGeminiClient } from "../agent/gemini.server";
+import { log } from "../log.server";
 import { upsertMemory } from "./store-memory.server";
 
 // Fire-and-forget extractor. Called once per user→assistant cycle (NOT once
@@ -70,15 +71,16 @@ export async function extractAndStoreMemory(input: ExtractInput): Promise<void> 
       });
     }
     if (items.length > 0) {
-      console.log(
-        `[memory-extractor] stored ${items.length} facts for storeId=${input.storeId}`,
-      );
+      log.info("memory-extractor: stored facts", {
+        storeId: input.storeId,
+        count: items.length,
+      });
     }
   } catch (err) {
-    console.warn(
-      "[memory-extractor] extraction failed (non-fatal):",
-      err instanceof Error ? err.message : String(err),
-    );
+    log.warn("memory-extractor: extraction failed (non-fatal)", {
+      storeId: input.storeId,
+      err: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

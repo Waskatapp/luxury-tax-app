@@ -22,6 +22,7 @@ import {
   listMemoryForPrompt,
 } from "../lib/memory/store-memory.server";
 import { extractAndStoreMemory } from "../lib/memory/memory-extractor.server";
+import { log } from "../lib/log.server";
 import {
   AssistantTurnAccumulator,
   bareToolCallUuid,
@@ -298,7 +299,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
         emit("done", {});
       } catch (err) {
-        console.error("[api.chat] stream error:", err);
+        log.error("api.chat stream error", { err });
         emit("error", { message: friendlyErrorMessage(err) });
       } finally {
         try {

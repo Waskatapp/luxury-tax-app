@@ -8,6 +8,7 @@
 // every tool module gets rate-limiting transparently — no tool-module
 // refactor needed.
 
+import { log } from "../log.server";
 import type { ShopifyAdmin } from "./graphql-client.server";
 
 type Bucket = {
@@ -48,9 +49,11 @@ export async function awaitShopifyHeadroom(storeId: string): Promise<void> {
   const need = MIN_HEADROOM - b.available;
   const waitMs = Math.ceil((need / REFILL_PER_SEC) * 1000);
   if (waitMs >= SLOW_WAIT_LOG_MS) {
-    console.warn(
-      `[shopify rate-limiter] storeId=${storeId} sleeping ${waitMs}ms for headroom (available=${b.available.toFixed(1)})`,
-    );
+    log.warn("shopify rate-limiter sleeping for headroom", {
+      storeId,
+      waitMs,
+      available: Number(b.available.toFixed(1)),
+    });
   }
   await new Promise((res) => setTimeout(res, waitMs));
   refill(b);
