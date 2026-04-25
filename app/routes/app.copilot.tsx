@@ -5,7 +5,9 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
   Banner,
   BlockStack,
+  Button,
   Card,
+  InlineStack,
   Layout,
   Page,
   Text,
@@ -27,6 +29,12 @@ import {
 } from "../components/chat/ConversationSidebar";
 import { ChatInput } from "../components/chat/ChatInput";
 import { MessageBubble } from "../components/chat/MessageBubble";
+
+const SEEDED_PROMPTS = [
+  "Show me my top 5 products",
+  "How is revenue the last 30 days?",
+  "What's running low on stock?",
+];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { store } = await requireStoreAccess(request);
@@ -62,19 +70,13 @@ export default function CopilotPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [state.messages]);
 
-  // Load messages + pending action statuses when active conversation changes.
-  useEffect(() => {
-    if (!activeId) {
-      dispatch({ type: "RESET" });
-      return;
-    }
-
-    const controller = new AbortController();
-    (async () => {
+  const reloadMessages = useCallback(
+    async (signal?: AbortSignal): Promise<void> => {
+      if (!activeId) return;
       try {
         const res = await fetch(
           `/api/messages?conversationId=${encodeURIComponent(activeId)}`,
-          { signal: controller.signal },
+          { signal },
         );
         if (!res.ok) {
           dispatch({ type: "ERROR", error: `Load failed (${res.status})` });
@@ -107,10 +109,20 @@ export default function CopilotPage() {
           error: err instanceof Error ? err.message : String(err),
         });
       }
-    })();
+    },
+    [activeId],
+  );
 
+  // Load messages + pending action statuses when active conversation changes.
+  useEffect(() => {
+    if (!activeId) {
+      dispatch({ type: "RESET" });
+      return;
+    }
+    const controller = new AbortController();
+    void reloadMessages(controller.signal);
     return () => controller.abort();
-  }, [activeId]);
+  }, [activeId, reloadMessages]);
 
   const handleNew = useCallback(async () => {
     setCreating(true);
@@ -148,7 +160,7 @@ export default function CopilotPage() {
   );
 
   const handleSend = useCallback(
-    (text: string) => {
+    async (text: string) => {
       if (!activeId) return;
       // Mirror the server-side title logic optimistically.
       const nowIso = new Date().toISOString();
@@ -165,9 +177,12 @@ export default function CopilotPage() {
         next.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
         return next;
       });
-      sendChatMessage({ conversationId: activeId, text, dispatch });
+      await sendChatMessage({ conversationId: activeId, text, dispatch });
+      // Replace streamed bubbles with persisted state. Picks up synthetic
+      // tool_result rows so analytics cards (Phase 9) render inline.
+      await reloadMessages();
     },
-    [activeId],
+    [activeId, reloadMessages],
   );
 
   const handleApprove = useCallback(
@@ -196,6 +211,7 @@ export default function CopilotPage() {
         // Trigger continuation either way — Gemini summarizes success or
         // explains the error from the synthesized tool_result row.
         await continueChat({ conversationId: activeId, dispatch });
+        await reloadMessages();
       } catch (err) {
         dispatch({
           type: "ERROR",
@@ -203,7 +219,7 @@ export default function CopilotPage() {
         });
       }
     },
-    [activeId],
+    [activeId, reloadMessages],
   );
 
   const handleReject = useCallback(
@@ -217,6 +233,7 @@ export default function CopilotPage() {
           body: JSON.stringify({ toolCallId }),
         });
         await continueChat({ conversationId: activeId, dispatch });
+        await reloadMessages();
       } catch (err) {
         dispatch({
           type: "ERROR",
@@ -224,7 +241,7 @@ export default function CopilotPage() {
         });
       }
     },
-    [activeId],
+    [activeId, reloadMessages],
   );
 
   const sending = state.phase === "streaming";
@@ -258,10 +275,23 @@ export default function CopilotPage() {
                   Start a new conversation to begin.
                 </Text>
               ) : state.messages.length === 0 ? (
-                <Text as="p" tone="subdued">
-                  Tell the Copilot what you want to change — pricing, product
-                  descriptions, discounts, analytics.
-                </Text>
+                <BlockStack gap="300">
+                  <Text as="p" tone="subdued">
+                    Tell the Copilot what you want to change — pricing, product
+                    descriptions, discounts, analytics. Or try one of these:
+                  </Text>
+                  <InlineStack gap="200" wrap>
+                    {SEEDED_PROMPTS.map((prompt) => (
+                      <Button
+                        key={prompt}
+                        onClick={() => handleSend(prompt)}
+                        disabled={sending}
+                      >
+                        {prompt}
+                      </Button>
+                    ))}
+                  </InlineStack>
+                </BlockStack>
               ) : (
                 <div
                   style={{

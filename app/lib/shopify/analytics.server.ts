@@ -5,6 +5,19 @@ import {
   type GraphQLResult,
   type ShopifyAdmin,
 } from "./graphql-client.server";
+import type {
+  AnalyticsInventoryAtRiskResult,
+  AnalyticsResult,
+  AnalyticsRevenueResult,
+  AnalyticsTopProductsResult,
+} from "./analytics.types";
+
+export type {
+  AnalyticsInventoryAtRiskResult,
+  AnalyticsResult,
+  AnalyticsRevenueResult,
+  AnalyticsTopProductsResult,
+};
 
 export type ToolModuleResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -13,54 +26,6 @@ const GetAnalyticsInput = z.object({
   days: z.number().int().min(1).max(365).default(30),
   threshold: z.number().int().min(0).max(1000).default(5),
 });
-
-export type AnalyticsTopProductsResult = {
-  metric: "top_products";
-  rangeDays: number;
-  products: Array<{
-    id: string;
-    title: string;
-    handle: string;
-    status: string;
-    totalInventory: number | null;
-    priceRange: {
-      min: { amount: string; currencyCode: string };
-      max: { amount: string; currencyCode: string };
-    };
-  }>;
-  note: string;
-};
-
-export type AnalyticsRevenueResult = {
-  metric: "revenue";
-  rangeDays: number;
-  startsAt: string;
-  endsAt: string;
-  orderCount: number;
-  totalRevenue: string;
-  currencyCode: string;
-  cappedAtPageLimit: boolean;
-  note: string;
-};
-
-export type AnalyticsInventoryAtRiskResult = {
-  metric: "inventory_at_risk";
-  threshold: number;
-  variants: Array<{
-    productId: string;
-    productTitle: string;
-    productStatus: string;
-    variantId: string;
-    variantTitle: string;
-    inventoryQuantity: number;
-  }>;
-  truncated: boolean;
-};
-
-export type AnalyticsResult =
-  | AnalyticsTopProductsResult
-  | AnalyticsRevenueResult
-  | AnalyticsInventoryAtRiskResult;
 
 const TOP_PRODUCTS_QUERY = `#graphql
   query AnalyticsTopProducts($first: Int!) {

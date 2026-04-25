@@ -1,7 +1,9 @@
 import { BlockStack, Box, InlineStack, Text } from "@shopify/polaris";
 import type { ChatMessage, PendingActionStatus } from "../../hooks/useChat";
 import { isApprovalRequiredWrite } from "../../lib/agent/tool-classifier";
+import type { AnalyticsResult } from "../../lib/shopify/analytics.types";
 import { ApprovalCard } from "./ApprovalCard";
+import { AnalyticsCard } from "./cards/AnalyticsCard";
 
 type Props = {
   message: ChatMessage;
@@ -10,6 +12,24 @@ type Props = {
   onReject: (toolCallId: string) => Promise<void> | void;
 };
 
+type ToolResultLike = {
+  type: "tool_result";
+  tool_use_id: string;
+  content: string;
+};
+
+function parseAnalytics(block: ToolResultLike): AnalyticsResult | null {
+  try {
+    const parsed = JSON.parse(block.content);
+    if (parsed && typeof parsed === "object" && "metric" in parsed) {
+      return parsed as AnalyticsResult;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function MessageBubble({
   message,
   pendingByToolCallId,
@@ -17,6 +37,37 @@ export function MessageBubble({
   onReject,
 }: Props) {
   const isUser = message.role === "user";
+
+  // Synthetic plumbing rows: all blocks are tool_result. Render any
+  // get_analytics results as inline cards; everything else is hidden.
+  const allToolResults =
+    message.content.length > 0 &&
+    message.content.every((b) => b.type === "tool_result");
+
+  if (allToolResults) {
+    const analyticsBlocks = message.content
+      .filter((b): b is ToolResultLike => b.type === "tool_result")
+      .filter((b) => b.tool_use_id.startsWith("get_analytics::"))
+      .map((b) => ({ id: b.tool_use_id, data: parseAnalytics(b) }))
+      .filter(
+        (entry): entry is { id: string; data: AnalyticsResult } =>
+          entry.data !== null,
+      );
+
+    if (analyticsBlocks.length === 0) return null;
+
+    return (
+      <InlineStack align="start" blockAlign="start">
+        <div style={{ width: "100%", maxWidth: "100%" }}>
+          <BlockStack gap="300">
+            {analyticsBlocks.map((entry) => (
+              <AnalyticsCard key={entry.id} data={entry.data} />
+            ))}
+          </BlockStack>
+        </div>
+      </InlineStack>
+    );
+  }
 
   const text = message.content
     .filter((b): b is { type: "text"; text: string } => b.type === "text")

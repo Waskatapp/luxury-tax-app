@@ -35,6 +35,7 @@ export default function App() {
             Home
           </Link>
           <Link to="/app/copilot">Copilot</Link>
+          <Link to="/app/dashboard">Dashboard</Link>
           <Link to="/app/settings/memory">Memory</Link>
         </NavMenu>
         <Outlet />

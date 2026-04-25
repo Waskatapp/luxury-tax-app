@@ -24,12 +24,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   // Hide "synthetic" user rows that only carry tool_result blocks — these are
-  // internal plumbing between agent turns, not something the merchant wrote.
+  // internal plumbing between agent turns. Exception: get_analytics tool_results
+  // surface as inline DataTable cards (Phase 9), so we keep those rows visible.
   const visible = rows.filter((m) => {
-    const blocks = m.content as unknown as Array<{ type?: string }> | null;
+    const blocks = m.content as unknown as Array<{
+      type?: string;
+      tool_use_id?: string;
+    }> | null;
     if (!Array.isArray(blocks) || blocks.length === 0) return false;
     if (m.role === "user" && blocks.every((b) => b?.type === "tool_result")) {
-      return false;
+      const hasAnalytics = blocks.some((b) =>
+        typeof b?.tool_use_id === "string" &&
+        b.tool_use_id.startsWith("get_analytics::"),
+      );
+      if (!hasAnalytics) return false;
     }
     return true;
   });
