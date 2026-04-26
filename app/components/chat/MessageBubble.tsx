@@ -44,10 +44,21 @@ function CopyButton({ text }: { text: string }) {
     }
   }
 
+  // Reads --copy-opacity from the hover/focus wrapper so the button fades
+  // in/out without layout shift. `copied` forces it visible briefly so the
+  // confirmation text is readable even after the cursor leaves.
+  const opacity = copied ? 1 : "var(--copy-opacity, 0)";
   return (
-    <Button variant="plain" onClick={handleCopy} accessibilityLabel="Copy message">
-      {copied ? "Copied!" : "Copy"}
-    </Button>
+    <div
+      style={{
+        opacity,
+        transition: "opacity 0.15s ease",
+      }}
+    >
+      <Button variant="plain" onClick={handleCopy} accessibilityLabel="Copy message">
+        {copied ? "Copied!" : "Copy"}
+      </Button>
+    </div>
   );
 }
 
@@ -119,7 +130,7 @@ export function MessageBubble({
 
   return (
     <InlineStack align={isUser ? "end" : "start"} blockAlign="start">
-      <div style={{ maxWidth: "80%" }}>
+      <UserBubbleWrapper isUser={isUser}>
         <Box
           padding="300"
           background={isUser ? "bg-surface-secondary" : "bg-surface"}
@@ -157,7 +168,45 @@ export function MessageBubble({
             ) : null}
           </BlockStack>
         </Box>
-      </div>
+      </UserBubbleWrapper>
     </InlineStack>
+  );
+}
+
+// Wraps the bubble. For user bubbles, exposes a `--copy-opacity` CSS var via
+// hover/focus state so the Copy button is visible only when the merchant is
+// pointing at the message (or has tab-focused it). Assistant bubbles render
+// the same shell with no hover behavior.
+function UserBubbleWrapper({
+  isUser,
+  children,
+}: {
+  isUser: boolean;
+  children: React.ReactNode;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+
+  if (!isUser) {
+    return <div style={{ maxWidth: "80%" }}>{children}</div>;
+  }
+
+  const visible = hovered || focused ? 1 : 0;
+
+  return (
+    <div
+      style={
+        {
+          maxWidth: "80%",
+          ["--copy-opacity" as string]: String(visible),
+        } as React.CSSProperties
+      }
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocused(true)}
+      onBlurCapture={() => setFocused(false)}
+    >
+      {children}
+    </div>
   );
 }
