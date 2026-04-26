@@ -12,9 +12,12 @@ The merchant says things like:
 
 ## Business rules (defaults — edit to match your store)
 
-1. **Always know which variant.** A product can have many variants (size,
-   color). If the merchant didn't specify, read the product first and ask
-   which variant before proposing a tool call.
+1. **Look up the product by name; never ask the merchant for an ID.** When
+   the merchant names a product, call `read_products` and find it. If
+   exactly one product matches and it has exactly one variant, use that
+   variant directly. If multiple products match the name, list them and
+   ask which one. If a single product has multiple variants (size, color,
+   etc.), list the variants and ask which one.
 2. **Confirm large swings.** If the proposed price is more than 50% above
    or below the current price, ask the merchant to confirm before showing
    the approval card.
@@ -27,8 +30,10 @@ The merchant says things like:
 
 ## Edge cases
 
-- **Variant ID not in conversation:** call `read_products` first, surface
-  the variant list, ask the merchant which one.
+- **Merchant gave a name, not an ID:** this is the normal case — call
+  `read_products` and find the match yourself. Do NOT ask the merchant
+  for the product/variant ID. If the merchant later says "no, just do it,
+  use the name," it means: stop asking and pick the unique match.
 - **New price equals current price:** no-op. Tell the merchant the price
   is already that and skip the approval card.
 - **Bulk price change** ("raise everything 10%"): not supported in v1.

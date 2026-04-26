@@ -29,27 +29,78 @@ const ExtractedItem = z.object({
 
 const ExtractedArray = z.array(ExtractedItem).max(8);
 
-const EXTRACTION_PROMPT = `You extract durable facts from a Shopify merchant's conversation with their AI assistant.
+const EXTRACTION_PROMPT = `You extract DURABLE STORE-WIDE RULES from a Shopify merchant's conversation with their AI assistant. Most merchant messages are one-off requests, NOT rules — your default output is [].
 
 Categories:
-- BRAND_VOICE — tone, style, language ("we use casual tone", "always exclamation points")
-- PRICING_RULES — strategy, discount caps, currency rules ("never discount over 30%")
-- PRODUCT_RULES — naming, description format, vendor rules ("titles must include the size")
-- CUSTOMER_RULES — customer-facing communication rules
-- STORE_CONTEXT — about the store ("coffee roaster in Toronto", "we ship internationally")
-- OPERATOR_PREFS — how the merchant prefers to work ("always show me a preview first")
+- BRAND_VOICE — voice, tone, language style ("we always write in a casual tone")
+- PRICING_RULES — store-wide pricing strategy ("never discount more than 30%")
+- PRODUCT_RULES — naming conventions, description format, vendor rules ("always include size in product titles")
+- CUSTOMER_RULES — store-wide customer communication rules
+- STORE_CONTEXT — facts about the store itself ("we are a coffee roaster in Toronto", "we ship internationally")
+- OPERATOR_PREFS — how the merchant wants the Copilot to behave ("always show me a preview first", "keep answers short")
 
-Rules:
-- Extract ONLY durable facts the merchant stated explicitly. Skip questions, transient requests, and things the assistant said.
-- Use canonical snake_case keys (brand_voice, store_location, default_discount_percent). The same key overwrites prior values, so prefer stable keys you would reuse for similar facts.
-- Each value: short, declarative, under 500 characters.
-- If nothing durable was stated, return [].
-- Never invent or paraphrase. If the merchant didn't say it, don't extract it.
+# HARD REQUIREMENT — only extract if a TRIGGER PHRASE is present
 
-Output: ONLY a JSON array, no prose, no code fences. Example:
-[{"category":"BRAND_VOICE","key":"brand_voice","value":"casual"}]
-or
-[]`;
+You MUST NOT extract anything unless the merchant uses one of these phrases (or close paraphrases) somewhere in their message:
+
+- "always …"
+- "never …"
+- "remember …" / "remember that …"
+- "from now on …"
+- "by default …"
+- "going forward …"
+- "make sure you …"
+- "we always …" / "we never …"
+- "our brand …" / "our store …" (factual statement about the business itself)
+
+If NONE of these patterns appear in the merchant's message, return [].
+
+# DO NOT EXTRACT (anti-rules — these are the most common mistakes)
+
+DO NOT extract anything from one-off action requests. These are transient, NOT rules:
+- "Change the price of X to $20" → DO NOT extract {price: 20} or {price_change_without_id: true}
+- "Update the description of Y" → DO NOT extract {product_update_identifier: ...}
+- "Make this product active" → DO NOT extract anything
+- "Show me my top products" → DO NOT extract anything
+- "Create a discount for ..." → DO NOT extract {discount_amount: ...}
+
+DO NOT extract specific values from a single request:
+- Product names ("cat food", "snowboard"), variant IDs, prices, SKUs, dates, percentages — these belong to a single action, not a rule
+- The store domain (e.g. "...myshopify.com") — that's metadata, not a fact the merchant stated
+- Meta-information about how a request is phrased ("user_didnt_provide_id", "request_uses_product_name")
+
+DO NOT extract from the assistant's text. The Assistant said: ... block is context, not a source of truth. Only extract what the MERCHANT explicitly stated.
+
+DO NOT paraphrase or invent. If the merchant said "we ship to Canada", do not extract "international shipping = true". Use the merchant's words.
+
+# Examples
+
+Merchant: "Change the price of cat food to $20"
+Output: []
+
+Merchant: "Show me my top 5 products"
+Output: []
+
+Merchant: "Update the description on the snowboard product"
+Output: []
+
+Merchant: "Always keep your answers short and to the point"
+Output: [{"category":"OPERATOR_PREFS","key":"answer_style","value":"short and to the point"}]
+
+Merchant: "Our brand voice is warm and a bit cheeky — please remember that"
+Output: [{"category":"BRAND_VOICE","key":"brand_voice","value":"warm and a bit cheeky"}]
+
+Merchant: "Never discount more than 30%"
+Output: [{"category":"PRICING_RULES","key":"max_discount_percent","value":"30"}]
+
+Merchant: "From now on, all product titles should include the size"
+Output: [{"category":"PRODUCT_RULES","key":"title_format","value":"include the size"}]
+
+# Output format
+
+JSON array only. No prose. No code fences. snake_case keys.
+
+If nothing durable was stated, return: []`;
 
 export type ExtractInput = {
   storeId: string;
