@@ -50,6 +50,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
+  if (request.method === "PATCH") {
+    const body = (await request.json()) as { id?: unknown; title?: unknown };
+    const id = typeof body.id === "string" ? body.id : null;
+    const titleRaw = typeof body.title === "string" ? body.title.trim() : null;
+    if (!id) return new Response("Missing id", { status: 400 });
+    if (!titleRaw) return new Response("Missing title", { status: 400 });
+    // 120-char cap matches what the UI reasonably displays in the sidebar.
+    const title = titleRaw.slice(0, 120);
+
+    const result = await prisma.conversation.updateMany({
+      where: { id, storeId: store.id },
+      data: { title },
+    });
+    if (result.count === 0) return new Response("Not found", { status: 404 });
+
+    const updated = await prisma.conversation.findFirst({
+      where: { id, storeId: store.id },
+      select: { id: true, title: true, updatedAt: true },
+    });
+    if (!updated) return new Response("Not found", { status: 404 });
+
+    return {
+      conversation: {
+        id: updated.id,
+        title: updated.title,
+        updatedAt: updated.updatedAt.toISOString(),
+      },
+    };
+  }
+
   if (request.method === "DELETE") {
     const body = (await request.json()) as { id?: unknown };
     const id = typeof body.id === "string" ? body.id : null;

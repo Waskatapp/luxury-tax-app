@@ -1,11 +1,15 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
+  ActionList,
   BlockStack,
   Button,
   Card,
+  FormLayout,
   InlineStack,
   Modal,
+  Popover,
   Text,
+  TextField,
 } from "@shopify/polaris";
 
 export type ConversationSummary = {
@@ -20,8 +24,48 @@ type Props = {
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => Promise<void> | void;
   creating?: boolean;
 };
+
+type Group = {
+  label: string;
+  items: ConversationSummary[];
+};
+
+// Pure derivation from updatedAt — buckets relative to "now" using local
+// midnight, so a conversation updated at 23:59 yesterday lands in "Yesterday"
+// even if it's currently 00:01 today.
+function groupConversations(conversations: ConversationSummary[]): Group[] {
+  const now = new Date();
+  const startOfToday = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  ).getTime();
+  const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
+  const startOfThisWeek = startOfToday - 7 * 24 * 60 * 60 * 1000;
+
+  const today: ConversationSummary[] = [];
+  const yesterday: ConversationSummary[] = [];
+  const thisWeek: ConversationSummary[] = [];
+  const earlier: ConversationSummary[] = [];
+
+  for (const c of conversations) {
+    const t = new Date(c.updatedAt).getTime();
+    if (t >= startOfToday) today.push(c);
+    else if (t >= startOfYesterday) yesterday.push(c);
+    else if (t >= startOfThisWeek) thisWeek.push(c);
+    else earlier.push(c);
+  }
+
+  const groups: Group[] = [];
+  if (today.length) groups.push({ label: "Today", items: today });
+  if (yesterday.length) groups.push({ label: "Yesterday", items: yesterday });
+  if (thisWeek.length) groups.push({ label: "This week", items: thisWeek });
+  if (earlier.length) groups.push({ label: "Earlier", items: earlier });
+  return groups;
+}
 
 export function ConversationSidebar({
   conversations,
@@ -29,21 +73,60 @@ export function ConversationSidebar({
   onSelect,
   onNew,
   onDelete,
+  onRename,
   creating,
 }: Props) {
   const [pendingDelete, setPendingDelete] = useState<ConversationSummary | null>(
     null,
   );
+  const [pendingRename, setPendingRename] = useState<ConversationSummary | null>(
+    null,
+  );
+  const [renameValue, setRenameValue] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
-  const closeModal = () => setPendingDelete(null);
+  const groups = useMemo(() => groupConversations(conversations), [conversations]);
 
+  const closeDeleteModal = () => setPendingDelete(null);
   const confirmDelete = () => {
     if (!pendingDelete) return;
     onDelete(pendingDelete.id);
     setPendingDelete(null);
   };
 
-  const pendingTitle =
+  const closeRenameModal = () => {
+    setPendingRename(null);
+    setRenameValue("");
+  };
+  const confirmRename = async () => {
+    if (!pendingRename) return;
+    const trimmed = renameValue.trim();
+    if (!trimmed) return;
+    setRenaming(true);
+    try {
+      await onRename(pendingRename.id, trimmed);
+      closeRenameModal();
+    } finally {
+      setRenaming(false);
+    }
+  };
+
+  const openMenu = (id: string) => setOpenMenuId(id);
+  const closeMenu = () => setOpenMenuId(null);
+
+  const startRename = (c: ConversationSummary) => {
+    setPendingRename(c);
+    setRenameValue(c.title ?? "");
+    closeMenu();
+  };
+
+  const startDelete = (c: ConversationSummary) => {
+    setPendingDelete(c);
+    closeMenu();
+  };
+
+  const pendingDeleteTitle =
     pendingDelete?.title ?? `Chat ${pendingDelete?.id.slice(0, 6) ?? ""}`;
 
   return (
@@ -59,41 +142,104 @@ export function ConversationSidebar({
               No conversations yet.
             </Text>
           ) : (
-            <BlockStack gap="150">
-              {conversations.map((c) => {
-                const isActive = c.id === activeId;
-                return (
-                  <InlineStack key={c.id} gap="100" wrap={false}>
-                    <div style={{ flex: 1 }}>
-                      <Button
-                        fullWidth
-                        textAlign="start"
-                        pressed={isActive}
-                        onClick={() => onSelect(c.id)}
-                      >
-                        {c.title ?? `Chat ${c.id.slice(0, 6)}`}
-                      </Button>
-                    </div>
-                    <Button
-                      accessibilityLabel={`Delete chat ${c.id.slice(0, 6)}`}
-                      onClick={() => setPendingDelete(c)}
-                      variant="tertiary"
-                      tone="critical"
-                    >
-                      Delete
-                    </Button>
-                  </InlineStack>
-                );
-              })}
+            <BlockStack gap="300">
+              {groups.map((group) => (
+                <BlockStack key={group.label} gap="100">
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    {group.label}
+                  </Text>
+                  <BlockStack gap="100">
+                    {group.items.map((c) => {
+                      const isActive = c.id === activeId;
+                      const isMenuOpen = openMenuId === c.id;
+                      return (
+                        <InlineStack key={c.id} gap="100" wrap={false}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <Button
+                              fullWidth
+                              textAlign="start"
+                              pressed={isActive}
+                              onClick={() => onSelect(c.id)}
+                            >
+                              {c.title ?? `Chat ${c.id.slice(0, 6)}`}
+                            </Button>
+                          </div>
+                          <Popover
+                            active={isMenuOpen}
+                            onClose={closeMenu}
+                            preferredAlignment="right"
+                            activator={
+                              <Button
+                                accessibilityLabel={`More actions for ${c.title ?? c.id.slice(0, 6)}`}
+                                onClick={() =>
+                                  isMenuOpen ? closeMenu() : openMenu(c.id)
+                                }
+                                variant="tertiary"
+                              >
+                                ⋯
+                              </Button>
+                            }
+                          >
+                            <ActionList
+                              items={[
+                                {
+                                  content: "Rename",
+                                  onAction: () => startRename(c),
+                                },
+                                {
+                                  content: "Delete",
+                                  destructive: true,
+                                  onAction: () => startDelete(c),
+                                },
+                              ]}
+                            />
+                          </Popover>
+                        </InlineStack>
+                      );
+                    })}
+                  </BlockStack>
+                </BlockStack>
+              ))}
             </BlockStack>
           )}
         </BlockStack>
       </Card>
 
+      {pendingRename ? (
+        <Modal
+          open
+          onClose={closeRenameModal}
+          title="Rename conversation"
+          primaryAction={{
+            content: "Save",
+            onAction: confirmRename,
+            loading: renaming,
+            disabled: renaming || renameValue.trim().length === 0,
+          }}
+          secondaryActions={[
+            { content: "Cancel", onAction: closeRenameModal, disabled: renaming },
+          ]}
+        >
+          <Modal.Section>
+            <FormLayout>
+              <TextField
+                label="Title"
+                value={renameValue}
+                onChange={setRenameValue}
+                autoComplete="off"
+                maxLength={120}
+                showCharacterCount
+                disabled={renaming}
+              />
+            </FormLayout>
+          </Modal.Section>
+        </Modal>
+      ) : null}
+
       {pendingDelete ? (
         <Modal
           open
-          onClose={closeModal}
+          onClose={closeDeleteModal}
           title="Delete this conversation?"
           primaryAction={{
             content: "Yes, delete",
@@ -101,16 +247,17 @@ export function ConversationSidebar({
             onAction: confirmDelete,
           }}
           secondaryActions={[
-            {
-              content: "No, keep it",
-              onAction: closeModal,
-            },
+            { content: "No, keep it", onAction: closeDeleteModal },
           ]}
         >
           <Modal.Section>
             <BlockStack gap="200">
               <Text as="p">
-                You're about to delete <Text as="span" fontWeight="semibold">{pendingTitle}</Text>.
+                You're about to delete{" "}
+                <Text as="span" fontWeight="semibold">
+                  {pendingDeleteTitle}
+                </Text>
+                .
               </Text>
               <Text as="p" tone="subdued">
                 This can't be undone. The whole chat history and any approved

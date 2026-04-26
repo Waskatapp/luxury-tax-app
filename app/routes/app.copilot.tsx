@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -36,6 +42,10 @@ const SEEDED_PROMPTS = [
   "What's running low on stock?",
 ];
 
+// Distance from scroll bottom (in px) below which we consider the merchant
+// "at the bottom" — auto-scroll on new messages stays on, no pop-up button.
+const AT_BOTTOM_THRESHOLD = 80;
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { store } = await requireStoreAccess(request);
 
@@ -66,9 +76,39 @@ export default function CopilotPage() {
   const [state, dispatch] = useReducer(chatReducer, INITIAL_CHAT_STATE);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+
+  // The retry function for the most recent failed stream. Banner shows
+  // "Try again" only when this is set + state.error is set. Cleared on
+  // success, on conversation change, on user dismiss.
+  const retryFnRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Auto-scroll on new messages only when the merchant is already at the
+  // bottom — don't yank them down if they scrolled up to read history.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [state.messages]);
+    if (isAtBottom) {
+      messagesEndRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "end",
+      });
+    }
+  }, [state.messages, state.runningTool, isAtBottom]);
+
+  const handleScroll = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setIsAtBottom(distanceFromBottom < AT_BOTTOM_THRESHOLD);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    setIsAtBottom(true);
+    messagesEndRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
+  }, []);
 
   const reloadMessages = useCallback(
     async (signal?: AbortSignal): Promise<void> => {
@@ -115,6 +155,7 @@ export default function CopilotPage() {
 
   // Load messages + pending action statuses when active conversation changes.
   useEffect(() => {
+    retryFnRef.current = null;
     if (!activeId) {
       dispatch({ type: "RESET" });
       return;
@@ -159,6 +200,22 @@ export default function CopilotPage() {
     [activeId],
   );
 
+  const handleRename = useCallback(
+    async (id: string, title: string): Promise<void> => {
+      const res = await fetch("/api/conversations", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, title }),
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { conversation: ConversationSummary };
+      setConversations((prev) =>
+        prev.map((c) => (c.id === id ? data.conversation : c)),
+      );
+    },
+    [],
+  );
+
   const handleSend = useCallback(
     async (text: string) => {
       if (!activeId) return;
@@ -177,6 +234,9 @@ export default function CopilotPage() {
         next.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
         return next;
       });
+      // Sending takes the merchant back to the bottom; clear retry state.
+      setIsAtBottom(true);
+      retryFnRef.current = null;
       const outcome = await sendChatMessage({
         conversationId: activeId,
         text,
@@ -185,7 +245,20 @@ export default function CopilotPage() {
       // Replace streamed bubbles with persisted state ONLY on success.
       // LOAD_MESSAGES clears state.error, so reloading after an error would
       // wipe the banner the merchant needs to see.
-      if (outcome === "done") await reloadMessages();
+      if (outcome === "done") {
+        retryFnRef.current = null;
+        await reloadMessages();
+      } else if (outcome === "error") {
+        // Stream blew up mid-send — let the merchant retry the same message.
+        const captured = text;
+        retryFnRef.current = async () => {
+          // Strip the busted user+assistant placeholder before retrying;
+          // reloadMessages will rehydrate from the DB on success.
+          dispatch({ type: "RESET" });
+          await reloadMessages();
+          await handleSend(captured);
+        };
+      }
     },
     [activeId, reloadMessages],
   );
@@ -193,6 +266,7 @@ export default function CopilotPage() {
   const handleApprove = useCallback(
     async (toolCallId: string) => {
       if (!activeId) return;
+      const conversationId = activeId;
       // Optimistic: mark APPROVED while the server runs the mutation.
       dispatch({ type: "TOOL_STATUS", toolCallId, status: "APPROVED" });
       try {
@@ -216,10 +290,21 @@ export default function CopilotPage() {
         // Trigger continuation either way — Gemini summarizes success or
         // explains the error from the synthesized tool_result row.
         const outcome = await continueChat({
-          conversationId: activeId,
+          conversationId,
           dispatch,
         });
-        if (outcome === "done") await reloadMessages();
+        if (outcome === "done") {
+          retryFnRef.current = null;
+          await reloadMessages();
+        } else if (outcome === "error") {
+          retryFnRef.current = async () => {
+            const o = await continueChat({ conversationId, dispatch });
+            if (o === "done") {
+              retryFnRef.current = null;
+              await reloadMessages();
+            }
+          };
+        }
       } catch (err) {
         dispatch({
           type: "ERROR",
@@ -233,6 +318,7 @@ export default function CopilotPage() {
   const handleReject = useCallback(
     async (toolCallId: string) => {
       if (!activeId) return;
+      const conversationId = activeId;
       dispatch({ type: "TOOL_STATUS", toolCallId, status: "REJECTED" });
       try {
         await fetch("/api/tool-reject", {
@@ -241,10 +327,21 @@ export default function CopilotPage() {
           body: JSON.stringify({ toolCallId }),
         });
         const outcome = await continueChat({
-          conversationId: activeId,
+          conversationId,
           dispatch,
         });
-        if (outcome === "done") await reloadMessages();
+        if (outcome === "done") {
+          retryFnRef.current = null;
+          await reloadMessages();
+        } else if (outcome === "error") {
+          retryFnRef.current = async () => {
+            const o = await continueChat({ conversationId, dispatch });
+            if (o === "done") {
+              retryFnRef.current = null;
+              await reloadMessages();
+            }
+          };
+        }
       } catch (err) {
         dispatch({
           type: "ERROR",
@@ -255,8 +352,16 @@ export default function CopilotPage() {
     [activeId, reloadMessages],
   );
 
+  const handleRetry = useCallback(async () => {
+    const fn = retryFnRef.current;
+    if (!fn) return;
+    retryFnRef.current = null;
+    await fn();
+  }, []);
+
   const sending = state.phase === "streaming";
   const hasActive = activeId !== null;
+  const canRetry = state.error !== null && retryFnRef.current !== null;
 
   return (
     <Page title="Copilot" fullWidth>
@@ -268,6 +373,7 @@ export default function CopilotPage() {
             onSelect={setActiveId}
             onNew={handleNew}
             onDelete={handleDelete}
+            onRename={handleRename}
             creating={creating}
           />
         </Layout.Section>
@@ -276,7 +382,15 @@ export default function CopilotPage() {
           <Card>
             <BlockStack gap="400">
               {state.error ? (
-                <Banner tone="critical" title="Something went wrong">
+                <Banner
+                  tone="critical"
+                  title="Something went wrong"
+                  action={
+                    canRetry
+                      ? { content: "Try again", onAction: handleRetry }
+                      : undefined
+                  }
+                >
                   <p>{state.error}</p>
                 </Banner>
               ) : null}
@@ -304,26 +418,44 @@ export default function CopilotPage() {
                   </InlineStack>
                 </BlockStack>
               ) : (
-                <div
-                  style={{
-                    maxHeight: 520,
-                    overflowY: "auto",
-                    paddingRight: 4,
-                  }}
-                >
-                  <BlockStack gap="300">
-                    {state.messages.map((m) => (
-                      <MessageBubble
-                        key={m.id}
-                        message={m}
-                        pendingByToolCallId={state.pendingByToolCallId}
-                        runningTool={state.runningTool}
-                        onApprove={handleApprove}
-                        onReject={handleReject}
-                      />
-                    ))}
-                    <div ref={messagesEndRef} />
-                  </BlockStack>
+                <div style={{ position: "relative" }}>
+                  <div
+                    ref={messagesContainerRef}
+                    onScroll={handleScroll}
+                    style={{
+                      maxHeight: 520,
+                      overflowY: "auto",
+                      paddingRight: 4,
+                    }}
+                  >
+                    <BlockStack gap="300">
+                      {state.messages.map((m) => (
+                        <MessageBubble
+                          key={m.id}
+                          message={m}
+                          pendingByToolCallId={state.pendingByToolCallId}
+                          runningTool={state.runningTool}
+                          onApprove={handleApprove}
+                          onReject={handleReject}
+                        />
+                      ))}
+                      <div ref={messagesEndRef} />
+                    </BlockStack>
+                  </div>
+                  {!isAtBottom ? (
+                    <div
+                      style={{
+                        position: "absolute",
+                        bottom: 12,
+                        right: 16,
+                        zIndex: 1,
+                      }}
+                    >
+                      <Button onClick={scrollToBottom} variant="primary">
+                        ↓ Latest
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
               )}
 
