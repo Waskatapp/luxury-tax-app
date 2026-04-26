@@ -1,4 +1,5 @@
-import { BlockStack, Box, InlineStack, Text } from "@shopify/polaris";
+import { useState } from "react";
+import { BlockStack, Box, Button, InlineStack, Text } from "@shopify/polaris";
 import type { ChatMessage, PendingActionStatus } from "../../hooks/useChat";
 import { isApprovalRequiredWrite } from "../../lib/agent/tool-classifier";
 import type { AnalyticsResult } from "../../lib/shopify/analytics.types";
@@ -17,6 +18,38 @@ type ToolResultLike = {
   tool_use_id: string;
   content: string;
 };
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback for older browsers / non-secure contexts.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard blocked — fail silently rather than alarming the merchant.
+    }
+  }
+
+  return (
+    <Button variant="plain" onClick={handleCopy} accessibilityLabel="Copy message">
+      {copied ? "Copied!" : "Copy"}
+    </Button>
+  );
+}
 
 function parseAnalytics(block: ToolResultLike): AnalyticsResult | null {
   try {
@@ -95,9 +128,12 @@ export function MessageBubble({
           borderRadius="300"
         >
           <BlockStack gap="200">
-            <Text as="span" variant="bodySm" tone="subdued">
-              {isUser ? "You" : "Copilot"}
-            </Text>
+            <InlineStack align="space-between" blockAlign="center" wrap={false}>
+              <Text as="span" variant="bodySm" tone="subdued">
+                {isUser ? "You" : "Copilot"}
+              </Text>
+              {isUser && text ? <CopyButton text={text} /> : null}
+            </InlineStack>
             {text || (message.status === "streaming" && toolUses.length === 0) ? (
               <Text as="p" variant="bodyMd">
                 {text || "…"}
