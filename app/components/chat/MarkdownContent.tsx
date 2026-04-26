@@ -1,19 +1,90 @@
-import { forwardRef } from "react";
+import { Children, forwardRef, Fragment, isValidElement } from "react";
+import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Box, Divider, Link, Text } from "@shopify/polaris";
+import { Badge, Box, Divider, Link, Text } from "@shopify/polaris";
 
-// Renders Gemini's markdown output (bold, lists, headers, links, code,
-// tables) with Polaris primitives so the chat looks native to Shopify
-// admin. react-markdown ignores raw HTML by default — no DOMPurify needed.
+// Renders Gemini's markdown output with Polaris primitives. Forwarded ref
+// lets the parent CopyButton read `.innerText` for plain-text copy.
 //
-// Forwarded ref points at the wrapping <div> so the parent (MessageBubble's
-// CopyButton) can read .innerText for plain-text copy without re-parsing
-// markdown source.
+// Beyond the basics, we walk text nodes for known status tokens (ACTIVE,
+// DRAFT, etc.) and replace them with Polaris <Badge> components so a chat
+// listing of products visually matches the Shopify admin.
 
 type Props = {
   text: string;
 };
+
+type BadgeTone = "success" | "info" | "warning" | "attention" | "critical";
+
+// Standalone words that get auto-rendered as Polaris badges. Case-sensitive
+// — the system prompt instructs the agent to emit these uppercase, so a
+// stray "active" in prose won't accidentally badge.
+const STATUS_BADGE_TONE: Record<string, BadgeTone> = {
+  ACTIVE: "success",
+  EXECUTED: "success",
+  APPROVED: "success",
+  DRAFT: "info",
+  PENDING: "warning",
+  ARCHIVED: "attention",
+  REJECTED: "attention",
+  FAILED: "critical",
+};
+
+const STATUS_TOKEN_RE = /\b(ACTIVE|EXECUTED|APPROVED|DRAFT|PENDING|ARCHIVED|REJECTED|FAILED)\b/g;
+
+function replaceStatusTokensInString(input: string, keyPrefix: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  STATUS_TOKEN_RE.lastIndex = 0;
+  while ((match = STATUS_TOKEN_RE.exec(input)) !== null) {
+    if (match.index > lastIndex) {
+      out.push(input.slice(lastIndex, match.index));
+    }
+    const token = match[1];
+    out.push(
+      <Badge key={`${keyPrefix}-${match.index}`} tone={STATUS_BADGE_TONE[token]}>
+        {token}
+      </Badge>,
+    );
+    lastIndex = match.index + token.length;
+  }
+  if (lastIndex < input.length) {
+    out.push(input.slice(lastIndex));
+  }
+  return out;
+}
+
+// Recursively walk markdown children, replacing standalone status tokens in
+// any leaf strings with Polaris badges. Non-string nodes (nested formatting
+// like <strong>) are passed through unchanged.
+function withStatusBadges(children: ReactNode, keyPrefix = "s"): ReactNode {
+  if (typeof children === "string") {
+    if (!STATUS_TOKEN_RE.test(children)) return children;
+    return (
+      <>
+        {replaceStatusTokensInString(children, keyPrefix).map((part, i) => (
+          <Fragment key={i}>{part}</Fragment>
+        ))}
+      </>
+    );
+  }
+  if (Array.isArray(children)) {
+    return children.map((child, i) => (
+      <Fragment key={i}>{withStatusBadges(child, `${keyPrefix}-${i}`)}</Fragment>
+    ));
+  }
+  if (isValidElement(children)) {
+    return children;
+  }
+  return children;
+}
+
+// Helper for component overrides — pulls children through the badge walker.
+function badgify(children: ReactNode): ReactNode {
+  return Children.map(children, (child, i) => withStatusBadges(child, `c${i}`));
+}
 
 export const MarkdownContent = forwardRef<HTMLDivElement, Props>(
   function MarkdownContent({ text }, ref) {
@@ -56,15 +127,34 @@ export const MarkdownContent = forwardRef<HTMLDivElement, Props>(
             padding: 0;
           }
           .copilot-markdown table {
-            border-collapse: collapse;
-            margin: 6px 0;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin: 8px 0;
             font-size: 0.92em;
-          }
-          .copilot-markdown th,
-          .copilot-markdown td {
+            width: 100%;
             border: 1px solid var(--p-color-border, #e1e3e5);
-            padding: 4px 8px;
+            border-radius: 8px;
+            overflow: hidden;
+          }
+          .copilot-markdown thead tr {
+            background: var(--p-color-bg-surface-secondary, #f6f6f7);
+          }
+          .copilot-markdown th {
             text-align: left;
+            font-weight: 600;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--p-color-border, #e1e3e5);
+          }
+          .copilot-markdown td {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--p-color-border, #e1e3e5);
+            vertical-align: middle;
+          }
+          .copilot-markdown tbody tr:last-child td {
+            border-bottom: none;
+          }
+          .copilot-markdown tbody tr:nth-child(even) {
+            background: var(--p-color-bg-surface-secondary, #fafbfb);
           }
           .copilot-markdown blockquote {
             margin: 6px 0;
@@ -78,14 +168,17 @@ export const MarkdownContent = forwardRef<HTMLDivElement, Props>(
           components={{
             p: ({ children }) => (
               <Text as="p" variant="bodyMd">
-                {children}
+                {badgify(children)}
               </Text>
             ),
             strong: ({ children }) => (
               <Text as="span" variant="bodyMd" fontWeight="semibold">
-                {children}
+                {badgify(children)}
               </Text>
             ),
+            li: ({ children }) => <li>{badgify(children)}</li>,
+            td: ({ children }) => <td>{badgify(children)}</td>,
+            th: ({ children }) => <th>{badgify(children)}</th>,
             h1: ({ children }) => (
               <Text as="h3" variant="headingSm">
                 {children}
