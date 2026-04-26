@@ -13,7 +13,6 @@ import {
   BlockStack,
   Button,
   Card,
-  InlineStack,
   Layout,
   Page,
   Text,
@@ -39,12 +38,7 @@ import {
   MemoryToastStack,
   type MemoryToastEntry,
 } from "../components/chat/MemoryToast";
-
-const SEEDED_PROMPTS = [
-  "Show me my top 5 products",
-  "How is revenue the last 30 days?",
-  "What's running low on stock?",
-];
+import { EmptyStateGuide } from "../components/chat/EmptyStateGuide";
 
 // Distance from scroll bottom (in px) below which we consider the merchant
 // "at the bottom" — auto-scroll on new messages stays on, no pop-up button.
@@ -433,23 +427,7 @@ export default function CopilotPage() {
                   Start a new conversation to begin.
                 </Text>
               ) : state.messages.length === 0 ? (
-                <BlockStack gap="300">
-                  <Text as="p" tone="subdued">
-                    Tell the Copilot what you want to change — pricing, product
-                    descriptions, discounts, analytics. Or try one of these:
-                  </Text>
-                  <InlineStack gap="200" wrap>
-                    {SEEDED_PROMPTS.map((prompt) => (
-                      <Button
-                        key={prompt}
-                        onClick={() => handleSend(prompt)}
-                        disabled={sending}
-                      >
-                        {prompt}
-                      </Button>
-                    ))}
-                  </InlineStack>
-                </BlockStack>
+                <EmptyStateGuide onSelect={handleSend} disabled={sending} />
               ) : (
                 <div style={{ position: "relative" }}>
                   <div

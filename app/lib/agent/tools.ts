@@ -27,12 +27,17 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "read_collections",
     description:
-      "List collections (product groupings) in the store. Returns id, title, handle, productsCount, and updatedAt for each. Defaults to the first 20.",
+      "Search and list collections (product groupings). Returns rich data per collection: id, title, handle, products count, updatedAt, a description preview (~300 chars), sortOrder, SEO title and description, AND `rules` for smart collections (the conditions like 'tag is winter' or 'price > 50' that automatically include products). Manual (hand-curated) collections have `rules: null`.\n\nAs with read_products: pass `query` with bare keywords to do multi-field search across title, description, and metadata — that's the agentic default. Field-prefixed forms narrow: `title:winter`, `collection_type:smart`, `updated_at:>2026-01-01`. If a search returns nothing, retry with broader keywords from the merchant's phrasing before giving up. The merchant doesn't know collection IDs; they think in titles, themes, or descriptions of what's in them.\n\nUse the `rules` field to explain to the merchant WHY a product is or isn't in a smart collection (e.g. 'New Arrivals' might be `tag is new` — products without that tag won't appear).",
     parametersJsonSchema: {
       type: "object",
       properties: {
         first: { type: "integer", minimum: 1, maximum: 50 },
         after: { type: "string" },
+        query: {
+          type: "string",
+          description:
+            "Shopify search query. Bare keywords search across title, description, and tags — use for general lookup. Examples: `winter`, `sale`, `new arrivals`. Field forms: `title:winter`, `collection_type:smart`, `collection_type:custom`. If nothing matches, retry with a different keyword.",
+        },
       },
     },
   },
