@@ -6,6 +6,16 @@ import type { ChatAction, ChatMessage } from "./useChat";
 // clobber the just-set state.error and the merchant would see nothing).
 export type StreamOutcome = "done" | "error" | "truncated";
 
+// Memory entries the server saved after this turn (Phase: V1 polish Tier 3).
+// The server emits one `memory_saved` SSE event per entry AFTER `done` but
+// before closing the stream. Consumers wire onMemorySaved to surface toasts.
+export type MemorySavedEntry = {
+  id: string;
+  category: string;
+  key: string;
+  value: string;
+};
+
 // Raw-fetch SSE consumer. useFetcher buffers until complete; EventSource is
 // GET-only. Both are wrong for streaming chat (CLAUDE.md rule #4).
 export async function sendChatMessage(params: {
@@ -13,8 +23,9 @@ export async function sendChatMessage(params: {
   text: string;
   dispatch: Dispatch<ChatAction>;
   signal?: AbortSignal;
+  onMemorySaved?: (entry: MemorySavedEntry) => void;
 }): Promise<StreamOutcome> {
-  const { conversationId, text, dispatch, signal } = params;
+  const { conversationId, text, dispatch, signal, onMemorySaved } = params;
 
   const assistantId = generateId("assistant");
   const userMessage: ChatMessage = {
@@ -31,6 +42,7 @@ export async function sendChatMessage(params: {
     assistantId,
     dispatch,
     signal,
+    onMemorySaved,
   });
 }
 
@@ -41,8 +53,9 @@ export async function continueChat(params: {
   conversationId: string;
   dispatch: Dispatch<ChatAction>;
   signal?: AbortSignal;
+  onMemorySaved?: (entry: MemorySavedEntry) => void;
 }): Promise<StreamOutcome> {
-  const { conversationId, dispatch, signal } = params;
+  const { conversationId, dispatch, signal, onMemorySaved } = params;
 
   const assistantId = generateId("assistant");
   dispatch({ type: "CONTINUE_START", assistantId });
@@ -52,6 +65,7 @@ export async function continueChat(params: {
     assistantId,
     dispatch,
     signal,
+    onMemorySaved,
   });
 }
 
@@ -60,8 +74,9 @@ async function streamChatTurn(params: {
   assistantId: string;
   dispatch: Dispatch<ChatAction>;
   signal?: AbortSignal;
+  onMemorySaved?: (entry: MemorySavedEntry) => void;
 }): Promise<StreamOutcome> {
-  const { body, assistantId, dispatch, signal } = params;
+  const { body, assistantId, dispatch, signal, onMemorySaved } = params;
 
   let response: Response;
   try {
@@ -100,7 +115,7 @@ async function streamChatTurn(params: {
       while (sep !== -1) {
         const rawFrame = buffer.slice(0, sep);
         buffer = buffer.slice(sep + 2);
-        handleFrame(rawFrame, assistantId, dispatch, tracker);
+        handleFrame(rawFrame, assistantId, dispatch, tracker, onMemorySaved);
         sep = buffer.indexOf("\n\n");
       }
     }
@@ -116,6 +131,7 @@ function handleFrame(
   messageId: string,
   dispatch: Dispatch<ChatAction>,
   tracker: { outcome: StreamOutcome },
+  onMemorySaved?: (entry: MemorySavedEntry) => void,
 ) {
   let event: string | null = null;
   let dataStr: string | null = null;
@@ -133,6 +149,10 @@ function handleFrame(
     tool_name?: string;
     tool_input?: unknown;
     message?: string;
+    id?: string;
+    category?: string;
+    key?: string;
+    value?: string;
   };
   try {
     data = JSON.parse(dataStr);
@@ -158,6 +178,16 @@ function handleFrame(
         type: "TOOL_RUNNING",
         toolName: String(data.tool_name ?? ""),
       });
+      return;
+    case "memory_saved":
+      if (onMemorySaved && typeof data.id === "string") {
+        onMemorySaved({
+          id: data.id,
+          category: String(data.category ?? ""),
+          key: String(data.key ?? ""),
+          value: String(data.value ?? ""),
+        });
+      }
       return;
     case "error":
       tracker.outcome = "error";

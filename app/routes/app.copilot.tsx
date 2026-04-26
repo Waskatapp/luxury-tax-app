@@ -35,6 +35,10 @@ import {
 } from "../components/chat/ConversationSidebar";
 import { ChatInput } from "../components/chat/ChatInput";
 import { MessageBubble } from "../components/chat/MessageBubble";
+import {
+  MemoryToastStack,
+  type MemoryToastEntry,
+} from "../components/chat/MemoryToast";
 
 const SEEDED_PROMPTS = [
   "Show me my top 5 products",
@@ -74,6 +78,29 @@ export default function CopilotPage() {
   );
   const [creating, setCreating] = useState(false);
   const [state, dispatch] = useReducer(chatReducer, INITIAL_CHAT_STATE);
+  const [memoryToasts, setMemoryToasts] = useState<MemoryToastEntry[]>([]);
+
+  const handleMemorySaved = useCallback((entry: MemoryToastEntry) => {
+    // Append; auto-dismiss inside the toast component manages its own
+    // lifetime, but a 4-toast cap keeps the stack readable.
+    setMemoryToasts((prev) => [...prev, entry].slice(-4));
+  }, []);
+
+  const handleMemoryDismiss = useCallback((id: string) => {
+    setMemoryToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const handleMemoryUndo = useCallback(async (id: string) => {
+    setMemoryToasts((prev) => prev.filter((t) => t.id !== id));
+    await fetch("/api/memory", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).catch(() => {
+      // If undo fails, the toast is already gone — surface nothing.
+      // The merchant can re-delete from /app/settings/memory.
+    });
+  }, []);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
@@ -241,6 +268,7 @@ export default function CopilotPage() {
         conversationId: activeId,
         text,
         dispatch,
+        onMemorySaved: handleMemorySaved,
       });
       // Replace streamed bubbles with persisted state ONLY on success.
       // LOAD_MESSAGES clears state.error, so reloading after an error would
@@ -260,7 +288,7 @@ export default function CopilotPage() {
         };
       }
     },
-    [activeId, reloadMessages],
+    [activeId, reloadMessages, handleMemorySaved],
   );
 
   const handleApprove = useCallback(
@@ -365,6 +393,11 @@ export default function CopilotPage() {
 
   return (
     <Page title="Copilot" fullWidth>
+      <MemoryToastStack
+        toasts={memoryToasts}
+        onUndo={handleMemoryUndo}
+        onDismiss={handleMemoryDismiss}
+      />
       <Layout>
         <Layout.Section variant="oneThird">
           <ConversationSidebar

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Badge,
   BlockStack,
@@ -26,6 +26,18 @@ const TOOL_DISPLAY: Record<string, { verb: string; emoji?: string }> = {
   create_discount: { verb: "Create discount" },
 };
 
+// Tools that have a meaningful "before" state worth fetching.
+const DIFF_TOOLS = new Set([
+  "update_product_price",
+  "update_product_description",
+  "update_product_status",
+]);
+
+type SnapshotResponse = {
+  toolName: string;
+  before: unknown;
+};
+
 export function ApprovalCard({
   toolCallId,
   toolName,
@@ -35,10 +47,38 @@ export function ApprovalCard({
   onReject,
 }: Props) {
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const [snapshot, setSnapshot] = useState<unknown>(null);
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
 
   const display = TOOL_DISPLAY[toolName]?.verb ?? toolName;
   const effectiveStatus: PendingActionStatus = status ?? "PENDING";
   const isPending = effectiveStatus === "PENDING";
+
+  // Fetch the before-snapshot once when the card mounts in PENDING state,
+  // for tools where it's meaningful. We don't refetch on status changes —
+  // once the merchant has approved/rejected, the diff is no longer the
+  // useful framing. Aborts cleanly if the card unmounts mid-fetch.
+  useEffect(() => {
+    if (!isPending || !DIFF_TOOLS.has(toolName)) return;
+    const controller = new AbortController();
+    setSnapshotLoading(true);
+    fetch(
+      `/api/tool-snapshot?toolCallId=${encodeURIComponent(toolCallId)}`,
+      { signal: controller.signal },
+    )
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = (await res.json()) as SnapshotResponse;
+        setSnapshot(data.before);
+      })
+      .catch(() => {
+        // Network error / abort — leave snapshot null, diff block hides.
+      })
+      .finally(() => {
+        setSnapshotLoading(false);
+      });
+    return () => controller.abort();
+  }, [isPending, toolName, toolCallId]);
 
   const handleApprove = async () => {
     if (busy) return;
@@ -77,6 +117,15 @@ export function ApprovalCard({
         </InlineStack>
 
         <ToolInputSummary toolName={toolName} toolInput={toolInput} />
+
+        {isPending && DIFF_TOOLS.has(toolName) ? (
+          <DiffBlock
+            toolName={toolName}
+            toolInput={toolInput}
+            snapshot={snapshot}
+            loading={snapshotLoading}
+          />
+        ) : null}
 
         {isPending ? (
           <InlineStack gap="200">
@@ -119,6 +168,162 @@ function StatusBadge({ status }: { status: PendingActionStatus }) {
   }
 }
 
+function DiffBlock({
+  toolName,
+  toolInput,
+  snapshot,
+  loading,
+}: {
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  snapshot: unknown;
+  loading: boolean;
+}) {
+  if (loading) {
+    return (
+      <Text as="p" variant="bodySm" tone="subdued">
+        Loading current value…
+      </Text>
+    );
+  }
+  // No snapshot — silently hide the block; ToolInputSummary already shows
+  // the new value above.
+  if (snapshot === null || typeof snapshot !== "object") return null;
+
+  const snap = snapshot as Record<string, unknown>;
+
+  if (toolName === "update_product_price") {
+    const oldPrice = stringOr(snap.price, null);
+    const newPrice = stringOr(toolInput.newPrice, null);
+    if (!oldPrice || !newPrice) return null;
+    const productTitle = stringOr(snap.productTitle, null);
+    const oldNum = parseFloat(oldPrice);
+    const newNum = parseFloat(newPrice);
+    const direction =
+      Number.isFinite(oldNum) && Number.isFinite(newNum)
+        ? newNum > oldNum
+          ? "up"
+          : newNum < oldNum
+            ? "down"
+            : "same"
+        : "same";
+    return (
+      <DiffShell title={productTitle ? `Price for ${productTitle}` : "Price"}>
+        <InlineStack gap="200" blockAlign="center" wrap={false}>
+          <Text as="span" variant="bodyMd" tone="subdued">
+            ${oldPrice}
+          </Text>
+          <Text as="span" variant="bodyMd" tone="subdued">
+            →
+          </Text>
+          <Text
+            as="span"
+            variant="bodyMd"
+            fontWeight="semibold"
+            tone={
+              direction === "up"
+                ? "critical"
+                : direction === "down"
+                  ? "success"
+                  : undefined
+            }
+          >
+            ${newPrice}
+          </Text>
+        </InlineStack>
+      </DiffShell>
+    );
+  }
+
+  if (toolName === "update_product_status") {
+    const oldStatus = stringOr(snap.status, null);
+    const newStatus = stringOr(toolInput.status, null);
+    if (!oldStatus || !newStatus) return null;
+    const productTitle = stringOr(snap.title, null);
+    return (
+      <DiffShell title={productTitle ? `Status for ${productTitle}` : "Status"}>
+        <InlineStack gap="200" blockAlign="center" wrap={false}>
+          <Badge tone={statusTone(oldStatus)}>{oldStatus}</Badge>
+          <Text as="span" variant="bodyMd" tone="subdued">
+            →
+          </Text>
+          <Badge tone={statusTone(newStatus)}>{newStatus}</Badge>
+        </InlineStack>
+      </DiffShell>
+    );
+  }
+
+  if (toolName === "update_product_description") {
+    const oldDesc = stringOr(snap.descriptionHtml, "");
+    const newDesc = stringOr(toolInput.descriptionHtml, "");
+    if (oldDesc === null || newDesc === null) return null;
+    const oldLen = oldDesc.length;
+    const newLen = newDesc.length;
+    const delta = newLen - oldLen;
+    const productTitle = stringOr(snap.title, null);
+    return (
+      <DiffShell
+        title={
+          productTitle
+            ? `Description for ${productTitle}`
+            : "Description"
+        }
+      >
+        <Text as="p" variant="bodyMd">
+          <Text as="span" tone="subdued">
+            {oldLen.toLocaleString()} chars
+          </Text>{" "}
+          →{" "}
+          <Text as="span" fontWeight="semibold">
+            {newLen.toLocaleString()} chars
+          </Text>{" "}
+          <Text
+            as="span"
+            tone={delta < 0 ? "critical" : delta > 0 ? "success" : "subdued"}
+          >
+            ({delta > 0 ? "+" : ""}
+            {delta.toLocaleString()})
+          </Text>
+        </Text>
+      </DiffShell>
+    );
+  }
+
+  return null;
+}
+
+function DiffShell({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Box
+      padding="200"
+      background="bg-surface"
+      borderColor="border"
+      borderWidth="025"
+      borderRadius="200"
+    >
+      <BlockStack gap="100">
+        <Text as="span" variant="bodySm" tone="subdued">
+          {title}
+        </Text>
+        {children}
+      </BlockStack>
+    </Box>
+  );
+}
+
+function statusTone(status: string): "success" | "info" | "warning" | undefined {
+  if (status === "ACTIVE") return "success";
+  if (status === "DRAFT") return "info";
+  if (status === "ARCHIVED") return "warning";
+  return undefined;
+}
+
 function ToolInputSummary({
   toolName,
   toolInput,
@@ -126,9 +331,6 @@ function ToolInputSummary({
   toolName: string;
   toolInput: Record<string, unknown>;
 }) {
-  // Compact, human-friendly preview per tool. Keep it minimal — Phase 6 will
-  // enrich with proper before/after diffs once we fetch the before-state for
-  // the card preview (currently we only fetch on approve).
   if (toolName === "update_product_price") {
     const variant = stringOr(toolInput.variantId, "(unknown variant)");
     const price = stringOr(toolInput.newPrice, "(unknown price)");

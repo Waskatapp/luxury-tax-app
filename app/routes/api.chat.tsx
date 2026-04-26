@@ -301,6 +301,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }
 
         emit("done", {});
+
+        // Memory extraction is now inline (was fire-and-forget) so we can
+        // emit `memory_saved` events on the still-open SSE stream — the
+        // client surfaces these as Polaris toasts. Skipped on
+        // continuation-mode requests (post-approve/reject — merchant didn't
+        // say anything new) and on pure tool-call turns. The extractor
+        // itself never throws, so a slow/failed Flash-Lite call won't
+        // leak into the catch block.
+        if (typeof text === "string" && assistantTextBuffer.trim().length > 0) {
+          const saved = await extractAndStoreMemory({
+            storeId: store.id,
+            userText: text,
+            assistantText: assistantTextBuffer,
+          });
+          for (const entry of saved) {
+            emit("memory_saved", entry);
+          }
+        }
       } catch (err) {
         log.error("api.chat stream error", { err });
         emit("error", { message: friendlyErrorMessage(err) });
@@ -309,18 +327,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           controller.close();
         } catch {
           // already closed
-        }
-
-        // Fire-and-forget memory extraction. Skipped on continuation-mode
-        // requests (post-approve/reject) — the merchant didn't say anything
-        // new in that round. Also skipped if the assistant produced no text
-        // (pure tool-call turn). Errors are swallowed inside the extractor.
-        if (typeof text === "string" && assistantTextBuffer.trim().length > 0) {
-          void extractAndStoreMemory({
-            storeId: store.id,
-            userText: text,
-            assistantText: assistantTextBuffer,
-          });
         }
       }
     },

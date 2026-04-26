@@ -57,30 +57,50 @@ export type ExtractInput = {
   assistantText: string;
 };
 
-// Public: fire-and-forget. Always resolves; never throws.
-export async function extractAndStoreMemory(input: ExtractInput): Promise<void> {
-  if (!input.userText.trim()) return;
+export type SavedMemoryEntry = {
+  id: string;
+  category: MemoryCategory;
+  key: string;
+  value: string;
+};
+
+// Always resolves; never throws. Returns the rows that were upserted so the
+// caller can surface a toast (Phase: V1 polish Tier 3). Returns [] on any
+// extraction failure — chat experience must never block on a parse error.
+export async function extractAndStoreMemory(
+  input: ExtractInput,
+): Promise<SavedMemoryEntry[]> {
+  if (!input.userText.trim()) return [];
 
   try {
     const items = await runExtraction(input);
+    const saved: SavedMemoryEntry[] = [];
     for (const item of items) {
-      await upsertMemory(input.storeId, {
+      const row = await upsertMemory(input.storeId, {
         category: item.category as MemoryCategory,
         key: item.key,
         value: item.value,
       });
-    }
-    if (items.length > 0) {
-      log.info("memory-extractor: stored facts", {
-        storeId: input.storeId,
-        count: items.length,
+      saved.push({
+        id: row.id,
+        category: row.category,
+        key: row.key,
+        value: row.value,
       });
     }
+    if (saved.length > 0) {
+      log.info("memory-extractor: stored facts", {
+        storeId: input.storeId,
+        count: saved.length,
+      });
+    }
+    return saved;
   } catch (err) {
     log.warn("memory-extractor: extraction failed (non-fatal)", {
       storeId: input.storeId,
       err: err instanceof Error ? err.message : String(err),
     });
+    return [];
   }
 }
 
