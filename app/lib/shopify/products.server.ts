@@ -7,11 +7,15 @@ export type ToolModuleResult<T> = { ok: true; data: T } | { ok: false; error: st
 const ReadProductsInput = z.object({
   first: z.number().int().min(1).max(50).default(20),
   after: z.string().optional(),
+  // Shopify Admin search syntax. Most useful: `title:<name>` matches products
+  // whose title contains <name>. The agent should use this for name lookups
+  // — without it we only see the first 20 alphabetical products.
+  query: z.string().optional(),
 });
 
 const READ_PRODUCTS_QUERY = `#graphql
-  query ReadProducts($first: Int!, $after: String) {
-    products(first: $first, after: $after) {
+  query ReadProducts($first: Int!, $after: String, $query: String) {
+    products(first: $first, after: $after, query: $query) {
       edges {
         cursor
         node {
@@ -86,6 +90,7 @@ export async function readProducts(
   const result = await graphqlRequest<RawResponse>(admin, READ_PRODUCTS_QUERY, {
     first: parsed.data.first,
     after: parsed.data.after ?? null,
+    query: parsed.data.query ?? null,
   });
 
   if (!result.ok) return { ok: false, error: result.error };

@@ -10,12 +10,17 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "read_products",
     description:
-      "List products in the store. Returns id, title, handle, status, product type, vendor, total inventory, and price range for each. Defaults to the first 20 products. Pass `after` (cursor from a previous page) to paginate.",
+      "List products in the store. Returns id, title, handle, status, product type, vendor, total inventory, and price range for each. Defaults to the first 20 products. Pass `after` (cursor from a previous page) to paginate. **Use `query` to look up a product by name — without it you only see the first 20 alphabetical products and will miss matches.** The `query` field uses Shopify Admin search syntax: `title:<term>` filters by title (e.g. `title:Snowboard` returns every product whose title contains 'Snowboard'); `vendor:<name>` filters by vendor; `status:active` filters by lifecycle status. Combine with spaces (AND): `title:Snowboard status:active`. When the merchant names a product, ALWAYS pass `query: \"title:<distinctive part of the name>\"` rather than fetching all products and scanning.",
     parametersJsonSchema: {
       type: "object",
       properties: {
         first: { type: "integer", minimum: 1, maximum: 50 },
         after: { type: "string" },
+        query: {
+          type: "string",
+          description:
+            "Shopify Admin search query. Examples: `title:Snowboard`, `title:cat food`, `vendor:Hydrogen`, `status:active`, `title:Snowboard status:active`. Pick a distinctive word from the merchant's product name — for 'The Collection Snowboard: Liquid' use `title:Liquid` (more specific) rather than `title:Snowboard` (matches many).",
+        },
       },
     },
   },
