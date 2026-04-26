@@ -153,6 +153,12 @@ function handleFrame(
         toolInput: data.tool_input,
       });
       return;
+    case "tool_running":
+      dispatch({
+        type: "TOOL_RUNNING",
+        toolName: String(data.tool_name ?? ""),
+      });
+      return;
     case "error":
       tracker.outcome = "error";
       dispatch({

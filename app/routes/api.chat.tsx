@@ -253,6 +253,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             if (isReadTool(tu.name) || isInlineWrite(tu.name)) {
               // Inline-execute path: reads + safe writes that don't mutate
               // the store (e.g. update_store_memory). No approval card.
+              // Surface a "running" indicator so the merchant knows we're
+              // not frozen during the 1–3s Shopify call.
+              emit("tool_running", { tool_name: tu.name });
               const result = await executeTool(tu.name, tu.input, {
                 admin,
                 storeId: store.id,

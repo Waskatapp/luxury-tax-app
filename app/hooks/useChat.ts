@@ -39,6 +39,10 @@ export type ChatState = {
   messages: ChatMessage[];
   pendingByToolCallId: Record<string, PendingActionStatus>;
   error: string | null;
+  // Ephemeral name of the read/inline-write tool currently executing on the
+  // server. Set by TOOL_RUNNING; cleared by the next TEXT_DELTA / DONE /
+  // ERROR / RESET / LOAD_MESSAGES. Not persisted.
+  runningTool: string | null;
 };
 
 export type ChatAction =
@@ -57,6 +61,7 @@ export type ChatAction =
       toolName: string;
       toolInput: unknown;
     }
+  | { type: "TOOL_RUNNING"; toolName: string }
   | { type: "DONE"; messageId: string }
   | { type: "ERROR"; error: string }
   | {
@@ -71,6 +76,7 @@ export const INITIAL_CHAT_STATE: ChatState = {
   messages: [],
   pendingByToolCallId: {},
   error: null,
+  runningTool: null,
 };
 
 function appendTextDelta(message: ChatMessage, delta: string): ChatMessage {
@@ -91,6 +97,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         messages: action.messages,
         pendingByToolCallId: action.pendingByToolCallId,
         error: null,
+        runningTool: null,
       };
 
     case "SEND_START": {
@@ -126,10 +133,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "TEXT_DELTA":
       return {
         ...state,
+        // Text resuming means whichever read tool was running has finished.
+        runningTool: null,
         messages: state.messages.map((m) =>
           m.id === action.messageId ? appendTextDelta(m, action.delta) : m,
         ),
       };
+
+    case "TOOL_RUNNING":
+      return { ...state, runningTool: action.toolName };
 
     case "TOOL_USE_START":
       return {
@@ -162,6 +174,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return {
         ...state,
         phase: state.phase === "awaitingApproval" ? "awaitingApproval" : "idle",
+        runningTool: null,
         messages: state.messages.map((m) =>
           m.id === action.messageId ? { ...m, status: "complete" } : m,
         ),
@@ -184,6 +197,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return {
         ...state,
         phase: "error",
+        runningTool: null,
         messages: state.messages.map((m) =>
           m.status === "streaming" ? { ...m, status: "error" } : m,
         ),

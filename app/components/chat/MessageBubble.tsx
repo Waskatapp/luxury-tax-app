@@ -1,14 +1,17 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { BlockStack, Box, Button, InlineStack, Text } from "@shopify/polaris";
 import type { ChatMessage, PendingActionStatus } from "../../hooks/useChat";
 import { isApprovalRequiredWrite } from "../../lib/agent/tool-classifier";
 import type { AnalyticsResult } from "../../lib/shopify/analytics.types";
 import { ApprovalCard } from "./ApprovalCard";
 import { AnalyticsCard } from "./cards/AnalyticsCard";
+import { MarkdownContent } from "./MarkdownContent";
+import { ToolRunningPill } from "./ToolRunningPill";
 
 type Props = {
   message: ChatMessage;
   pendingByToolCallId: Record<string, PendingActionStatus>;
+  runningTool: string | null;
   onApprove: (toolCallId: string) => Promise<void> | void;
   onReject: (toolCallId: string) => Promise<void> | void;
 };
@@ -19,15 +22,25 @@ type ToolResultLike = {
   content: string;
 };
 
-function CopyButton({ text }: { text: string }) {
+// Reads from the rendered DOM via ref when available — gives the merchant
+// exactly what they see on screen, with no markdown chars. Falls back on
+// the raw source if the ref isn't ready (initial render, etc).
+function CopyButton({
+  source,
+  plainTextRef,
+}: {
+  source: string;
+  plainTextRef?: React.RefObject<HTMLElement | null>;
+}) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
+    const fromDom = plainTextRef?.current?.innerText?.trim();
+    const text = fromDom && fromDom.length > 0 ? fromDom : source;
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
       } else {
-        // Fallback for older browsers / non-secure contexts.
         const ta = document.createElement("textarea");
         ta.value = text;
         ta.style.position = "fixed";
@@ -77,10 +90,12 @@ function parseAnalytics(block: ToolResultLike): AnalyticsResult | null {
 export function MessageBubble({
   message,
   pendingByToolCallId,
+  runningTool,
   onApprove,
   onReject,
 }: Props) {
   const isUser = message.role === "user";
+  const markdownRef = useRef<HTMLDivElement>(null);
 
   // Synthetic plumbing rows: all blocks are tool_result. Render any
   // get_analytics results as inline cards; everything else is hidden.
@@ -128,9 +143,12 @@ export function MessageBubble({
     )
     .filter((b) => isApprovalRequiredWrite(b.name));
 
+  const showRunningPill =
+    !isUser && message.status === "streaming" && runningTool !== null;
+
   return (
     <InlineStack align={isUser ? "end" : "start"} blockAlign="start">
-      <UserBubbleWrapper isUser={isUser}>
+      <BubbleWrapper>
         <Box
           padding="300"
           background={isUser ? "bg-surface-secondary" : "bg-surface"}
@@ -143,13 +161,27 @@ export function MessageBubble({
               <Text as="span" variant="bodySm" tone="subdued">
                 {isUser ? "You" : "Copilot"}
               </Text>
-              {isUser && text ? <CopyButton text={text} /> : null}
+              {text ? (
+                <CopyButton
+                  source={text}
+                  plainTextRef={isUser ? undefined : markdownRef}
+                />
+              ) : null}
             </InlineStack>
-            {text || (message.status === "streaming" && toolUses.length === 0) ? (
+            {text ? (
+              isUser ? (
+                <Text as="p" variant="bodyMd">
+                  {text}
+                </Text>
+              ) : (
+                <MarkdownContent ref={markdownRef} text={text} />
+              )
+            ) : message.status === "streaming" && toolUses.length === 0 && !showRunningPill ? (
               <Text as="p" variant="bodyMd">
-                {text || "…"}
+                …
               </Text>
             ) : null}
+            {showRunningPill ? <ToolRunningPill toolName={runningTool} /> : null}
             {toolUses.map((tu) => (
               <ApprovalCard
                 key={tu.id}
@@ -168,28 +200,16 @@ export function MessageBubble({
             ) : null}
           </BlockStack>
         </Box>
-      </UserBubbleWrapper>
+      </BubbleWrapper>
     </InlineStack>
   );
 }
 
-// Wraps the bubble. For user bubbles, exposes a `--copy-opacity` CSS var via
-// hover/focus state so the Copy button is visible only when the merchant is
-// pointing at the message (or has tab-focused it). Assistant bubbles render
-// the same shell with no hover behavior.
-function UserBubbleWrapper({
-  isUser,
-  children,
-}: {
-  isUser: boolean;
-  children: React.ReactNode;
-}) {
+// Exposes --copy-opacity for hover/focus reveal of the Copy button. Applied
+// to both user and assistant bubbles uniformly.
+function BubbleWrapper({ children }: { children: React.ReactNode }) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
-
-  if (!isUser) {
-    return <div style={{ maxWidth: "80%" }}>{children}</div>;
-  }
 
   const visible = hovered || focused ? 1 : 0;
 
