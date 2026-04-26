@@ -13,10 +13,13 @@ const ReadProductsInput = z.object({
   query: z.string().optional(),
 });
 
-// We pull `description`, `tags`, and `seo` so the agent has enough signal to
-// match a merchant's intent even when the title doesn't exactly match (typos,
-// vagueness, "the product for cats" instead of the literal name). Description
-// is truncated server-side to ~400 chars to keep payload bounded.
+// We pull `description`, `tags`, `seo`, and `variants` so the agent has
+// enough signal to match a merchant's intent (typos, vagueness, "the
+// product for cats" instead of the literal name) AND so it can pick the
+// right variant without guessing IDs. Description is truncated server-side
+// to ~400 chars to keep payload bounded; variants capped at 10 per product
+// (clothing-style stores with 50+ variants per product are out of scope
+// for v1 lookup — the agent can paginate via `after` if needed).
 const READ_PRODUCTS_QUERY = `#graphql
   query ReadProducts($first: Int!, $after: String, $query: String) {
     products(first: $first, after: $after, query: $query) {
@@ -40,6 +43,17 @@ const READ_PRODUCTS_QUERY = `#graphql
             minVariantPrice { amount currencyCode }
             maxVariantPrice { amount currencyCode }
           }
+          variants(first: 10) {
+            edges {
+              node {
+                id
+                title
+                price
+                sku
+                inventoryQuantity
+              }
+            }
+          }
         }
       }
       pageInfo { hasNextPage endCursor }
@@ -48,6 +62,14 @@ const READ_PRODUCTS_QUERY = `#graphql
 `;
 
 const DESCRIPTION_PREVIEW_CHARS = 400;
+
+export type ProductVariantSummary = {
+  id: string;
+  title: string;
+  price: string;
+  sku: string | null;
+  inventoryQuantity: number | null;
+};
 
 export type ProductSummary = {
   id: string;
@@ -65,6 +87,7 @@ export type ProductSummary = {
     min: { amount: string; currencyCode: string };
     max: { amount: string; currencyCode: string };
   };
+  variants: ProductVariantSummary[];
 };
 
 export type ReadProductsResult = {
@@ -90,6 +113,17 @@ type RawResponse = {
         priceRangeV2: {
           minVariantPrice: { amount: string; currencyCode: string };
           maxVariantPrice: { amount: string; currencyCode: string };
+        };
+        variants: {
+          edges: Array<{
+            node: {
+              id: string;
+              title: string;
+              price: string;
+              sku: string | null;
+              inventoryQuantity: number | null;
+            };
+          }>;
         };
       };
     }>;
@@ -138,6 +172,13 @@ export async function readProducts(
         min: edge.node.priceRangeV2.minVariantPrice,
         max: edge.node.priceRangeV2.maxVariantPrice,
       },
+      variants: edge.node.variants.edges.map((v) => ({
+        id: v.node.id,
+        title: v.node.title,
+        price: v.node.price,
+        sku: v.node.sku,
+        inventoryQuantity: v.node.inventoryQuantity,
+      })),
     };
   });
 
