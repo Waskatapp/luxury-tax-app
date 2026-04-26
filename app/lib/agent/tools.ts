@@ -10,7 +10,7 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "read_products",
     description:
-      "List products in the store. Returns id, title, handle, status, product type, vendor, total inventory, and price range for each. Defaults to the first 20 products. Pass `after` (cursor from a previous page) to paginate. **Use `query` to look up a product by name — without it you only see the first 20 alphabetical products and will miss matches.** The `query` field uses Shopify Admin search syntax: `title:<term>` filters by title (e.g. `title:Snowboard` returns every product whose title contains 'Snowboard'); `vendor:<name>` filters by vendor; `status:active` filters by lifecycle status. Combine with spaces (AND): `title:Snowboard status:active`. When the merchant names a product, ALWAYS pass `query: \"title:<distinctive part of the name>\"` rather than fetching all products and scanning.",
+      "Search and list products. Returns rich data per product: id, title, handle, status, product type, vendor, tags, a description preview (~400 chars), SEO title and SEO description, total inventory, and price range. Use this data to match the merchant's intent — they may misspell, abbreviate, describe a product by what it does, or use a partial/old name. The merchant doesn't know Shopify product IDs; they think in product titles, descriptions, and categories.\n\nThe `query` parameter is a Shopify search string; passing bare keywords (no `field:` prefix) does a multi-field search across title, description, vendor, tags, and product type — that's the right default for matching by name or topic. Use `field:value` only when you specifically want to narrow to one field (e.g. `vendor:Hydrogen`, `status:active`). Combine with spaces (AND): `snowboard status:active`.\n\nIntelligent matching: if a search returns nothing, try alternatives — fewer or different keywords, the singular form, a category word from the merchant's phrasing. Inspect the description and tags of results to confirm it's the right product before acting; titles alone can be ambiguous in stores with many similar products. Without `query` you only get the first 20 alphabetical products, which will miss most matches.",
     parametersJsonSchema: {
       type: "object",
       properties: {
@@ -19,7 +19,7 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
         query: {
           type: "string",
           description:
-            "Shopify Admin search query. Examples: `title:Snowboard`, `title:cat food`, `vendor:Hydrogen`, `status:active`, `title:Snowboard status:active`. Pick a distinctive word from the merchant's product name — for 'The Collection Snowboard: Liquid' use `title:Liquid` (more specific) rather than `title:Snowboard` (matches many).",
+            "Shopify search query. Bare keywords (no prefix) search across title, description, vendor, tags, and product type — use this for general lookup. Examples: `snowboard liquid`, `cat food`, `winter gear`. Field-prefixed forms narrow the search: `title:Liquid`, `vendor:Hydrogen`, `status:active`, `tag:limited`. If a search returns nothing, retry with a broader or different keyword from the merchant's phrasing before giving up.",
         },
       },
     },

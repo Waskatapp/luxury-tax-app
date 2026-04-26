@@ -13,6 +13,10 @@ const ReadProductsInput = z.object({
   query: z.string().optional(),
 });
 
+// We pull `description`, `tags`, and `seo` so the agent has enough signal to
+// match a merchant's intent even when the title doesn't exactly match (typos,
+// vagueness, "the product for cats" instead of the literal name). Description
+// is truncated server-side to ~400 chars to keep payload bounded.
 const READ_PRODUCTS_QUERY = `#graphql
   query ReadProducts($first: Int!, $after: String, $query: String) {
     products(first: $first, after: $after, query: $query) {
@@ -25,6 +29,12 @@ const READ_PRODUCTS_QUERY = `#graphql
           status
           productType
           vendor
+          tags
+          description
+          seo {
+            title
+            description
+          }
           totalInventory
           priceRangeV2 {
             minVariantPrice { amount currencyCode }
@@ -37,6 +47,8 @@ const READ_PRODUCTS_QUERY = `#graphql
   }
 `;
 
+const DESCRIPTION_PREVIEW_CHARS = 400;
+
 export type ProductSummary = {
   id: string;
   title: string;
@@ -44,6 +56,10 @@ export type ProductSummary = {
   status: string;
   productType: string | null;
   vendor: string | null;
+  tags: string[];
+  descriptionPreview: string | null;
+  seoTitle: string | null;
+  seoDescription: string | null;
   totalInventory: number | null;
   priceRange: {
     min: { amount: string; currencyCode: string };
@@ -67,6 +83,9 @@ type RawResponse = {
         status: string;
         productType: string | null;
         vendor: string | null;
+        tags: string[];
+        description: string | null;
+        seo: { title: string | null; description: string | null } | null;
         totalInventory: number | null;
         priceRangeV2: {
           minVariantPrice: { amount: string; currencyCode: string };
@@ -95,19 +114,32 @@ export async function readProducts(
 
   if (!result.ok) return { ok: false, error: result.error };
 
-  const products: ProductSummary[] = result.data.products.edges.map((edge) => ({
-    id: edge.node.id,
-    title: edge.node.title,
-    handle: edge.node.handle,
-    status: edge.node.status,
-    productType: edge.node.productType,
-    vendor: edge.node.vendor,
-    totalInventory: edge.node.totalInventory,
-    priceRange: {
-      min: edge.node.priceRangeV2.minVariantPrice,
-      max: edge.node.priceRangeV2.maxVariantPrice,
-    },
-  }));
+  const products: ProductSummary[] = result.data.products.edges.map((edge) => {
+    const desc = edge.node.description?.trim() ?? "";
+    const descPreview =
+      desc.length > DESCRIPTION_PREVIEW_CHARS
+        ? desc.slice(0, DESCRIPTION_PREVIEW_CHARS) + "…"
+        : desc.length > 0
+          ? desc
+          : null;
+    return {
+      id: edge.node.id,
+      title: edge.node.title,
+      handle: edge.node.handle,
+      status: edge.node.status,
+      productType: edge.node.productType,
+      vendor: edge.node.vendor,
+      tags: edge.node.tags ?? [],
+      descriptionPreview: descPreview,
+      seoTitle: edge.node.seo?.title ?? null,
+      seoDescription: edge.node.seo?.description ?? null,
+      totalInventory: edge.node.totalInventory,
+      priceRange: {
+        min: edge.node.priceRangeV2.minVariantPrice,
+        max: edge.node.priceRangeV2.maxVariantPrice,
+      },
+    };
+  });
 
   return {
     ok: true,

@@ -12,12 +12,16 @@ The merchant says things like:
 
 ## Business rules (defaults — edit to match your store)
 
-1. **Look up the product by name; never ask the merchant for an ID.** When
-   the merchant names a product, call `read_products` and find it. If
-   exactly one product matches and it has exactly one variant, use that
-   variant directly. If multiple products match the name, list them and
-   ask which one. If a single product has multiple variants (size, color,
-   etc.), list the variants and ask which one.
+1. **Search the product intelligently; never ask the merchant for an ID.**
+   When the merchant names or describes a product, call `read_products`
+   with bare keywords from their wording — Shopify will search across
+   title, description, vendor, tags, and product type. Use the description
+   and tags returned to confirm the match before acting. If exactly one
+   product matches and it has one variant, use that variant directly. If
+   multiple products match, list them with disambiguating context
+   (description snippet, tags) and ask which one. If a single product has
+   multiple variants, list the variants and ask. On a miss, retry with a
+   different keyword from the merchant's phrasing before giving up.
 2. **Confirm large swings.** If the proposed price is more than 50% above
    or below the current price, ask the merchant to confirm before showing
    the approval card.
