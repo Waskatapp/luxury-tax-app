@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useLoaderData } from "react-router";
+import { useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
   Banner,
@@ -38,14 +38,19 @@ import {
   MemoryToastStack,
   type MemoryToastEntry,
 } from "../components/chat/MemoryToast";
-import { EmptyStateGuide } from "../components/chat/EmptyStateGuide";
+import {
+  EmptyStateGuide,
+  type Suggestion,
+} from "../components/chat/EmptyStateGuide";
+import { pickSuggestions } from "../lib/agent/suggestions.server";
+import { log } from "../lib/log.server";
 
 // Distance from scroll bottom (in px) below which we consider the merchant
 // "at the bottom" — auto-scroll on new messages stays on, no pop-up button.
 const AT_BOTTOM_THRESHOLD = 80;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { store } = await requireStoreAccess(request);
+  const { store, admin } = await requireStoreAccess(request);
 
   const rows = await prisma.conversation.findMany({
     where: { storeId: store.id },
@@ -59,11 +64,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     updatedAt: c.updatedAt.toISOString(),
   }));
 
-  return { conversations };
+  // Welcome-screen suggestions. Failure is non-fatal — pickSuggestions has
+  // its own onboarding fallback, but if even that throws we surface an
+  // empty array and EmptyStateGuide renders its own static fallback.
+  let suggestions: Suggestion[] = [];
+  try {
+    suggestions = await pickSuggestions(store.id, admin);
+  } catch (err) {
+    log.warn("copilot loader: pickSuggestions threw (non-fatal)", {
+      storeId: store.id,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  return { conversations, suggestions };
 };
 
 export default function CopilotPage() {
-  const { conversations: initialConversations } = useLoaderData<typeof loader>();
+  const {
+    conversations: initialConversations,
+    suggestions,
+  } = useLoaderData<typeof loader>();
+  const revalidator = useRevalidator();
 
   const [conversations, setConversations] =
     useState<ConversationSummary[]>(initialConversations);
@@ -95,6 +117,45 @@ export default function CopilotPage() {
       // The merchant can re-delete from /app/settings/memory.
     });
   }, []);
+
+  // Suggestion impression tracking. We log one batched impression event when
+  // the welcome screen mounts with non-empty suggestions and haven't already
+  // logged for this exact set of templateIds. Tracked by a ref of the last
+  // logged signature so re-renders don't double-log.
+  const lastLoggedImpressionsRef = useRef<string | null>(null);
+  const postSuggestionEvents = useCallback(
+    (
+      events: Array<{
+        templateId: string;
+        slotPosition: number;
+        eventType: "impression" | "click";
+        conversationId?: string;
+      }>,
+    ): void => {
+      if (events.length === 0) return;
+      const body = JSON.stringify({ events });
+      // sendBeacon is queued by the browser and survives navigation — perfect
+      // for fire-and-forget telemetry. Falls back to keepalive fetch if the
+      // beacon API isn't available or the browser refuses (rare).
+      try {
+        if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+          const blob = new Blob([body], { type: "application/json" });
+          if (navigator.sendBeacon("/api/suggestion-event", blob)) return;
+        }
+      } catch {
+        /* fall through */
+      }
+      void fetch("/api/suggestion-event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive: true,
+      }).catch(() => {
+        // Telemetry failures are silent by design.
+      });
+    },
+    [],
+  );
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
@@ -474,6 +535,55 @@ export default function CopilotPage() {
   const sending = state.phase === "streaming";
   const hasActive = activeId !== null;
 
+  // Click handler for EmptyStateGuide: log click telemetry first (fire-and-
+  // forget), then send the prompt through the regular chat path. Telemetry
+  // never blocks the chat send.
+  const handleSuggestionSelect = useCallback(
+    (suggestion: Suggestion, slotPosition: number) => {
+      postSuggestionEvents([
+        {
+          templateId: suggestion.templateId,
+          slotPosition,
+          eventType: "click",
+          conversationId: activeId ?? undefined,
+        },
+      ]);
+      void handleSend(suggestion.prompt);
+    },
+    [activeId, handleSend, postSuggestionEvents],
+  );
+
+  // Refresh suggestions: revalidate the loader, which re-runs pickSuggestions
+  // and may rotate the visible set (Flash-Lite picks different members of the
+  // heuristic top 8 between calls). The next mount-impression will fire from
+  // the impressions effect below once suggestions change.
+  const handleRefreshSuggestions = useCallback(() => {
+    lastLoggedImpressionsRef.current = null;
+    revalidator.revalidate();
+  }, [revalidator]);
+
+  const showWelcome =
+    hasActive && state.messages.length === 0 && !sending;
+
+  // Log an impression batch the first time the welcome screen renders with
+  // a given set of templateIds. The ref-based signature prevents duplicate
+  // logging across re-renders while still allowing a fresh log when the
+  // merchant clicks Refresh and a different set comes back.
+  useEffect(() => {
+    if (!showWelcome) return;
+    if (suggestions.length === 0) return;
+    const signature = suggestions.map((s) => s.templateId).join("|");
+    if (lastLoggedImpressionsRef.current === signature) return;
+    lastLoggedImpressionsRef.current = signature;
+    postSuggestionEvents(
+      suggestions.map((s, idx) => ({
+        templateId: s.templateId,
+        slotPosition: idx,
+        eventType: "impression" as const,
+      })),
+    );
+  }, [showWelcome, suggestions, postSuggestionEvents]);
+
   // Detect "stuck" conversation states — when the in-memory error is gone
   // (e.g. after switching conversations and coming back) but the DB shows
   // the merchant is owed a response.
@@ -571,7 +681,13 @@ export default function CopilotPage() {
                   Start a new conversation to begin.
                 </Text>
               ) : state.messages.length === 0 ? (
-                <EmptyStateGuide onSelect={handleSend} disabled={sending} />
+                <EmptyStateGuide
+                  suggestions={suggestions}
+                  onSelect={handleSuggestionSelect}
+                  onRefresh={handleRefreshSuggestions}
+                  disabled={sending}
+                  refreshing={revalidator.state !== "idle"}
+                />
               ) : (
                 <div style={{ position: "relative" }}>
                   <div

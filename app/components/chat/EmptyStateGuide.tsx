@@ -1,59 +1,35 @@
-import { BlockStack, Box, Button, InlineStack, Text } from "@shopify/polaris";
+import { BlockStack, Button, InlineStack, Text } from "@shopify/polaris";
 
-// First-time empty state — shows a brief welcome + categorized example
-// prompts the merchant can click to start. Replaces the prior single-row
-// SEEDED_PROMPTS list. Each prompt is a real working sentence so a click
-// fires a useful first message; placeholder-style suggestions (like
-// "<product>") are intentionally avoided.
+// Empty-state welcome screen. 3-4 contextual prompts picked by
+// app/lib/agent/suggestions.server.ts based on store signals + heuristic
+// scoring + Gemini Flash-Lite curation. Replaces the prior 9-prompt /
+// 4-category static layout that was identical for every merchant.
+//
+// The button label is what Flash-Lite may have rewritten in the merchant's
+// brand voice; the prompt that gets sent on click is the stable text from
+// the candidate pool. templateId is logged to SuggestionEvent for telemetry.
 
-type Category = {
-  heading: string;
-  blurb: string;
-  prompts: string[];
+export type Suggestion = {
+  templateId: string;
+  label: string;
+  prompt: string;
 };
 
-const CATEGORIES: Category[] = [
-  {
-    heading: "Explore your store",
-    blurb: "Read products, collections, and inventory.",
-    prompts: [
-      "Show me my products",
-      "List my collections",
-      "What's running low on stock?",
-    ],
-  },
-  {
-    heading: "Understand your sales",
-    blurb: "Revenue, top sellers, recent orders.",
-    prompts: [
-      "How is revenue the last 30 days?",
-      "Show me my top 5 products",
-    ],
-  },
-  {
-    heading: "Update products",
-    blurb:
-      "Change prices, descriptions, or status — every change asks for approval first.",
-    prompts: [
-      "Help me update a product's price",
-      "Rewrite a product description for me",
-      "Help me publish a draft product",
-    ],
-  },
-  {
-    heading: "Run a promotion",
-    blurb: "Create automatic discounts.",
-    prompts: ["Create a 15% off discount"],
-  },
-];
-
 export function EmptyStateGuide({
+  suggestions,
   onSelect,
+  onRefresh,
   disabled,
+  refreshing,
 }: {
-  onSelect: (prompt: string) => void;
+  suggestions: Suggestion[];
+  onSelect: (suggestion: Suggestion, slotPosition: number) => void;
+  onRefresh: () => void;
   disabled: boolean;
+  refreshing: boolean;
 }) {
+  const visible = suggestions.length > 0 ? suggestions : FALLBACK;
+
   return (
     <BlockStack gap="400">
       <BlockStack gap="100">
@@ -61,44 +37,38 @@ export function EmptyStateGuide({
           Welcome to your Copilot
         </Text>
         <Text as="p" tone="subdued">
-          Type plain-English requests. The Copilot reads and changes your
-          store with your approval — every store-modifying action shows an
+          Type plain-English requests. Every store-modifying action shows an
           approval card before anything happens.
         </Text>
       </BlockStack>
 
-      <BlockStack gap="300">
-        {CATEGORIES.map((cat) => (
-          <Box
-            key={cat.heading}
-            padding="300"
-            background="bg-surface-secondary"
-            borderRadius="200"
-            borderColor="border"
-            borderWidth="025"
+      <InlineStack align="space-between" blockAlign="center">
+        <Text as="h3" variant="headingSm" tone="subdued">
+          Suggested for you
+        </Text>
+        <Button
+          variant="plain"
+          onClick={onRefresh}
+          disabled={disabled || refreshing}
+          loading={refreshing}
+          accessibilityLabel="Refresh suggestions"
+        >
+          ↻ Refresh
+        </Button>
+      </InlineStack>
+
+      <BlockStack gap="200">
+        {visible.map((s, idx) => (
+          <Button
+            key={s.templateId}
+            size="large"
+            textAlign="start"
+            disabled={disabled}
+            onClick={() => onSelect(s, idx)}
+            fullWidth
           >
-            <BlockStack gap="200">
-              <BlockStack gap="050">
-                <Text as="h3" variant="headingSm">
-                  {cat.heading}
-                </Text>
-                <Text as="p" variant="bodySm" tone="subdued">
-                  {cat.blurb}
-                </Text>
-              </BlockStack>
-              <InlineStack gap="200" wrap>
-                {cat.prompts.map((prompt) => (
-                  <Button
-                    key={prompt}
-                    onClick={() => onSelect(prompt)}
-                    disabled={disabled}
-                  >
-                    {prompt}
-                  </Button>
-                ))}
-              </InlineStack>
-            </BlockStack>
-          </Box>
+            {s.label}
+          </Button>
         ))}
       </BlockStack>
 
@@ -110,3 +80,25 @@ export function EmptyStateGuide({
     </BlockStack>
   );
 }
+
+// Last-resort fallback: shown only if `suggestions` is empty (signal
+// gathering failed AND the orchestrator's onboarding fallback didn't reach
+// the loader). Synthetic templateIds prefixed `fallback_*` so we can tell
+// them apart in telemetry.
+const FALLBACK: Suggestion[] = [
+  {
+    templateId: "fallback_show_products",
+    label: "Show me my products",
+    prompt: "Show me my products.",
+  },
+  {
+    templateId: "fallback_revenue",
+    label: "How's revenue this week?",
+    prompt: "How is revenue this week compared to last week?",
+  },
+  {
+    templateId: "fallback_low_stock",
+    label: "What's running low on stock?",
+    prompt: "What's running low on stock?",
+  },
+];

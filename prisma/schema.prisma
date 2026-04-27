@@ -68,10 +68,11 @@ model Store {
   uninstalledAt DateTime?
   updatedAt     DateTime  @updatedAt
 
-  conversations  Conversation[]
-  pendingActions PendingAction[]
-  storeMemories  StoreMemory[]
-  auditLogs      AuditLog[]
+  conversations    Conversation[]
+  pendingActions   PendingAction[]
+  storeMemories    StoreMemory[]
+  auditLogs        AuditLog[]
+  suggestionEvents SuggestionEvent[]
 }
 
 // ---- Chat thread per store+user ----
@@ -142,6 +143,27 @@ model StoreMemory {
   @@unique([storeId, key])
   @@index([storeId])
   @@index([storeId, category])
+}
+
+// Welcome-screen prompt-suggestion telemetry. One row per impression-batch
+// (3-4 rows per page load, same createdAt) and one row per click. Used today
+// only for short-term session de-dupe; future phase computes CTR per
+// templateId for ranking. eventType is String not enum so we can extend with
+// "refresh"/"dismiss" without a schema migration.
+model SuggestionEvent {
+  id             String   @id @default(cuid())
+  storeId        String
+  userId         String
+  templateId     String
+  slotPosition   Int
+  eventType      String
+  conversationId String?
+  createdAt      DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, templateId, eventType])
+  @@index([storeId, createdAt])
 }
 
 // Immutable. before + after snapshots. Never deleted.
