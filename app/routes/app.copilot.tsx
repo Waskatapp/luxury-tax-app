@@ -365,7 +365,13 @@ export default function CopilotPage() {
           await reloadMessages();
         } else {
           // "error" or "truncated" — keep retry available indefinitely.
+          // RESET + reloadMessages each attempt so we don't stack
+          // placeholder "Something went wrong" bubbles when continueChat
+          // fails repeatedly.
           const buildRetry = (): (() => Promise<void>) => async () => {
+            dispatch({ type: "RESET" });
+            const loaded = await reloadMessages();
+            if (loaded === null) return;
             const o = await continueChat({ conversationId, dispatch });
             if (o === "done") {
               retryFnRef.current = null;
@@ -441,11 +447,15 @@ export default function CopilotPage() {
     }
 
     // Data-derived fallback: we get here when the merchant switched
-    // conversations and came back, or refreshed the page. The in-memory
-    // retry context is gone, but the DB still has the unanswered user
-    // message (or unsummarized assistant turn). continueChat reads
-    // history from the server and finishes the turn.
+    // conversations and came back, refreshed the page, OR the in-memory
+    // retry function was somehow cleared but the conversation still has
+    // unfinished business. RESET + reloadMessages BEFORE continueChat is
+    // critical — otherwise each retry appends a new placeholder to
+    // state.messages, stacking "Something went wrong" bubbles.
     const buildRetry = (): (() => Promise<void>) => async () => {
+      dispatch({ type: "RESET" });
+      const loaded = await reloadMessages();
+      if (loaded === null) return;
       const o = await continueChat({
         conversationId,
         dispatch,
@@ -495,9 +505,14 @@ export default function CopilotPage() {
     })();
   const dataDerivedStuck = lastIsUnansweredUser || lastIsUnsummarizedAssistant;
 
+  // canRetry intentionally does NOT depend on retryFnRef.current — that ref
+  // is in-memory-only and any stale-ref / fast-click / fallback edge case can
+  // null it while state.error is still set. Whenever an error banner is
+  // visible (or the conversation looks stuck from data alone), the merchant
+  // must be able to click Try again. handleRetry handles both the in-memory
+  // and the no-ref case via its data-derived fallback.
   const canRetry =
-    !sending &&
-    (retryFnRef.current !== null || dataDerivedStuck);
+    !sending && (state.error !== null || dataDerivedStuck);
 
   return (
     <Page title="Copilot" fullWidth>
