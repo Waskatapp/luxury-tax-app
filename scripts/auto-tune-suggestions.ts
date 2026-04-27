@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Autonomous fortnightly tuner. Runs from a GitHub Actions cron with
 // DATABASE_URL injected as a secret. Reads the last 14 days of click
@@ -32,7 +33,10 @@ const MIN_TOTAL_IMPRESSIONS = 50;
 const BASESCORE_CAP = 6;
 const BASESCORE_FLOOR = 1;
 
-const REPO_ROOT = path.resolve(__dirname, "..");
+// ESM has no __dirname; resolve it from import.meta.url (the project is
+// "type": "module" so tsx loads this script as ESM).
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
 const SUGGESTIONS_FILE = path.join(
   REPO_ROOT,
   "app",
