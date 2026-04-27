@@ -94,6 +94,11 @@ model Conversation {
 }
 
 // content holds the exact Anthropic ContentBlock[] array — no translation (CLAUDE.md rule 3).
+//
+// searchText is a denormalized lowercased projection of content[].text used by
+// the V1.7 conversation search (`app/lib/conversations/search.server.ts`).
+// Null on tool_use-only or tool_result-only rows where there is no
+// user-visible text. Populated by extractSearchText() at insert time.
 model Message {
   id             String   @id @default(cuid())
   conversationId String
@@ -101,6 +106,7 @@ model Message {
   content        Json
   model          String?
   usage          Json?
+  searchText     String?
   createdAt      DateTime @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)

@@ -22,6 +22,22 @@ export type StoredMessage = {
   content: ContentBlock[];
 };
 
+// Denormalized lowercased plain-text projection of a Message's content
+// blocks. Used by V1.7 conversation search (Message.searchText column).
+// Returns null when there is no user-visible text — typically tool_use-only
+// assistant turns or tool_result-only synthesized user turns. The search
+// engine treats null as "skip this row".
+export function extractSearchText(blocks: ContentBlock[]): string | null {
+  const parts: string[] = [];
+  for (const block of blocks) {
+    if (block.type === "text" && block.text.trim().length > 0) {
+      parts.push(block.text);
+    }
+  }
+  if (parts.length === 0) return null;
+  return parts.join(" ").toLowerCase();
+}
+
 // ---- ContentBlock[] → Gemini Content (one per persisted Message) ----
 //
 // Role mapping: our "assistant" → Gemini "model"; "user" stays "user".

@@ -12,6 +12,8 @@ import {
   TextField,
 } from "@shopify/polaris";
 
+import { ConversationSearch } from "./ConversationSearch";
+
 export type ConversationSummary = {
   id: string;
   title: string | null;
@@ -133,6 +135,7 @@ export function ConversationSidebar({
     <>
       <Card>
         <BlockStack gap="300">
+          <ConversationSearch onSelect={onSelect} />
           <Button onClick={onNew} variant="primary" fullWidth loading={creating}>
             New conversation
           </Button>

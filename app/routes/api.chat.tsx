@@ -27,6 +27,7 @@ import { log } from "../lib/log.server";
 import {
   AssistantTurnAccumulator,
   bareToolCallUuid,
+  extractSearchText,
   toGeminiContent,
   toGeminiContents,
   type ContentBlock,
@@ -134,6 +135,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             conversationId,
             role: "user",
             content: userContent as unknown as object,
+            searchText: extractSearchText(userContent),
           },
         }),
         prisma.conversation.update({
@@ -239,6 +241,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               conversationId,
               role: "assistant",
               content: assistantContent as unknown as object,
+              searchText: extractSearchText(assistantContent),
               model: GEMINI_CHAT_MODEL,
               ...(lastUsageMetadata
                 ? { usage: lastUsageMetadata as unknown as object }
