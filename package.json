@@ -21,7 +21,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "stats:suggestions": "tsx scripts/suggestion-stats.ts",
-    "tune:suggestions": "tsx scripts/auto-tune-suggestions.ts"
+    "tune:suggestions": "tsx scripts/auto-tune-suggestions.ts",
+    "audit:tuning": "tsx scripts/tuning-audit-report.ts"
   },
   "type": "module",
   "engines": {
