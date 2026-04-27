@@ -438,31 +438,43 @@ export default function CopilotPage() {
   );
 
   const handleApprove = useCallback(
-    async (toolCallId: string) => {
-      if (!activeId) return;
+    async (toolCallIds: string[]) => {
+      if (!activeId || toolCallIds.length === 0) return;
       const conversationId = activeId;
-      // Optimistic: mark APPROVED while the server runs the mutation.
-      dispatch({ type: "TOOL_STATUS", toolCallId, status: "APPROVED" });
+      // Optimistic: mark each as APPROVED while the server runs the writes
+      // sequentially. Each row's status is reset to its real terminal value
+      // once the response comes back.
+      for (const id of toolCallIds) {
+        dispatch({ type: "TOOL_STATUS", toolCallId: id, status: "APPROVED" });
+      }
       try {
         const res = await fetch("/api/tool-approve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ toolCallId }),
+          body: JSON.stringify({ toolCallIds }),
         });
         const body = (await res.json().catch(() => ({}))) as {
           ok?: boolean;
-          status?: PendingActionStatus;
-          error?: string;
+          results?: Array<{
+            toolCallId: string;
+            status: PendingActionStatus;
+            error?: string;
+          }>;
           conversationId?: string;
         };
-        const finalStatus: PendingActionStatus =
-          body.status ?? (body.ok ? "EXECUTED" : "FAILED");
-        dispatch({ type: "TOOL_STATUS", toolCallId, status: finalStatus });
-        if (!body.ok && body.error) {
-          dispatch({ type: "ERROR", error: body.error });
+        for (const r of body.results ?? []) {
+          dispatch({
+            type: "TOOL_STATUS",
+            toolCallId: r.toolCallId,
+            status: r.status,
+          });
         }
-        // Trigger continuation either way — Gemini summarizes success or
-        // explains the error from the synthesized tool_result row.
+        // Surface the FIRST per-row error so the banner is informative;
+        // continueChat fires regardless so Gemini summarizes whatever ran.
+        const firstError = (body.results ?? []).find((r) => r.error)?.error;
+        if (!body.ok && firstError) {
+          dispatch({ type: "ERROR", error: firstError });
+        }
         const outcome = await continueChat({
           conversationId,
           dispatch,
@@ -500,15 +512,17 @@ export default function CopilotPage() {
   );
 
   const handleReject = useCallback(
-    async (toolCallId: string) => {
-      if (!activeId) return;
+    async (toolCallIds: string[]) => {
+      if (!activeId || toolCallIds.length === 0) return;
       const conversationId = activeId;
-      dispatch({ type: "TOOL_STATUS", toolCallId, status: "REJECTED" });
+      for (const id of toolCallIds) {
+        dispatch({ type: "TOOL_STATUS", toolCallId: id, status: "REJECTED" });
+      }
       try {
         await fetch("/api/tool-reject", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ toolCallId }),
+          body: JSON.stringify({ toolCallIds }),
         });
         const outcome = await continueChat({
           conversationId,

@@ -1,4 +1,5 @@
 import type { ActionFunctionArgs } from "react-router";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 
 import prisma from "../db.server";
@@ -7,24 +8,27 @@ import {
   executeApprovedWrite,
   snapshotBefore,
 } from "../lib/agent/executor.server";
-import type { ContentBlock } from "../lib/agent/translate.server";
+import {
+  buildApproveToolResults,
+  processApproveBatch,
+  summarizeBatchOutcome,
+  validateBatch,
+  type PendingRow,
+} from "../lib/agent/approval-batch";
 
-const BodySchema = z.object({
-  toolCallId: z.string().min(1),
-});
+// V1.8 batch-approve: accept either { toolCallId } (legacy single) or
+// { toolCallIds: [...] } (batch). The single shape is kept for backwards
+// compatibility but the client always sends an array now.
+const BodySchema = z.union([
+  z.object({ toolCallId: z.string().min(1) }),
+  z.object({ toolCallIds: z.array(z.string().min(1)).min(1).max(8) }),
+]);
 
-// POST /api/tool-approve — execute a PendingAction the merchant just approved.
+// POST /api/tool-approve — execute a batch of PendingActions sequentially.
 //
-// Flow (per CLAUDE.md §5):
-//   1. Atomic status flip PENDING → APPROVED via updateMany. If 0 rows match,
-//      another tab already processed this; return 409 idempotently.
-//   2. Snapshot "before" state (Rule #10).
-//   3. Execute the Shopify mutation.
-//   4. In one transaction: update PendingAction → EXECUTED (or FAILED), insert
-//      AuditLog with before+after, persist a synthetic user-with-tool_result
-//      Message so Gemini sees the outcome on its next turn.
-//   5. Return { ok, conversationId } so the client can trigger the
-//      continuation chat call.
+// Per CLAUDE.md §5, §8 — no parallel writes. The orchestration logic lives
+// in approval-batch.ts (pure helpers, unit-testable); this route file is
+// the prisma + auth boundary.
 export const action = async ({ request }: ActionFunctionArgs) => {
   if (request.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -34,100 +38,109 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const parsed = BodySchema.safeParse(await request.json());
   if (!parsed.success) return new Response("Invalid body", { status: 400 });
-  const { toolCallId } = parsed.data;
 
-  // Atomic flip: only the first concurrent caller succeeds.
-  const flipped = await prisma.pendingAction.updateMany({
-    where: { toolCallId, storeId: store.id, status: "PENDING" },
-    data: { status: "APPROVED" },
-  });
-  if (flipped.count === 0) {
-    const existing = await prisma.pendingAction.findFirst({
-      where: { toolCallId, storeId: store.id },
-      select: { id: true, status: true, conversationId: true },
-    });
-    if (!existing) return new Response("Not found", { status: 404 });
-    return Response.json(
-      { ok: false, error: `already ${existing.status.toLowerCase()}`, conversationId: existing.conversationId },
-      { status: 409 },
-    );
-  }
+  const toolCallIds: string[] =
+    "toolCallIds" in parsed.data
+      ? parsed.data.toolCallIds
+      : [parsed.data.toolCallId];
 
-  const pending = await prisma.pendingAction.findFirst({
-    where: { toolCallId, storeId: store.id },
+  // One up-front lookup verifies all rows exist + tenant + share one
+  // conversationId. Cross-tenant / cross-conversation requests fail fast.
+  const dbRows = await prisma.pendingAction.findMany({
+    where: { toolCallId: { in: toolCallIds }, storeId: store.id },
     select: {
       id: true,
+      toolCallId: true,
       conversationId: true,
       toolName: true,
       toolInput: true,
+      status: true,
     },
   });
-  if (!pending) return new Response("Not found", { status: 404 });
+  if (dbRows.length === 0) return new Response("Not found", { status: 404 });
 
-  const toolInput = (pending.toolInput ?? {}) as Record<string, unknown>;
+  const rows: PendingRow[] = dbRows.map((r) => ({
+    id: r.id,
+    toolCallId: r.toolCallId,
+    conversationId: r.conversationId,
+    toolName: r.toolName,
+    toolInput: (r.toolInput ?? {}) as Record<string, unknown> | null,
+    status: r.status as PendingRow["status"],
+  }));
 
-  // Snapshot before for AuditLog (best-effort — null is acceptable).
-  const before = await snapshotBefore(pending.toolName, toolInput, {
-    admin,
-    storeId: store.id,
+  const validation = validateBatch(rows);
+  if (!validation.ok) return new Response(validation.reason, { status: 400 });
+  const conversationId = validation.conversationId;
+
+  const rowByCallId = new Map(rows.map((r) => [r.toolCallId, r]));
+
+  const { processed, responseResults } = await processApproveBatch({
+    toolCallIds,
+    rowByCallId,
+    flipPending: async (id) =>
+      prisma.pendingAction.updateMany({
+        where: { toolCallId: id, storeId: store.id, status: "PENDING" },
+        data: { status: "APPROVED" },
+      }),
+    snapshot: (toolName, toolInput) =>
+      snapshotBefore(toolName, toolInput, { admin, storeId: store.id }),
+    execute: (toolName, toolInput) =>
+      executeApprovedWrite(toolName, toolInput, { admin, storeId: store.id }),
   });
 
-  // Execute the Shopify mutation.
-  const result = await executeApprovedWrite(pending.toolName, toolInput, {
-    admin,
-    storeId: store.id,
-  });
+  const toolResultBlocks = buildApproveToolResults(processed);
 
-  // Build the synthetic user-with-tool_result Message so Gemini sees the
-  // outcome on its next turn. api.messages filters this row from the UI.
-  const toolResultBlock: ContentBlock = {
-    type: "tool_result",
-    tool_use_id: toolCallId,
-    content: JSON.stringify(
-      result.ok ? result.data : { error: result.error },
-    ),
-    is_error: !result.ok,
-  };
-
-  const finalStatus = result.ok ? "EXECUTED" : "FAILED";
-  const auditAction = result.ok ? "tool_executed" : "tool_failed";
-  const after = result.ok ? (result.data ?? null) : null;
-
-  await prisma.$transaction([
-    prisma.pendingAction.update({
-      where: { id: pending.id },
-      data: {
-        status: finalStatus,
-        beforeSnapshot: (before ?? null) as never,
-      },
-    }),
-    prisma.auditLog.create({
-      data: {
-        storeId: store.id,
-        action: auditAction,
-        toolName: pending.toolName,
-        before: (before ?? null) as never,
-        after: (after ?? (result.ok ? null : { error: result.error })) as never,
-      },
-    }),
+  // ONE transaction containing every per-row update + per-row audit entry +
+  // the consolidated synth Message + the conversation timestamp bump.
+  const txOps: Prisma.PrismaPromise<unknown>[] = [];
+  for (const p of processed) {
+    if (!p.skip) {
+      txOps.push(
+        prisma.pendingAction.update({
+          where: { id: p.pendingId },
+          data: {
+            status: p.finalStatus,
+            beforeSnapshot: (p.before ?? null) as never,
+          },
+        }),
+      );
+      txOps.push(
+        prisma.auditLog.create({
+          data: {
+            storeId: store.id,
+            action: p.error ? "tool_failed" : "tool_executed",
+            toolName: p.toolName,
+            before: (p.before ?? null) as never,
+            after: (p.after ?? (p.error ? { error: p.error } : null)) as never,
+          },
+        }),
+      );
+    }
+  }
+  // Always create the synth Message + bump conversation, even if every row
+  // was a skip — the client still expects a continuation turn after a click.
+  txOps.push(
     prisma.message.create({
       data: {
-        conversationId: pending.conversationId,
+        conversationId,
         role: "user",
-        content: [toolResultBlock] as unknown as object,
+        content: toolResultBlocks as unknown as object,
       },
     }),
+  );
+  txOps.push(
     prisma.conversation.update({
-      where: { id: pending.conversationId },
+      where: { id: conversationId },
       data: { updatedAt: new Date() },
     }),
-  ]);
+  );
 
+  await prisma.$transaction(txOps);
+
+  const { ok } = summarizeBatchOutcome(responseResults);
   return Response.json({
-    ok: result.ok,
-    error: result.ok ? null : result.error,
-    conversationId: pending.conversationId,
-    toolCallId,
-    status: finalStatus,
+    ok,
+    results: responseResults,
+    conversationId,
   });
 };

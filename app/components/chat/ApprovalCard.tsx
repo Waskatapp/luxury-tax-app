@@ -9,13 +9,21 @@ import {
 } from "@shopify/polaris";
 import type { PendingActionStatus } from "../../hooks/useChat";
 
-type Props = {
+// V1.8: ApprovalCard groups N tool_uses from the same assistant turn into
+// one card with a single Approve / Reject pair. items.length === 1 is the
+// common single-write case; the rendering degrades naturally to "looks like
+// the V1.7 single-card UX."
+export type ApprovalCardItem = {
   toolCallId: string;
   toolName: string;
   toolInput: Record<string, unknown>;
   status: PendingActionStatus | undefined;
-  onApprove: (toolCallId: string) => Promise<void> | void;
-  onReject: (toolCallId: string) => Promise<void> | void;
+};
+
+type Props = {
+  items: ApprovalCardItem[];
+  onApprove: (toolCallIds: string[]) => Promise<void> | void;
+  onReject: (toolCallIds: string[]) => Promise<void> | void;
 };
 
 const TOOL_DISPLAY: Record<string, { verb: string; emoji?: string }> = {
@@ -38,63 +46,52 @@ type SnapshotResponse = {
   before: unknown;
 };
 
-export function ApprovalCard({
-  toolCallId,
-  toolName,
-  toolInput,
-  status,
-  onApprove,
-  onReject,
-}: Props) {
+// Header pill priority: PENDING wins (any item still awaiting approval keeps
+// the "Awaiting your approval" badge). Otherwise FAILED > REJECTED > APPROVED
+// > EXECUTED so a partial failure surfaces in the header.
+function deriveHeaderStatus(
+  items: ApprovalCardItem[],
+): PendingActionStatus {
+  const statuses = items.map((i) => i.status ?? "PENDING");
+  if (statuses.some((s) => s === "PENDING")) return "PENDING";
+  const priority: PendingActionStatus[] = [
+    "FAILED",
+    "REJECTED",
+    "APPROVED",
+    "EXECUTED",
+  ];
+  for (const p of priority) {
+    if (statuses.includes(p)) return p;
+  }
+  return "EXECUTED";
+}
+
+export function ApprovalCard({ items, onApprove, onReject }: Props) {
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
-  const [snapshot, setSnapshot] = useState<unknown>(null);
-  const [snapshotLoading, setSnapshotLoading] = useState(false);
 
-  const display = TOOL_DISPLAY[toolName]?.verb ?? toolName;
-  const effectiveStatus: PendingActionStatus = status ?? "PENDING";
-  const isPending = effectiveStatus === "PENDING";
+  const headerStatus = deriveHeaderStatus(items);
+  const anyPending = items.some((i) => (i.status ?? "PENDING") === "PENDING");
+  const isBatch = items.length > 1;
 
-  // Fetch the before-snapshot once when the card mounts in PENDING state,
-  // for tools where it's meaningful. We don't refetch on status changes —
-  // once the merchant has approved/rejected, the diff is no longer the
-  // useful framing. Aborts cleanly if the card unmounts mid-fetch.
-  useEffect(() => {
-    if (!isPending || !DIFF_TOOLS.has(toolName)) return;
-    const controller = new AbortController();
-    setSnapshotLoading(true);
-    fetch(
-      `/api/tool-snapshot?toolCallId=${encodeURIComponent(toolCallId)}`,
-      { signal: controller.signal },
-    )
-      .then(async (res) => {
-        if (!res.ok) return;
-        const data = (await res.json()) as SnapshotResponse;
-        setSnapshot(data.before);
-      })
-      .catch(() => {
-        // Network error / abort — leave snapshot null, diff block hides.
-      })
-      .finally(() => {
-        setSnapshotLoading(false);
-      });
-    return () => controller.abort();
-  }, [isPending, toolName, toolCallId]);
+  const allPendingIds = items
+    .filter((i) => (i.status ?? "PENDING") === "PENDING")
+    .map((i) => i.toolCallId);
 
   const handleApprove = async () => {
-    if (busy) return;
+    if (busy || allPendingIds.length === 0) return;
     setBusy("approve");
     try {
-      await onApprove(toolCallId);
+      await onApprove(allPendingIds);
     } finally {
       setBusy(null);
     }
   };
 
   const handleReject = async () => {
-    if (busy) return;
+    if (busy || allPendingIds.length === 0) return;
     setBusy("reject");
     try {
-      await onReject(toolCallId);
+      await onReject(allPendingIds);
     } finally {
       setBusy(null);
     }
@@ -111,23 +108,20 @@ export function ApprovalCard({
       <BlockStack gap="200">
         <InlineStack gap="200" blockAlign="center">
           <Text as="span" variant="bodyMd" fontWeight="semibold">
-            Pending action: {display}
+            {isBatch
+              ? `Pending actions (${items.length})`
+              : `Pending action: ${TOOL_DISPLAY[items[0].toolName]?.verb ?? items[0].toolName}`}
           </Text>
-          <StatusBadge status={effectiveStatus} />
+          <StatusBadge status={headerStatus} />
         </InlineStack>
 
-        <ToolInputSummary toolName={toolName} toolInput={toolInput} />
+        <BlockStack gap="200">
+          {items.map((item, idx) => (
+            <ItemRow key={item.toolCallId} item={item} showHeader={isBatch} index={idx} />
+          ))}
+        </BlockStack>
 
-        {isPending && DIFF_TOOLS.has(toolName) ? (
-          <DiffBlock
-            toolName={toolName}
-            toolInput={toolInput}
-            snapshot={snapshot}
-            loading={snapshotLoading}
-          />
-        ) : null}
-
-        {isPending ? (
+        {anyPending ? (
           <InlineStack gap="200">
             <Button
               variant="primary"
@@ -135,7 +129,7 @@ export function ApprovalCard({
               loading={busy === "approve"}
               disabled={busy !== null}
             >
-              Approve
+              {isBatch ? `Approve all (${allPendingIds.length})` : "Approve"}
             </Button>
             <Button
               tone="critical"
@@ -143,7 +137,7 @@ export function ApprovalCard({
               loading={busy === "reject"}
               disabled={busy !== null}
             >
-              Reject
+              {isBatch ? "Reject all" : "Reject"}
             </Button>
           </InlineStack>
         ) : null}
@@ -152,7 +146,83 @@ export function ApprovalCard({
   );
 }
 
-function StatusBadge({ status }: { status: PendingActionStatus }) {
+function ItemRow({
+  item,
+  showHeader,
+  index,
+}: {
+  item: ApprovalCardItem;
+  showHeader: boolean;
+  index: number;
+}) {
+  const effectiveStatus: PendingActionStatus = item.status ?? "PENDING";
+  const isPending = effectiveStatus === "PENDING";
+  const display = TOOL_DISPLAY[item.toolName]?.verb ?? item.toolName;
+
+  // Per-row snapshot fetch. Each row owns its own /api/tool-snapshot call —
+  // independent of siblings so a failed snapshot on row 1 doesn't blank the
+  // diff on row 2. Aborts on unmount.
+  const [snapshot, setSnapshot] = useState<unknown>(null);
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
+  useEffect(() => {
+    if (!isPending || !DIFF_TOOLS.has(item.toolName)) return;
+    const controller = new AbortController();
+    setSnapshotLoading(true);
+    fetch(
+      `/api/tool-snapshot?toolCallId=${encodeURIComponent(item.toolCallId)}`,
+      { signal: controller.signal },
+    )
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = (await res.json()) as SnapshotResponse;
+        setSnapshot(data.before);
+      })
+      .catch(() => {
+        /* silent */
+      })
+      .finally(() => setSnapshotLoading(false));
+    return () => controller.abort();
+  }, [isPending, item.toolName, item.toolCallId]);
+
+  return (
+    <Box
+      padding={showHeader ? "200" : "0"}
+      background={showHeader ? "bg-surface" : undefined}
+      borderColor={showHeader ? "border" : undefined}
+      borderWidth={showHeader ? "025" : undefined}
+      borderRadius={showHeader ? "200" : undefined}
+    >
+      <BlockStack gap="100">
+        {showHeader ? (
+          <InlineStack gap="200" blockAlign="center">
+            <Text as="span" variant="bodySm" tone="subdued">
+              #{index + 1} · {display}
+            </Text>
+            <StatusBadge status={effectiveStatus} small />
+          </InlineStack>
+        ) : null}
+        <ToolInputSummary toolName={item.toolName} toolInput={item.toolInput} />
+        {isPending && DIFF_TOOLS.has(item.toolName) ? (
+          <DiffBlock
+            toolName={item.toolName}
+            toolInput={item.toolInput}
+            snapshot={snapshot}
+            loading={snapshotLoading}
+          />
+        ) : null}
+      </BlockStack>
+    </Box>
+  );
+}
+
+function StatusBadge({
+  status,
+  small,
+}: {
+  status: PendingActionStatus;
+  small?: boolean;
+}) {
+  void small; // Polaris Badge doesn't have a "size" — kept for future styling.
   switch (status) {
     case "EXECUTED":
       return <Badge tone="success">Approved & applied</Badge>;
@@ -186,8 +256,6 @@ function DiffBlock({
       </Text>
     );
   }
-  // No snapshot — silently hide the block; ToolInputSummary already shows
-  // the new value above.
   if (snapshot === null || typeof snapshot !== "object") return null;
 
   const snap = snapshot as Record<string, unknown>;
@@ -379,7 +447,6 @@ function ToolInputSummary({
       </Text>
     );
   }
-  // Fallback: show raw JSON in case Gemini calls a tool we haven't styled.
   return (
     <Text as="p" variant="bodySm" tone="subdued">
       <code>{JSON.stringify(toolInput)}</code>
@@ -402,3 +469,6 @@ function numberOr(value: unknown, fallback: number): number {
   }
   return fallback;
 }
+
+// Re-export for tests.
+export { deriveHeaderStatus };

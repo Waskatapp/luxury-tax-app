@@ -260,33 +260,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
           if (toolUses.length === 0) break;
 
+          // Two passes: first execute reads + inline-writes inline; collect
+          // approval-required writes for a batched approval gate. This change
+          // (V1.8): every write tool_use produces a real PendingAction row +
+          // tool_use_start SSE event before we break for approval, so when
+          // Gemini emits multiple writes in one turn the client sees them as
+          // ONE batched ApprovalCard with one Approve / one Reject. Earlier
+          // shape broke after the first write, leaving later writes without
+          // backing rows (404 on click) and dropping any read tool_results
+          // that had already executed.
           const toolResults: ToolResultBlock[] = [];
-          let stoppedForApproval = false;
+          const pendingWrites: ToolUseBlock[] = [];
 
           for (const tu of toolUses) {
             if (isApprovalRequiredWrite(tu.name)) {
-              // Idempotent upsert; toolCallId @unique is the dedupe key.
-              await prisma.pendingAction.upsert({
-                where: { toolCallId: tu.id },
-                create: {
-                  toolCallId: tu.id,
-                  toolName: tu.name,
-                  toolInput: tu.input as object,
-                  storeId: store.id,
-                  conversationId,
-                  status: "PENDING",
-                },
-                update: {},
-              });
-              emit("tool_use_start", {
-                tool_call_id: tu.id,
-                tool_name: tu.name,
-                tool_input: tu.input,
-              });
-              stoppedForApproval = true;
-              break;
+              pendingWrites.push(tu);
+              continue;
             }
-
             if (isReadTool(tu.name) || isInlineWrite(tu.name)) {
               // Inline-execute path: reads + safe writes that don't mutate
               // the store (e.g. update_store_memory). No approval card.
@@ -307,7 +297,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               });
               continue;
             }
-
             // Unknown / not-yet-wired
             toolResults.push({
               type: "tool_result",
@@ -317,11 +306,47 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             });
           }
 
-          if (stoppedForApproval) break;
+          if (pendingWrites.length > 0) {
+            // Persist any reads we ran first — keeps Gemini's history
+            // well-formed across the approval gap (one model turn → one
+            // user turn with all functionResponses on continuation).
+            if (toolResults.length > 0) {
+              await prisma.message.create({
+                data: {
+                  conversationId,
+                  role: "user",
+                  content: toolResults as unknown as object,
+                },
+              });
+            }
+            // Upsert ALL pending writes + emit one tool_use_start each.
+            // toolCallId @unique is the dedupe key (idempotent).
+            for (const tu of pendingWrites) {
+              await prisma.pendingAction.upsert({
+                where: { toolCallId: tu.id },
+                create: {
+                  toolCallId: tu.id,
+                  toolName: tu.name,
+                  toolInput: tu.input as object,
+                  storeId: store.id,
+                  conversationId,
+                  status: "PENDING",
+                },
+                update: {},
+              });
+              emit("tool_use_start", {
+                tool_call_id: tu.id,
+                tool_name: tu.name,
+                tool_input: tu.input,
+              });
+            }
+            break; // wait for approval
+          }
+
           if (toolResults.length === 0) break;
 
-          // Synthesize a user-turn with the tool_results. This row is filtered
-          // from the UI by api.messages.tsx (internal plumbing, not user-visible).
+          // Pure-reads turn: synthesize a user-turn with the tool_results
+          // and continue the agent loop. Filtered from the UI by api.messages.tsx.
           await prisma.message.create({
             data: {
               conversationId,

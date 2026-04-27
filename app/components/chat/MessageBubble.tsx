@@ -12,8 +12,8 @@ type Props = {
   message: ChatMessage;
   pendingByToolCallId: Record<string, PendingActionStatus>;
   runningTool: string | null;
-  onApprove: (toolCallId: string) => Promise<void> | void;
-  onReject: (toolCallId: string) => Promise<void> | void;
+  onApprove: (toolCallIds: string[]) => Promise<void> | void;
+  onReject: (toolCallIds: string[]) => Promise<void> | void;
 };
 
 type ToolResultLike = {
@@ -182,17 +182,22 @@ export function MessageBubble({
               </Text>
             ) : null}
             {showRunningPill ? <ToolRunningPill toolName={runningTool} /> : null}
-            {toolUses.map((tu) => (
+            {toolUses.length > 0 ? (
+              // V1.8: ALL approval-required writes from one assistant turn
+              // render as a single batched ApprovalCard with one Approve /
+              // one Reject button. Single-item turns degrade naturally to
+              // the V1.7 single-card UX.
               <ApprovalCard
-                key={tu.id}
-                toolCallId={tu.id}
-                toolName={tu.name}
-                toolInput={(tu.input ?? {}) as Record<string, unknown>}
-                status={pendingByToolCallId[tu.id]}
+                items={toolUses.map((tu) => ({
+                  toolCallId: tu.id,
+                  toolName: tu.name,
+                  toolInput: (tu.input ?? {}) as Record<string, unknown>,
+                  status: pendingByToolCallId[tu.id],
+                }))}
                 onApprove={onApprove}
                 onReject={onReject}
               />
-            ))}
+            ) : null}
             {message.status === "error" ? (
               <Text as="p" variant="bodySm" tone="critical">
                 Something went wrong with this message.
