@@ -7,8 +7,12 @@ import { requireStoreAccess } from "../lib/auth.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { store } = await requireStoreAccess(request);
 
+  // Match app.copilot.tsx loader: sidebar lists only conversations whose
+  // LLM-generated title is set. Untitled rows are mid-flight (the title
+  // generator runs after the first assistant turn) and re-appear via the
+  // SSE conversation_titled event.
   const rows = await prisma.conversation.findMany({
-    where: { storeId: store.id },
+    where: { storeId: store.id, title: { not: null } },
     orderBy: { updatedAt: "desc" },
     select: { id: true, title: true, updatedAt: true },
   });

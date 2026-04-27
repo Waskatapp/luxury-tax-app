@@ -22,6 +22,7 @@ import {
   listMemoryForPrompt,
 } from "../lib/memory/store-memory.server";
 import { extractAndStoreMemory } from "../lib/memory/memory-extractor.server";
+import { generateTitle } from "../lib/agent/title-generator.server";
 import { log } from "../lib/log.server";
 import {
   AssistantTurnAccumulator,
@@ -138,7 +139,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         prisma.conversation.update({
           where: { id: conversationId },
           data: {
-            title: conversation.title ?? sanitized.slice(0, 60),
+            // Title is set later by the LLM-based generateTitle() call
+            // after the first assistant turn — see "conversation_titled"
+            // emit below. Avoid the prior `sanitized.slice(0, 60)` fallback
+            // which produced mid-word truncations like "always keep you
+            // answers short and to the point add this to y".
             updatedAt: new Date(),
           },
         }),
@@ -346,6 +351,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           });
           for (const entry of saved) {
             emit("memory_saved", entry);
+          }
+
+          // First-turn title generation. Only fires when the conversation
+          // was untitled at request entry AND this turn produced assistant
+          // text. updateMany with `title: null` prevents two concurrent
+          // requests from both setting (and both emitting) — only the
+          // first writer wins. Failure is non-fatal; generateTitle never
+          // throws and returns a safe fallback.
+          if (conversation.title === null) {
+            const title = await generateTitle(text, assistantTextBuffer);
+            const result = await prisma.conversation.updateMany({
+              where: { id: conversationId, title: null },
+              data: { title },
+            });
+            if (result.count > 0) {
+              emit("conversation_titled", {
+                conversationId,
+                title,
+              });
+            }
           }
         }
       } catch (err) {

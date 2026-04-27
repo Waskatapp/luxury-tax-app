@@ -52,8 +52,13 @@ const AT_BOTTOM_THRESHOLD = 80;
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { store, admin } = await requireStoreAccess(request);
 
+  // Sidebar excludes conversations whose title hasn't been generated yet.
+  // The LLM title generator (api.chat.tsx) sets it after the first
+  // assistant turn; until then we'd be showing "Chat <cuid>" placeholders
+  // which look broken. After the SSE conversation_titled event fires, the
+  // client adds the conversation to the sidebar in real time.
   const rows = await prisma.conversation.findMany({
-    where: { storeId: store.id },
+    where: { storeId: store.id, title: { not: null } },
     orderBy: { updatedAt: "desc" },
     select: { id: true, title: true, updatedAt: true },
   });
@@ -270,7 +275,13 @@ export default function CopilotPage() {
       const res = await fetch("/api/conversations", { method: "POST" });
       if (!res.ok) return;
       const data = (await res.json()) as { conversation: ConversationSummary };
-      setConversations((prev) => [data.conversation, ...prev]);
+      // Deliberately NOT adding to setConversations here — the new row's
+      // title is null until the LLM title generator fires after the first
+      // assistant turn. We add it to the sidebar via the SSE
+      // conversation_titled handler below, which routes through
+      // handleConversationTitled. The chat panel still renders for
+      // activeId because the loader returns the conversation by id; the
+      // sidebar just doesn't show it yet.
       setActiveId(data.conversation.id);
       dispatch({
         type: "LOAD_MESSAGES",
@@ -281,6 +292,37 @@ export default function CopilotPage() {
       setCreating(false);
     }
   }, []);
+
+  // Inserts a freshly-titled conversation into the sidebar. Fired by the
+  // server's `conversation_titled` SSE event the first time it sets a
+  // title for a conversation. If the conversation is already in the list
+  // (e.g. user renamed via PATCH and a follow-up turn re-emitted the
+  // event somehow), the existing entry is updated in place.
+  const handleConversationTitled = useCallback(
+    (payload: { conversationId: string; title: string }) => {
+      const nowIso = new Date().toISOString();
+      setConversations((prev) => {
+        const exists = prev.some((c) => c.id === payload.conversationId);
+        const next = exists
+          ? prev.map((c) =>
+              c.id === payload.conversationId
+                ? { ...c, title: payload.title, updatedAt: nowIso }
+                : c,
+            )
+          : [
+              {
+                id: payload.conversationId,
+                title: payload.title,
+                updatedAt: nowIso,
+              },
+              ...prev,
+            ];
+        next.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+        return next;
+      });
+    },
+    [],
+  );
 
   const handleDelete = useCallback(
     async (id: string) => {
@@ -319,17 +361,19 @@ export default function CopilotPage() {
     async (text: string) => {
       if (!activeId) return;
       const conversationId = activeId;
-      // Mirror the server-side title logic optimistically.
-      const nowIso = new Date().toISOString();
+      // We used to optimistically set a sidebar title from `text.slice(0,
+      // 60)` here, which produced ugly mid-word truncations. The server
+      // now generates the title via Gemini Flash-Lite after the first
+      // assistant turn and emits `conversation_titled` — handled below
+      // via onConversationTitled. For conversations already in the
+      // sidebar (i.e. follow-up turns), bump updatedAt so the row sorts
+      // to the top. Untitled conversations stay out of the sidebar
+      // entirely until the title event fires.
       setConversations((prev) => {
+        if (!prev.some((c) => c.id === conversationId)) return prev;
+        const nowIso = new Date().toISOString();
         const next = prev.map((c) =>
-          c.id === conversationId
-            ? {
-                ...c,
-                title: c.title ?? text.slice(0, 60),
-                updatedAt: nowIso,
-              }
-            : c,
+          c.id === conversationId ? { ...c, updatedAt: nowIso } : c,
         );
         next.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
         return next;
@@ -342,6 +386,7 @@ export default function CopilotPage() {
         text,
         dispatch,
         onMemorySaved: handleMemorySaved,
+        onConversationTitled: handleConversationTitled,
       });
       // Replace streamed bubbles with persisted state ONLY on success.
       // LOAD_MESSAGES clears state.error, so reloading after an error would
@@ -374,6 +419,7 @@ export default function CopilotPage() {
             conversationId,
             dispatch,
             onMemorySaved: handleMemorySaved,
+            onConversationTitled: handleConversationTitled,
           });
           if (o === "done") {
             retryFnRef.current = null;
@@ -388,7 +434,7 @@ export default function CopilotPage() {
       };
       retryFnRef.current = buildRetry();
     },
-    [activeId, reloadMessages, handleMemorySaved],
+    [activeId, reloadMessages, handleMemorySaved, handleConversationTitled],
   );
 
   const handleApprove = useCallback(
@@ -521,6 +567,7 @@ export default function CopilotPage() {
         conversationId,
         dispatch,
         onMemorySaved: handleMemorySaved,
+        onConversationTitled: handleConversationTitled,
       });
       if (o === "done") {
         retryFnRef.current = null;
@@ -530,7 +577,7 @@ export default function CopilotPage() {
       }
     };
     await buildRetry()();
-  }, [activeId, reloadMessages, handleMemorySaved]);
+  }, [activeId, reloadMessages, handleMemorySaved, handleConversationTitled]);
 
   const sending = state.phase === "streaming";
   const hasActive = activeId !== null;

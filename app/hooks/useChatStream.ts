@@ -16,6 +16,16 @@ export type MemorySavedEntry = {
   value: string;
 };
 
+// Emitted exactly once per conversation, when the server's LLM title
+// generator sets the conversation's title for the first time. Consumers
+// use this to add the conversation to the sidebar (we deliberately keep
+// untitled conversations out of the sidebar to avoid showing ugly
+// placeholder names — see app.copilot.tsx).
+export type ConversationTitledPayload = {
+  conversationId: string;
+  title: string;
+};
+
 // Raw-fetch SSE consumer. useFetcher buffers until complete; EventSource is
 // GET-only. Both are wrong for streaming chat (CLAUDE.md rule #4).
 export async function sendChatMessage(params: {
@@ -24,8 +34,9 @@ export async function sendChatMessage(params: {
   dispatch: Dispatch<ChatAction>;
   signal?: AbortSignal;
   onMemorySaved?: (entry: MemorySavedEntry) => void;
+  onConversationTitled?: (payload: ConversationTitledPayload) => void;
 }): Promise<StreamOutcome> {
-  const { conversationId, text, dispatch, signal, onMemorySaved } = params;
+  const { conversationId, text, dispatch, signal, onMemorySaved, onConversationTitled } = params;
 
   const assistantId = generateId("assistant");
   const userMessage: ChatMessage = {
@@ -43,6 +54,7 @@ export async function sendChatMessage(params: {
     dispatch,
     signal,
     onMemorySaved,
+    onConversationTitled,
   });
 }
 
@@ -54,8 +66,9 @@ export async function continueChat(params: {
   dispatch: Dispatch<ChatAction>;
   signal?: AbortSignal;
   onMemorySaved?: (entry: MemorySavedEntry) => void;
+  onConversationTitled?: (payload: ConversationTitledPayload) => void;
 }): Promise<StreamOutcome> {
-  const { conversationId, dispatch, signal, onMemorySaved } = params;
+  const { conversationId, dispatch, signal, onMemorySaved, onConversationTitled } = params;
 
   const assistantId = generateId("assistant");
   dispatch({ type: "CONTINUE_START", assistantId });
@@ -66,6 +79,7 @@ export async function continueChat(params: {
     dispatch,
     signal,
     onMemorySaved,
+    onConversationTitled,
   });
 }
 
@@ -75,8 +89,9 @@ async function streamChatTurn(params: {
   dispatch: Dispatch<ChatAction>;
   signal?: AbortSignal;
   onMemorySaved?: (entry: MemorySavedEntry) => void;
+  onConversationTitled?: (payload: ConversationTitledPayload) => void;
 }): Promise<StreamOutcome> {
-  const { body, assistantId, dispatch, signal, onMemorySaved } = params;
+  const { body, assistantId, dispatch, signal, onMemorySaved, onConversationTitled } = params;
 
   let response: Response;
   try {
@@ -115,7 +130,7 @@ async function streamChatTurn(params: {
       while (sep !== -1) {
         const rawFrame = buffer.slice(0, sep);
         buffer = buffer.slice(sep + 2);
-        handleFrame(rawFrame, assistantId, dispatch, tracker, onMemorySaved);
+        handleFrame(rawFrame, assistantId, dispatch, tracker, onMemorySaved, onConversationTitled);
         sep = buffer.indexOf("\n\n");
       }
     }
@@ -140,6 +155,7 @@ function handleFrame(
   dispatch: Dispatch<ChatAction>,
   tracker: { outcome: StreamOutcome },
   onMemorySaved?: (entry: MemorySavedEntry) => void,
+  onConversationTitled?: (payload: ConversationTitledPayload) => void,
 ) {
   let event: string | null = null;
   let dataStr: string | null = null;
@@ -161,6 +177,8 @@ function handleFrame(
     category?: string;
     key?: string;
     value?: string;
+    conversationId?: string;
+    title?: string;
   };
   try {
     data = JSON.parse(dataStr);
@@ -194,6 +212,18 @@ function handleFrame(
           category: String(data.category ?? ""),
           key: String(data.key ?? ""),
           value: String(data.value ?? ""),
+        });
+      }
+      return;
+    case "conversation_titled":
+      if (
+        onConversationTitled &&
+        typeof data.conversationId === "string" &&
+        typeof data.title === "string"
+      ) {
+        onConversationTitled({
+          conversationId: data.conversationId,
+          title: data.title,
         });
       }
       return;
