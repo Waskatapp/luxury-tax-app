@@ -31,7 +31,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # >=22.18 needed by @shopify/polaris-types@1.0.6 transitive dep.
+          node-version: "22"
           cache: "npm"
 
       - name: Install deps
