@@ -132,8 +132,8 @@ export default function CopilotPage() {
   }, []);
 
   const reloadMessages = useCallback(
-    async (signal?: AbortSignal): Promise<void> => {
-      if (!activeId) return;
+    async (signal?: AbortSignal): Promise<ChatMessage[] | null> => {
+      if (!activeId) return null;
       try {
         const res = await fetch(
           `/api/messages?conversationId=${encodeURIComponent(activeId)}`,
@@ -141,7 +141,7 @@ export default function CopilotPage() {
         );
         if (!res.ok) {
           dispatch({ type: "ERROR", error: `Load failed (${res.status})` });
-          return;
+          return null;
         }
         const data = (await res.json()) as {
           messages: Array<{
@@ -163,16 +163,33 @@ export default function CopilotPage() {
           messages,
           pendingByToolCallId: data.pendingByToolCallId ?? {},
         });
+        return messages;
       } catch (err) {
-        if ((err as Error).name === "AbortError") return;
+        if ((err as Error).name === "AbortError") return null;
         dispatch({
           type: "ERROR",
           error: err instanceof Error ? err.message : String(err),
         });
+        return null;
       }
     },
     [activeId],
   );
+
+  // Reads the most recent user-text from a loaded message list. Used by the
+  // retry path to decide whether the failed turn was already persisted on
+  // the server (→ continueChat) or needs to be re-sent (→ handleSend).
+  function findLastUserText(messages: ChatMessage[]): string | null {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== "user") continue;
+      for (const b of m.content) {
+        if (b.type === "text") return b.text;
+      }
+      return null;
+    }
+    return null;
+  }
 
   // Load messages + pending action statuses when active conversation changes.
   useEffect(() => {
@@ -240,11 +257,12 @@ export default function CopilotPage() {
   const handleSend = useCallback(
     async (text: string) => {
       if (!activeId) return;
+      const conversationId = activeId;
       // Mirror the server-side title logic optimistically.
       const nowIso = new Date().toISOString();
       setConversations((prev) => {
         const next = prev.map((c) =>
-          c.id === activeId
+          c.id === conversationId
             ? {
                 ...c,
                 title: c.title ?? text.slice(0, 60),
@@ -259,7 +277,7 @@ export default function CopilotPage() {
       setIsAtBottom(true);
       retryFnRef.current = null;
       const outcome = await sendChatMessage({
-        conversationId: activeId,
+        conversationId,
         text,
         dispatch,
         onMemorySaved: handleMemorySaved,
@@ -270,17 +288,44 @@ export default function CopilotPage() {
       if (outcome === "done") {
         retryFnRef.current = null;
         await reloadMessages();
-      } else if (outcome === "error") {
-        // Stream blew up mid-send — let the merchant retry the same message.
-        const captured = text;
-        retryFnRef.current = async () => {
-          // Strip the busted user+assistant placeholder before retrying;
-          // reloadMessages will rehydrate from the DB on success.
-          dispatch({ type: "RESET" });
-          await reloadMessages();
-          await handleSend(captured);
-        };
+        return;
       }
+
+      // "error" or "truncated" — set up an unlimited-retry loop. The retry
+      // function picks its path based on whether the user message reached
+      // the DB on the failed attempt:
+      //   - already persisted (Gemini RPM mid-stream) → continueChat
+      //     (no optimistic SEND_START, so no duplicate user bubble)
+      //   - not persisted (chat rate limit pre-stream) → handleSend
+      //     (re-sends; server-side dedupe protects the DB)
+      const captured = text;
+      const buildRetry = (): (() => Promise<void>) => async () => {
+        dispatch({ type: "RESET" });
+        const loaded = await reloadMessages();
+        if (loaded === null) return;
+        const lastUser = findLastUserText(loaded);
+        // Server truncates user input to 4000 chars; replicate so a long
+        // message that was sliced in the DB still matches its captured form.
+        const alreadyPersisted =
+          lastUser !== null && lastUser === captured.slice(0, 4000);
+        if (alreadyPersisted) {
+          const o = await continueChat({
+            conversationId,
+            dispatch,
+            onMemorySaved: handleMemorySaved,
+          });
+          if (o === "done") {
+            retryFnRef.current = null;
+            await reloadMessages();
+          } else {
+            // Failed again — keep the merchant able to retry until it works.
+            retryFnRef.current = buildRetry();
+          }
+        } else {
+          await handleSend(captured);
+        }
+      };
+      retryFnRef.current = buildRetry();
     },
     [activeId, reloadMessages, handleMemorySaved],
   );
@@ -318,14 +363,18 @@ export default function CopilotPage() {
         if (outcome === "done") {
           retryFnRef.current = null;
           await reloadMessages();
-        } else if (outcome === "error") {
-          retryFnRef.current = async () => {
+        } else {
+          // "error" or "truncated" — keep retry available indefinitely.
+          const buildRetry = (): (() => Promise<void>) => async () => {
             const o = await continueChat({ conversationId, dispatch });
             if (o === "done") {
               retryFnRef.current = null;
               await reloadMessages();
+            } else {
+              retryFnRef.current = buildRetry();
             }
           };
+          retryFnRef.current = buildRetry();
         }
       } catch (err) {
         dispatch({
@@ -355,14 +404,17 @@ export default function CopilotPage() {
         if (outcome === "done") {
           retryFnRef.current = null;
           await reloadMessages();
-        } else if (outcome === "error") {
-          retryFnRef.current = async () => {
+        } else {
+          const buildRetry = (): (() => Promise<void>) => async () => {
             const o = await continueChat({ conversationId, dispatch });
             if (o === "done") {
               retryFnRef.current = null;
               await reloadMessages();
+            } else {
+              retryFnRef.current = buildRetry();
             }
           };
+          retryFnRef.current = buildRetry();
         }
       } catch (err) {
         dispatch({
@@ -375,15 +427,77 @@ export default function CopilotPage() {
   );
 
   const handleRetry = useCallback(async () => {
+    if (!activeId) return;
+    const conversationId = activeId;
     const fn = retryFnRef.current;
-    if (!fn) return;
     retryFnRef.current = null;
-    await fn();
-  }, []);
+
+    // In-memory retry path: handleSend / handleApprove / handleReject set
+    // this on stream failure so they can re-send the right thing (with
+    // dedupe + correct outcome handling). Use it if available.
+    if (fn) {
+      await fn();
+      return;
+    }
+
+    // Data-derived fallback: we get here when the merchant switched
+    // conversations and came back, or refreshed the page. The in-memory
+    // retry context is gone, but the DB still has the unanswered user
+    // message (or unsummarized assistant turn). continueChat reads
+    // history from the server and finishes the turn.
+    const buildRetry = (): (() => Promise<void>) => async () => {
+      const o = await continueChat({
+        conversationId,
+        dispatch,
+        onMemorySaved: handleMemorySaved,
+      });
+      if (o === "done") {
+        retryFnRef.current = null;
+        await reloadMessages();
+      } else {
+        retryFnRef.current = buildRetry();
+      }
+    };
+    await buildRetry()();
+  }, [activeId, reloadMessages, handleMemorySaved]);
 
   const sending = state.phase === "streaming";
   const hasActive = activeId !== null;
-  const canRetry = state.error !== null && retryFnRef.current !== null;
+
+  // Detect "stuck" conversation states — when the in-memory error is gone
+  // (e.g. after switching conversations and coming back) but the DB shows
+  // the merchant is owed a response.
+  const lastMessage =
+    state.messages.length > 0
+      ? state.messages[state.messages.length - 1]
+      : null;
+  const lastIsUnansweredUser =
+    !sending && lastMessage?.role === "user";
+  const lastIsUnsummarizedAssistant =
+    !sending &&
+    lastMessage?.role === "assistant" &&
+    (() => {
+      const toolUses = lastMessage.content.filter(
+        (b): b is { type: "tool_use"; id: string; name: string; input: unknown } =>
+          b.type === "tool_use",
+      );
+      if (toolUses.length === 0) return false;
+      // All write-tool decisions reached a terminal state (executed / rejected
+      // / failed) but no summarizing assistant turn followed.
+      return toolUses.every((tu) => {
+        const status = state.pendingByToolCallId[tu.id];
+        return (
+          status === "EXECUTED" ||
+          status === "REJECTED" ||
+          status === "FAILED"
+        );
+      });
+    })();
+  const dataDerivedStuck = lastIsUnansweredUser || lastIsUnsummarizedAssistant;
+
+  const canRetry =
+    !sending &&
+    (retryFnRef.current !== null || dataDerivedStuck);
 
   return (
     <Page title="Copilot" fullWidth>
@@ -419,6 +533,21 @@ export default function CopilotPage() {
                   }
                 >
                   <p>{state.error}</p>
+                </Banner>
+              ) : dataDerivedStuck ? (
+                // No in-memory error but the conversation is owed a response —
+                // typical after switching conversations / refreshing during a
+                // rate-limited turn. Surface a softer banner so the merchant
+                // can pick up where they left off.
+                <Banner
+                  tone="warning"
+                  title="Awaiting Copilot's response"
+                  action={{ content: "Try again", onAction: handleRetry }}
+                >
+                  <p>
+                    Your last message wasn't answered — likely a brief
+                    rate-limit hiccup. Click "Try again" to continue.
+                  </p>
                 </Banner>
               ) : null}
 

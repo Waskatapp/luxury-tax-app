@@ -98,23 +98,52 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // already includes the synthesized tool_result row from approve/reject.
   if (typeof text === "string") {
     const sanitized = sanitizeUserInput(text);
-    const userContent: ContentBlock[] = [{ type: "text", text: sanitized }];
-    await prisma.$transaction([
-      prisma.message.create({
-        data: {
-          conversationId,
-          role: "user",
-          content: userContent as unknown as object,
-        },
-      }),
-      prisma.conversation.update({
+    // Idempotent retry guard: if the immediately-previous user message in
+    // this conversation is identical, this is a re-send of a failed turn
+    // (rate limit, network blip). Skip persistence so the DB doesn't grow
+    // a duplicate row each time the merchant clicks "Try again".
+    const lastUserRow = await prisma.message.findFirst({
+      where: { conversationId, role: "user" },
+      orderBy: { createdAt: "desc" },
+      select: { content: true },
+    });
+    const lastUserText = ((): string | null => {
+      const blocks = lastUserRow?.content as ContentBlock[] | null;
+      if (!Array.isArray(blocks)) return null;
+      for (const b of blocks) {
+        if (b?.type === "text" && typeof (b as { text?: unknown }).text === "string") {
+          return (b as { text: string }).text;
+        }
+      }
+      return null;
+    })();
+
+    if (lastUserText === sanitized) {
+      // Same message already on disk — bump conversation activity for
+      // sidebar sort, but don't double-persist.
+      await prisma.conversation.update({
         where: { id: conversationId },
-        data: {
-          title: conversation.title ?? sanitized.slice(0, 60),
-          updatedAt: new Date(),
-        },
-      }),
-    ]);
+        data: { updatedAt: new Date() },
+      });
+    } else {
+      const userContent: ContentBlock[] = [{ type: "text", text: sanitized }];
+      await prisma.$transaction([
+        prisma.message.create({
+          data: {
+            conversationId,
+            role: "user",
+            content: userContent as unknown as object,
+          },
+        }),
+        prisma.conversation.update({
+          where: { id: conversationId },
+          data: {
+            title: conversation.title ?? sanitized.slice(0, 60),
+            updatedAt: new Date(),
+          },
+        }),
+      ]);
+    }
   }
 
   // Load last N messages for context (chronological).

@@ -123,6 +123,14 @@ async function streamChatTurn(params: {
     dispatch({ type: "ERROR", error: errorMessage(err) });
     return "error";
   }
+  // Stream closed without any final event — surface as a real error so the
+  // banner shows and the retry path engages, instead of looking like a jam.
+  if (tracker.outcome === "truncated") {
+    dispatch({
+      type: "ERROR",
+      error: "Connection ended unexpectedly. Try again in a moment.",
+    });
+  }
   return tracker.outcome;
 }
 
@@ -197,7 +205,13 @@ function handleFrame(
       });
       return;
     case "done":
-      tracker.outcome = "done";
+      // Servers emit `done` after `error` to close the stream cleanly.
+      // Don't downgrade — the caller decides what to do based on the
+      // first authoritative outcome, and we want "error" to stick so
+      // the retry banner stays visible.
+      if (tracker.outcome !== "error") {
+        tracker.outcome = "done";
+      }
       dispatch({ type: "DONE", messageId });
       return;
   }
