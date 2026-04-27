@@ -1,3 +1,7 @@
+---
+department: insights
+---
+
 # Workflow: Sales analytics
 
 Tool: `get_analytics`

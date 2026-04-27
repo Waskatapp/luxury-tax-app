@@ -1,5 +1,7 @@
 import { useReducer } from "react";
 
+import type { DepartmentId } from "../lib/agent/departments";
+
 // ContentBlock is our internal, provider-agnostic shape (mirrors what is
 // persisted in Message.content). The translate.server.ts boundary handles
 // converting to/from Gemini Part[].
@@ -43,6 +45,11 @@ export type ChatState = {
   // server. Set by TOOL_RUNNING; cleared by the next TEXT_DELTA / DONE /
   // ERROR / RESET / LOAD_MESSAGES. Not persisted.
   runningTool: string | null;
+  // V2.0 — department that owns runningTool, derived from the tool name.
+  // null when the tool is cross-cutting (update_store_memory) or
+  // unrecognized. Same lifetime as runningTool. Drives the "Asking the
+  // [manager]…" routing pill.
+  runningDepartment: DepartmentId | null;
 };
 
 export type ChatAction =
@@ -60,8 +67,9 @@ export type ChatAction =
       toolCallId: string;
       toolName: string;
       toolInput: unknown;
+      departmentId: DepartmentId | null;
     }
-  | { type: "TOOL_RUNNING"; toolName: string }
+  | { type: "TOOL_RUNNING"; toolName: string; departmentId: DepartmentId | null }
   | { type: "DONE"; messageId: string }
   | { type: "ERROR"; error: string }
   | {
@@ -77,6 +85,7 @@ export const INITIAL_CHAT_STATE: ChatState = {
   pendingByToolCallId: {},
   error: null,
   runningTool: null,
+  runningDepartment: null,
 };
 
 function appendTextDelta(message: ChatMessage, delta: string): ChatMessage {
@@ -98,6 +107,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         pendingByToolCallId: action.pendingByToolCallId,
         error: null,
         runningTool: null,
+        runningDepartment: null,
       };
 
     case "SEND_START": {
@@ -135,15 +145,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         // Text resuming means whichever read tool was running has finished.
         runningTool: null,
+        runningDepartment: null,
         messages: state.messages.map((m) =>
           m.id === action.messageId ? appendTextDelta(m, action.delta) : m,
         ),
       };
 
     case "TOOL_RUNNING":
-      return { ...state, runningTool: action.toolName };
+      return {
+        ...state,
+        runningTool: action.toolName,
+        runningDepartment: action.departmentId,
+      };
 
     case "TOOL_USE_START":
+      // V2.0 — we accept departmentId in the action for future phases that
+      // may want to render department info on the approval card itself,
+      // but we don't set runningTool/runningDepartment here. The approval
+      // card takes over the visual real estate, not the pill.
       return {
         ...state,
         phase: "awaitingApproval",
@@ -175,6 +194,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         phase: state.phase === "awaitingApproval" ? "awaitingApproval" : "idle",
         runningTool: null,
+        runningDepartment: null,
         messages: state.messages.map((m) =>
           m.id === action.messageId ? { ...m, status: "complete" } : m,
         ),
@@ -198,6 +218,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         phase: "error",
         runningTool: null,
+        runningDepartment: null,
         messages: state.messages.map((m) =>
           m.status === "streaming" ? { ...m, status: "error" } : m,
         ),

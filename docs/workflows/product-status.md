@@ -1,3 +1,7 @@
+---
+department: products
+---
+
 # Workflow: Changing a product's lifecycle status
 
 Tool: `update_product_status`

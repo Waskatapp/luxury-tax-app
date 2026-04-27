@@ -1,3 +1,7 @@
+---
+department: pricing-promotions
+---
+
 # Workflow: Changing a product's price
 
 Tool: `update_product_price`

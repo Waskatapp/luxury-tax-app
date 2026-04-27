@@ -1,3 +1,7 @@
+---
+department: products
+---
+
 # Workflow: Inventory audit & at-risk reporting
 
 Tool: `get_analytics` with `metric: "inventory_at_risk"`

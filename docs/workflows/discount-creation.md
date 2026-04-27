@@ -1,3 +1,7 @@
+---
+department: pricing-promotions
+---
+
 # Workflow: Creating a discount
 
 Tool: `create_discount`

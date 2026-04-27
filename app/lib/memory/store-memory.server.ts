@@ -135,6 +135,7 @@ const CATEGORY_HEADINGS: Record<MemoryCategory, string> = {
   CUSTOMER_RULES: "Customer rules",
   STORE_CONTEXT: "Store context",
   OPERATOR_PREFS: "Operator preferences",
+  STRATEGIC_GUARDRAILS: "Strategic guardrails",
 };
 
 // Group entries by category for the systemInstruction injection.

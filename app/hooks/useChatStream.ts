@@ -1,4 +1,5 @@
 import type { Dispatch } from "react";
+import { departmentForTool } from "../lib/agent/departments";
 import type { ChatAction, ChatMessage } from "./useChat";
 
 // Final outcome of a streamed turn. Callers use this to decide whether to
@@ -190,21 +191,27 @@ function handleFrame(
     case "text_delta":
       dispatch({ type: "TEXT_DELTA", messageId, delta: String(data.delta ?? "") });
       return;
-    case "tool_use_start":
+    case "tool_use_start": {
+      const toolName = String(data.tool_name ?? "");
       dispatch({
         type: "TOOL_USE_START",
         messageId,
         toolCallId: String(data.tool_call_id ?? ""),
-        toolName: String(data.tool_name ?? ""),
+        toolName,
         toolInput: data.tool_input,
+        departmentId: departmentForTool(toolName),
       });
       return;
-    case "tool_running":
+    }
+    case "tool_running": {
+      const toolName = String(data.tool_name ?? "");
       dispatch({
         type: "TOOL_RUNNING",
-        toolName: String(data.tool_name ?? ""),
+        toolName,
+        departmentId: departmentForTool(toolName),
       });
       return;
+    }
     case "memory_saved":
       if (onMemorySaved && typeof data.id === "string") {
         onMemorySaved({

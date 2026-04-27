@@ -767,6 +767,7 @@ export default function CopilotPage() {
                           message={m}
                           pendingByToolCallId={state.pendingByToolCallId}
                           runningTool={state.runningTool}
+                          runningDepartment={state.runningDepartment}
                           onApprove={handleApprove}
                           onReject={handleReject}
                         />

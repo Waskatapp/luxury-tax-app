@@ -69,16 +69,20 @@ type SignalGuard =
   | "morning"
   | "evening";
 
+// V2.0 — categories aligned with DepartmentId in app/lib/agent/departments.ts.
+// "onboarding" stays separate (welcome-flow only, not a department), "memory"
+// is cross-cutting, "general" is for catch-all suggestions that don't fit a
+// department. The diversity penalty in scoreCandidates() is category-agnostic
+// — renaming category values doesn't change ranking behavior.
 export type Candidate = {
   id: string;
   label: string;
   prompt: string;
   category:
     | "onboarding"
-    | "analytics"
-    | "products"
-    | "drafts"
-    | "promotions"
+    | "insights"            // was "analytics"
+    | "products"            // unchanged + absorbs "drafts"
+    | "pricing-promotions"  // was "promotions"
     | "memory"
     | "general";
   baseScore: number;
@@ -435,7 +439,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     id: "show_me_my_products",
     label: "Show me my products",
     prompt: "Show me my products.",
-    category: "analytics",
+    category: "insights",
     baseScore: 4,
     requires: ["has_products"],
   },
@@ -443,14 +447,14 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     id: "list_my_collections",
     label: "List my collections",
     prompt: "List my collections.",
-    category: "analytics",
+    category: "insights",
     baseScore: 3,
   },
   {
     id: "whats_low_on_stock",
     label: "What's running low on stock?",
     prompt: "What's running low on stock?",
-    category: "analytics",
+    category: "insights",
     baseScore: 4,
     boostWhen: ["low_stock"],
   },
@@ -459,7 +463,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     label: "Which SKUs should I reorder?",
     prompt:
       "Which SKUs should I reorder soon? Show me the most at-risk ones first.",
-    category: "analytics",
+    category: "insights",
     baseScore: 2,
     requires: ["low_stock"],
   },
@@ -467,7 +471,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     id: "revenue_this_week",
     label: "How's revenue this week?",
     prompt: "How is revenue this week compared to last week?",
-    category: "analytics",
+    category: "insights",
     baseScore: 5,
     boostWhen: ["business_hours_weekday"],
     suppressWhen: ["new_store"],
@@ -476,7 +480,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     id: "revenue_last_30",
     label: "How's revenue the last 30 days?",
     prompt: "How is revenue the last 30 days?",
-    category: "analytics",
+    category: "insights",
     baseScore: 4,
     suppressWhen: ["new_store"],
   },
@@ -484,7 +488,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     id: "top_products_this_week",
     label: "Top sellers this week",
     prompt: "Show me my top 5 products by units sold this week.",
-    category: "analytics",
+    category: "insights",
     baseScore: 4,
     boostWhen: ["business_hours_weekday"],
     suppressWhen: ["new_store"],
@@ -493,7 +497,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     id: "top_products_30d",
     label: "Top 5 products (30 days)",
     prompt: "Show me my top 5 products by units sold in the last 30 days.",
-    category: "analytics",
+    category: "insights",
     baseScore: 3,
     suppressWhen: ["new_store"],
   },
@@ -551,7 +555,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     label: "Review my draft products",
     prompt:
       "I have draft products — can you review them with me and help me decide which to publish?",
-    category: "drafts",
+    category: "products",
     baseScore: 3,
     requires: ["has_drafts"],
   },
@@ -559,7 +563,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     id: "help_publish_draft",
     label: "Help me publish a draft",
     prompt: "Help me publish a draft product.",
-    category: "drafts",
+    category: "products",
     baseScore: 3,
     requires: ["has_drafts"],
   },
@@ -567,7 +571,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     id: "create_a_new_draft",
     label: "Create a new product draft",
     prompt: "Help me create a new product draft from scratch.",
-    category: "drafts",
+    category: "products",
     baseScore: 2,
   },
 
@@ -576,7 +580,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     id: "create_15_off_discount",
     label: "Create a 15% off discount",
     prompt: "Create a 15% off discount.",
-    category: "promotions",
+    category: "pricing-promotions",
     baseScore: 3,
     suppressWhen: ["recently_created_discount"],
   },
@@ -585,7 +589,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     label: "Run a weekend promo",
     prompt:
       "Help me create a weekend discount — suggest a percentage and which collection to apply it to.",
-    category: "promotions",
+    category: "pricing-promotions",
     baseScore: 2,
     boostWhen: ["weekend_or_friday_evening"],
     suppressWhen: ["recently_created_discount"],
@@ -595,7 +599,7 @@ export const CANDIDATE_POOL: readonly Candidate[] = [
     label: "Promo for slow movers",
     prompt:
       "Help me set up a small discount for products that haven't been selling well lately.",
-    category: "promotions",
+    category: "pricing-promotions",
     baseScore: 2,
     requires: ["has_products"],
     boostWhen: ["weekend_or_friday_evening"],

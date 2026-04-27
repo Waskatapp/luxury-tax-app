@@ -1,3 +1,7 @@
+---
+department: cross-cutting
+---
+
 # Store memory
 
 ## What it is

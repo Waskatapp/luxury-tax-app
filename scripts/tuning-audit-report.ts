@@ -181,7 +181,9 @@ export function parsePool(source: string): CurrentTemplate[] {
   const out: CurrentTemplate[] = [];
   // Match each `{ id: "X", ... category: "Y", ... baseScore: N }` block.
   // The non-greedy [\s\S]*? scopes to the smallest match per pool entry.
-  const re = /id:\s*"([a-z0-9_]+)"[\s\S]*?category:\s*"([a-z0-9_]+)"[\s\S]*?baseScore:\s*(\d+)/g;
+  // Category allows hyphens (V2.0 introduced hyphenated names like
+  // "pricing-promotions" to align with DepartmentId in app/lib/agent/departments.ts).
+  const re = /id:\s*"([a-z0-9_]+)"[\s\S]*?category:\s*"([a-z0-9_-]+)"[\s\S]*?baseScore:\s*(\d+)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(source)) !== null) {
     out.push({

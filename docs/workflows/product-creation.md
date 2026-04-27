@@ -1,3 +1,7 @@
+---
+department: products
+---
+
 # Workflow: Creating a new product (DRAFT)
 
 Tool: `create_product_draft`

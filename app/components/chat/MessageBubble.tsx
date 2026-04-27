@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { BlockStack, Box, Button, InlineStack, Text } from "@shopify/polaris";
 import type { ChatMessage, PendingActionStatus } from "../../hooks/useChat";
+import type { DepartmentId } from "../../lib/agent/departments";
 import { isApprovalRequiredWrite } from "../../lib/agent/tool-classifier";
 import type { AnalyticsResult } from "../../lib/shopify/analytics.types";
 import { ApprovalCard } from "./ApprovalCard";
@@ -12,6 +13,7 @@ type Props = {
   message: ChatMessage;
   pendingByToolCallId: Record<string, PendingActionStatus>;
   runningTool: string | null;
+  runningDepartment: DepartmentId | null;
   onApprove: (toolCallIds: string[]) => Promise<void> | void;
   onReject: (toolCallIds: string[]) => Promise<void> | void;
 };
@@ -91,6 +93,7 @@ export function MessageBubble({
   message,
   pendingByToolCallId,
   runningTool,
+  runningDepartment,
   onApprove,
   onReject,
 }: Props) {
@@ -181,7 +184,9 @@ export function MessageBubble({
                 …
               </Text>
             ) : null}
-            {showRunningPill ? <ToolRunningPill toolName={runningTool} /> : null}
+            {showRunningPill ? (
+              <ToolRunningPill toolName={runningTool} departmentId={runningDepartment} />
+            ) : null}
             {toolUses.length > 0 ? (
               // V1.8: ALL approval-required writes from one assistant turn
               // render as a single batched ApprovalCard with one Approve /

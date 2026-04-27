@@ -32,6 +32,12 @@ enum MemoryCategory {
   CUSTOMER_RULES
   STORE_CONTEXT
   OPERATOR_PREFS
+  // V2.0 — added ahead of Phase 2.1 (CEO Brain) so the migration that
+  // wires guardrails into the prompt doesn't have to also add the enum
+  // value. Stores load-bearing rules the CEO must honor and warn about
+  // before violating (e.g. "never discount under 10%", "always test on
+  // draft products first", "Q2 goal: 20% revenue growth").
+  STRATEGIC_GUARDRAILS
 }
 
 // ---- Shopify session storage (managed by @shopify/shopify-app-session-storage-prisma; do not alter fields) ----

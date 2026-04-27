@@ -1,3 +1,7 @@
+---
+department: products
+---
+
 # Workflow: Updating a product's description
 
 Tool: `update_product_description`
