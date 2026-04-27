@@ -20,7 +20,8 @@
     "typecheck": "react-router typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "stats:suggestions": "tsx scripts/suggestion-stats.ts"
+    "stats:suggestions": "tsx scripts/suggestion-stats.ts",
+    "tune:suggestions": "tsx scripts/auto-tune-suggestions.ts"
   },
   "type": "module",
   "engines": {
