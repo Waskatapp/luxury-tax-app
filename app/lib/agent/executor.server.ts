@@ -66,11 +66,15 @@ export async function executeTool(
         if (!parsed.success) {
           return { ok: false, error: `invalid input: ${parsed.error.message}` };
         }
-        const saved = await upsertMemory(ctx.storeId, {
-          category: parsed.data.category as MemoryCategory,
-          key: parsed.data.key,
-          value: parsed.data.value,
-        });
+        const saved = await upsertMemory(
+          ctx.storeId,
+          {
+            category: parsed.data.category as MemoryCategory,
+            key: parsed.data.key,
+            value: parsed.data.value,
+          },
+          "tool",
+        );
         return {
           ok: true,
           data: {

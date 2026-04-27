@@ -91,6 +91,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 function actionTone(action: string): "success" | "info" | "attention" | "critical" {
   if (action === "app_uninstalled") return "critical";
+  if (action === "memory_deleted") return "attention";
+  if (action === "memory_saved") return "info";
   if (action.startsWith("scopes_")) return "info";
   if (action.endsWith("_rejected")) return "attention";
   return "success";

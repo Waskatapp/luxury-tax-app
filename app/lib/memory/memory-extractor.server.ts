@@ -127,11 +127,15 @@ export async function extractAndStoreMemory(
     const items = await runExtraction(input);
     const saved: SavedMemoryEntry[] = [];
     for (const item of items) {
-      const row = await upsertMemory(input.storeId, {
-        category: item.category as MemoryCategory,
-        key: item.key,
-        value: item.value,
-      });
+      const row = await upsertMemory(
+        input.storeId,
+        {
+          category: item.category as MemoryCategory,
+          key: item.key,
+          value: item.value,
+        },
+        "extracted",
+      );
       saved.push({
         id: row.id,
         category: row.category,
