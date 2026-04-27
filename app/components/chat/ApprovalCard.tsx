@@ -5,6 +5,7 @@ import {
   Box,
   Button,
   InlineStack,
+  Link,
   Text,
 } from "@shopify/polaris";
 import type { PendingActionStatus } from "../../hooks/useChat";
@@ -44,6 +45,9 @@ const DIFF_TOOLS = new Set([
 type SnapshotResponse = {
   toolName: string;
   before: unknown;
+  productTitle: string | null;
+  productId: string | null;
+  adminUrl: string | null;
 };
 
 // Header pill priority: PENDING wins (any item still awaiting approval keeps
@@ -159,30 +163,37 @@ function ItemRow({
   const isPending = effectiveStatus === "PENDING";
   const display = TOOL_DISPLAY[item.toolName]?.verb ?? item.toolName;
 
-  // Per-row snapshot fetch. Each row owns its own /api/tool-snapshot call —
-  // independent of siblings so a failed snapshot on row 1 doesn't blank the
-  // diff on row 2. Aborts on unmount.
-  const [snapshot, setSnapshot] = useState<unknown>(null);
+  // Per-row snapshot fetch. V1.9: fetch on mount regardless of pending
+  // state — we want the product name on terminal rows too. Each row owns
+  // its own request; a failed snapshot on row 1 doesn't blank row 2.
+  // Aborts on unmount.
+  const [snapshot, setSnapshot] = useState<SnapshotResponse | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const [snapshotFailed, setSnapshotFailed] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+
   useEffect(() => {
-    if (!isPending || !DIFF_TOOLS.has(item.toolName)) return;
     const controller = new AbortController();
     setSnapshotLoading(true);
+    setSnapshotFailed(false);
     fetch(
       `/api/tool-snapshot?toolCallId=${encodeURIComponent(item.toolCallId)}`,
       { signal: controller.signal },
     )
       .then(async (res) => {
-        if (!res.ok) return;
+        if (!res.ok) {
+          setSnapshotFailed(true);
+          return;
+        }
         const data = (await res.json()) as SnapshotResponse;
-        setSnapshot(data.before);
+        setSnapshot(data);
       })
       .catch(() => {
-        /* silent */
+        setSnapshotFailed(true);
       })
       .finally(() => setSnapshotLoading(false));
     return () => controller.abort();
-  }, [isPending, item.toolName, item.toolCallId]);
+  }, [item.toolCallId]);
 
   return (
     <Box
@@ -201,14 +212,32 @@ function ItemRow({
             <StatusBadge status={effectiveStatus} small />
           </InlineStack>
         ) : null}
-        <ToolInputSummary toolName={item.toolName} toolInput={item.toolInput} />
+        <ToolInputSummary
+          toolName={item.toolName}
+          toolInput={item.toolInput}
+          productTitle={snapshot?.productTitle ?? null}
+          adminUrl={snapshot?.adminUrl ?? null}
+          loading={snapshotLoading && snapshot === null && !snapshotFailed}
+        />
         {isPending && DIFF_TOOLS.has(item.toolName) ? (
           <DiffBlock
             toolName={item.toolName}
             toolInput={item.toolInput}
-            snapshot={snapshot}
-            loading={snapshotLoading}
+            snapshot={snapshot?.before ?? null}
+            loading={snapshotLoading && snapshot === null}
           />
+        ) : null}
+        <InlineStack gap="100">
+          <Button
+            variant="plain"
+            onClick={() => setShowDetails((s) => !s)}
+            ariaExpanded={showDetails}
+          >
+            {showDetails ? "Hide technical details" : "Show technical details"}
+          </Button>
+        </InlineStack>
+        {showDetails ? (
+          <TechnicalDetails toolName={item.toolName} toolInput={item.toolInput} />
         ) : null}
       </BlockStack>
     </Box>
@@ -392,22 +421,112 @@ function statusTone(status: string): "success" | "info" | "warning" | undefined 
   return undefined;
 }
 
+// V1.9: render a friendly product-name-based summary instead of raw GIDs.
+// When a productTitle is available from the snapshot, the row reads
+// "Set price for [cat food] to $50.00" with the title as a clickable
+// admin link. While the snapshot is loading, show "(loading…)" in place.
+// If the snapshot fails (no title and not loading), fall back to the
+// pre-V1.9 GID line so the merchant still sees what's about to change.
 function ToolInputSummary({
   toolName,
   toolInput,
+  productTitle,
+  adminUrl,
+  loading,
 }: {
   toolName: string;
   toolInput: Record<string, unknown>;
+  productTitle: string | null;
+  adminUrl: string | null;
+  loading: boolean;
 }) {
   if (toolName === "update_product_price") {
-    const variant = stringOr(toolInput.variantId, "(unknown variant)");
     const price = stringOr(toolInput.newPrice, "(unknown price)");
+    if (productTitle) {
+      return (
+        <Text as="p" variant="bodyMd" tone="subdued">
+          Set price for <ProductRef title={productTitle} url={adminUrl} /> to{" "}
+          <strong>${price}</strong>.
+        </Text>
+      );
+    }
+    if (loading) {
+      return (
+        <Text as="p" variant="bodyMd" tone="subdued">
+          Set price for <em>(loading…)</em> to <strong>${price}</strong>.
+        </Text>
+      );
+    }
+    // Snapshot failed / no title returned — fall back to the GID form.
+    const variant = stringOr(toolInput.variantId, "(unknown variant)");
     return (
       <Text as="p" variant="bodyMd" tone="subdued">
-        Set variant <code>{variant}</code> to <strong>{price}</strong>.
+        Set variant <code>{variant}</code> to <strong>${price}</strong>.
       </Text>
     );
   }
+
+  if (toolName === "update_product_description") {
+    if (productTitle) {
+      return (
+        <Text as="p" variant="bodyMd" tone="subdued">
+          Replace description on{" "}
+          <ProductRef title={productTitle} url={adminUrl} />.
+        </Text>
+      );
+    }
+    if (loading) {
+      return (
+        <Text as="p" variant="bodyMd" tone="subdued">
+          Replace description on <em>(loading…)</em>.
+        </Text>
+      );
+    }
+    const productId = stringOr(toolInput.productId, "(unknown)");
+    return (
+      <Text as="p" variant="bodyMd" tone="subdued">
+        Replace description on product <code>{productId}</code>.
+      </Text>
+    );
+  }
+
+  if (toolName === "update_product_status") {
+    const status = stringOr(toolInput.status, "(unknown)");
+    if (productTitle) {
+      return (
+        <Text as="p" variant="bodyMd" tone="subdued">
+          Set <ProductRef title={productTitle} url={adminUrl} /> to{" "}
+          <strong>{status}</strong>.
+        </Text>
+      );
+    }
+    if (loading) {
+      return (
+        <Text as="p" variant="bodyMd" tone="subdued">
+          Set <em>(loading…)</em> to <strong>{status}</strong>.
+        </Text>
+      );
+    }
+    const productId = stringOr(toolInput.productId, "(unknown)");
+    return (
+      <Text as="p" variant="bodyMd" tone="subdued">
+        Set product <code>{productId}</code> to <strong>{status}</strong>.
+      </Text>
+    );
+  }
+
+  if (toolName === "create_product_draft") {
+    // No admin link — the product doesn't exist yet at approval time.
+    const title = stringOr(toolInput.title, "(untitled)");
+    const vendor = stringOr(toolInput.vendor, null);
+    return (
+      <Text as="p" variant="bodyMd" tone="subdued">
+        Create <strong>{title}</strong>
+        {vendor ? <> ({vendor})</> : null} as a DRAFT product.
+      </Text>
+    );
+  }
+
   if (toolName === "create_discount") {
     const title = stringOr(toolInput.title, "(untitled)");
     const percent = numberOr(toolInput.percentOff, 0);
@@ -420,36 +539,79 @@ function ToolInputSummary({
       </Text>
     );
   }
-  if (toolName === "create_product_draft") {
-    const title = stringOr(toolInput.title, "(untitled)");
-    const vendor = stringOr(toolInput.vendor, null);
-    return (
-      <Text as="p" variant="bodyMd" tone="subdued">
-        Create <strong>{title}</strong>
-        {vendor ? <> ({vendor})</> : null} as a DRAFT product.
-      </Text>
-    );
-  }
-  if (toolName === "update_product_description") {
-    const productId = stringOr(toolInput.productId, "(unknown)");
-    return (
-      <Text as="p" variant="bodyMd" tone="subdued">
-        Replace description on product <code>{productId}</code>.
-      </Text>
-    );
-  }
-  if (toolName === "update_product_status") {
-    const productId = stringOr(toolInput.productId, "(unknown)");
-    const status = stringOr(toolInput.status, "(unknown)");
-    return (
-      <Text as="p" variant="bodyMd" tone="subdued">
-        Set product <code>{productId}</code> to <strong>{status}</strong>.
-      </Text>
-    );
-  }
+
   return (
     <Text as="p" variant="bodySm" tone="subdued">
       <code>{JSON.stringify(toolInput)}</code>
+    </Text>
+  );
+}
+
+// Renders the product title as a clickable admin link when a URL is
+// available; otherwise just the bold title. Polaris `Link` with `external`
+// opens in a new tab with rel=noopener noreferrer applied automatically,
+// which keeps the merchant's chat panel intact.
+function ProductRef({
+  title,
+  url,
+}: {
+  title: string;
+  url: string | null;
+}) {
+  if (url) {
+    return (
+      <Link url={url} external removeUnderline={false}>
+        {title}
+      </Link>
+    );
+  }
+  return <strong>{title}</strong>;
+}
+
+// Disclosure panel revealing the raw IDs / input. Closed by default; the
+// merchant clicks "Show technical details" to expand. Useful for debugging
+// or for a power user who wants to confirm exactly which entity is being
+// changed without trusting the rendered product name.
+function TechnicalDetails({
+  toolName,
+  toolInput,
+}: {
+  toolName: string;
+  toolInput: Record<string, unknown>;
+}) {
+  return (
+    <Box padding="200" background="bg-surface" borderColor="border" borderWidth="025" borderRadius="200">
+      <BlockStack gap="050">
+        {toolName === "update_product_price" ? (
+          <>
+            <DetailRow label="Variant" value={stringOr(toolInput.variantId, null)} />
+            <DetailRow label="Product" value={stringOr(toolInput.productId, null)} />
+            <DetailRow label="New price" value={stringOr(toolInput.newPrice, null)} />
+          </>
+        ) : toolName === "update_product_description" ? (
+          <DetailRow label="Product" value={stringOr(toolInput.productId, null)} />
+        ) : toolName === "update_product_status" ? (
+          <>
+            <DetailRow label="Product" value={stringOr(toolInput.productId, null)} />
+            <DetailRow label="New status" value={stringOr(toolInput.status, null)} />
+          </>
+        ) : (
+          <Text as="p" variant="bodySm" tone="subdued">
+            <code style={{ wordBreak: "break-all" }}>
+              {JSON.stringify(toolInput, null, 2)}
+            </code>
+          </Text>
+        )}
+      </BlockStack>
+    </Box>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string | null }) {
+  if (!value) return null;
+  return (
+    <Text as="p" variant="bodySm" tone="subdued">
+      {label}: <code style={{ wordBreak: "break-all" }}>{value}</code>
     </Text>
   );
 }
