@@ -253,7 +253,9 @@ export function ConversationSearch({ onSelect }: Props) {
                     <Text as="p" variant="bodySm" fontWeight="medium" truncate>
                       {hit.title}
                     </Text>
-                    {hit.matchedIn !== "title" ? (
+                    {hit.matchedIn !== "title" &&
+                    hit.snippet.trim().toLowerCase() !==
+                      hit.title.trim().toLowerCase() ? (
                       <InlineStack gap="100" blockAlign="center">
                         <Text as="p" variant="bodySm" tone="subdued" truncate>
                           {hit.snippet}
