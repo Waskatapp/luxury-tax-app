@@ -47,10 +47,13 @@ jobs:
         run: npx prisma generate
 
       - name: Render markdown report
-        run: npm run audit:tuning > docs/suggestion-tuning-report.md
+        # --silent suppresses npm's own "> audit:tuning ..." banner that
+        # would otherwise pollute the captured stdout (jq fails on it
+        # downstream; markdown shows it as a stray code block at the top).
+        run: npm run --silent audit:tuning > docs/suggestion-tuning-report.md
 
       - name: Render JSON anomaly summary
-        run: npm run audit:tuning -- --json > /tmp/audit.json
+        run: npm run --silent audit:tuning -- --json > /tmp/audit.json
 
       - name: Commit + push report if changed
         run: |
