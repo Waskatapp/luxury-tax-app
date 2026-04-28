@@ -86,7 +86,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     snapshot: (toolName, toolInput) =>
       snapshotBefore(toolName, toolInput, { admin, storeId: store.id }),
     execute: (toolName, toolInput) =>
-      executeApprovedWrite(toolName, toolInput, { admin, storeId: store.id }),
+      // V2.4 — thread conversationId so executeApprovedWrite can
+      // invalidate this conversation's read cache after a successful
+      // mutation.
+      executeApprovedWrite(toolName, toolInput, {
+        admin,
+        storeId: store.id,
+        conversationId,
+      }),
   });
 
   const toolResultBlocks = buildApproveToolResults(processed);

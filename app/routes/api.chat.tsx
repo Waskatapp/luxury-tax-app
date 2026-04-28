@@ -18,6 +18,8 @@ import {
   isReadTool,
 } from "../lib/agent/tool-classifier";
 import { executeTool } from "../lib/agent/executor.server";
+import { pickModelTier } from "../lib/agent/model-router";
+import { parseSlashCommand } from "../lib/agent/slash-commands";
 import {
   formatGuardrailsAsMarkdown,
   formatMemoryAsMarkdown,
@@ -209,10 +211,49 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // workflow markdown) so a slow pull on any one doesn't compound latency.
   // Workflow markdown is process-cached on first call so subsequent turns
   // are essentially free.
-  const [memoryEntries, guardrailEntries] = await Promise.all([
-    listMemoryForPrompt(store.id),
-    listGuardrails(store.id),
-  ]);
+  // V2.4 — also pull a cheap recent-context probe in parallel: any
+  // APPROVED Plan that hasn't been REJECTED, plus a quick check on the
+  // last assistant turn for write-tool use. Both feed the model-router
+  // tier decision; both are tiny indexed reads.
+  const [memoryEntries, guardrailEntries, activePlan, lastAssistant] =
+    await Promise.all([
+      listMemoryForPrompt(store.id),
+      listGuardrails(store.id),
+      prisma.plan.findFirst({
+        where: { conversationId, storeId: store.id, status: "APPROVED" },
+        select: { id: true },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.message.findFirst({
+        where: { conversationId, role: "assistant" },
+        select: { content: true },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+  const recentWriteToolUse = ((): boolean => {
+    const blocks = (lastAssistant?.content ?? null) as ContentBlock[] | null;
+    if (!Array.isArray(blocks)) return false;
+    for (const b of blocks) {
+      if (b.type === "tool_use" && isApprovalRequiredWrite(b.name)) return true;
+    }
+    return false;
+  })();
+  // Continuation mode (text undefined) is always Flash — the merchant
+  // just clicked Approve/Reject and Gemini needs to summarize what
+  // happened, which often involves reasoning over tool_results.
+  const router =
+    typeof text === "string"
+      ? pickModelTier({
+          message: text,
+          hasActivePlan: activePlan !== null,
+          recentWriteToolUse,
+        })
+      : { tier: "flash" as const, modelId: GEMINI_CHAT_MODEL, reason: "continuation" };
+  // Detect slash commands for the post-turn memory-extraction skip below.
+  // Slash commands are templated, so the Flash-Lite extractor never finds
+  // new facts in them — saving one extra LLM call per slash invocation.
+  const isSlashCommand =
+    typeof text === "string" && parseSlashCommand(text) !== null;
   const memoryMarkdown = formatMemoryAsMarkdown(memoryEntries);
   const guardrailsMarkdown = formatGuardrailsAsMarkdown(guardrailEntries);
   const systemInstruction = buildCeoSystemInstruction({
@@ -278,7 +319,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           const accumulator = new AssistantTurnAccumulator();
 
           const responseStream = await ai.models.generateContentStream({
-            model: GEMINI_CHAT_MODEL,
+            // V2.4 — tiered model routing. router.modelId is Flash for
+            // complex/planning turns and Flash-Lite for read-only summary
+            // turns. The router defaults to Flash so quality is the floor.
+            model: router.modelId,
             contents,
             config: {
               systemInstruction,
@@ -308,7 +352,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               role: "assistant",
               content: assistantContent as unknown as object,
               searchText: extractSearchText(assistantContent),
-              model: GEMINI_CHAT_MODEL,
+              model: router.modelId,
               ...(lastUsageMetadata
                 ? { usage: lastUsageMetadata as unknown as object }
                 : {}),
@@ -534,7 +578,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             hadClarification,
             hadPlan,
             latencyMs: Date.now() - requestStart,
-            modelUsed: GEMINI_CHAT_MODEL,
+            modelUsed: router.modelId,
           });
         }
 
@@ -542,17 +586,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         // emit `memory_saved` events on the still-open SSE stream — the
         // client surfaces these as Polaris toasts. Skipped on
         // continuation-mode requests (post-approve/reject — merchant didn't
-        // say anything new) and on pure tool-call turns. The extractor
-        // itself never throws, so a slow/failed Flash-Lite call won't
-        // leak into the catch block.
+        // say anything new), on pure tool-call turns, AND on slash
+        // commands (V2.4 — they're templated text, the extractor will
+        // never find new merchant-asserted facts in them; saving one
+        // Flash-Lite call per slash invocation). The extractor itself
+        // never throws, so a slow/failed Flash-Lite call won't leak
+        // into the catch block.
         if (typeof text === "string" && assistantTextBuffer.trim().length > 0) {
-          const saved = await extractAndStoreMemory({
-            storeId: store.id,
-            userText: text,
-            assistantText: assistantTextBuffer,
-          });
-          for (const entry of saved) {
-            emit("memory_saved", entry);
+          // V2.4 — skip memory extraction on slash commands. They're
+          // templated text, so the Flash-Lite extractor will never find
+          // new merchant-asserted facts in them. Saves one extra LLM
+          // call per slash invocation. Title generation still runs
+          // because new conversations always need a title regardless
+          // of how they started.
+          if (!isSlashCommand) {
+            const saved = await extractAndStoreMemory({
+              storeId: store.id,
+              userText: text,
+              assistantText: assistantTextBuffer,
+            });
+            for (const entry of saved) {
+              emit("memory_saved", entry);
+            }
           }
 
           // First-turn title generation. Only fires when the conversation

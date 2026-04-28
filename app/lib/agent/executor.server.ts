@@ -19,6 +19,12 @@ import {
   ProposePlanInputSchema,
   safeCreatePlan,
 } from "./plans.server";
+import {
+  CACHEABLE_READ_TOOLS,
+  readCacheGet,
+  readCacheInvalidate,
+  readCacheSet,
+} from "./read-cache.server";
 import type { MemoryCategory } from "@prisma/client";
 import { z } from "zod";
 
@@ -75,15 +81,42 @@ export async function executeTool(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   try {
+    // V2.4 — read-tool cache. 5-min TTL per conversation. Saves Shopify
+    // calls AND keeps Gemini history slimmer. Invalidated on writes
+    // (see executeApprovedWrite below). Only wired when conversationId
+    // is in scope; the snapshot path doesn't pass one and shouldn't
+    // hit the cache anyway.
+    if (ctx.conversationId && CACHEABLE_READ_TOOLS.has(name)) {
+      const cached = readCacheGet(ctx.conversationId, name, input);
+      if (cached !== undefined) {
+        return { ok: true, data: cached };
+      }
+    }
+
     switch (name) {
-      case "read_products":
-        return await readProducts(ctx.admin, input);
+      case "read_products": {
+        const result = await readProducts(ctx.admin, input);
+        if (result.ok && ctx.conversationId) {
+          readCacheSet(ctx.conversationId, name, input, result.data);
+        }
+        return result;
+      }
 
-      case "read_collections":
-        return await readCollections(ctx.admin, input);
+      case "read_collections": {
+        const result = await readCollections(ctx.admin, input);
+        if (result.ok && ctx.conversationId) {
+          readCacheSet(ctx.conversationId, name, input, result.data);
+        }
+        return result;
+      }
 
-      case "get_analytics":
-        return await getAnalytics(ctx.admin, input);
+      case "get_analytics": {
+        const result = await getAnalytics(ctx.admin, input);
+        if (result.ok && ctx.conversationId) {
+          readCacheSet(ctx.conversationId, name, input, result.data);
+        }
+        return result;
+      }
 
       case "propose_plan": {
         if (!ctx.conversationId || !ctx.toolCallId) {
@@ -234,20 +267,42 @@ export async function executeApprovedWrite(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   try {
+    let result: ToolResult;
     switch (name) {
       case "update_product_price":
-        return await updateProductPrice(ctx.admin, input);
+        result = await updateProductPrice(ctx.admin, input);
+        break;
       case "update_product_description":
-        return await updateProductDescription(ctx.admin, input);
+        result = await updateProductDescription(ctx.admin, input);
+        break;
       case "update_product_status":
-        return await updateProductStatus(ctx.admin, input);
+        result = await updateProductStatus(ctx.admin, input);
+        break;
       case "create_product_draft":
-        return await createProductDraft(ctx.admin, input);
+        result = await createProductDraft(ctx.admin, input);
+        break;
       case "create_discount":
-        return await createDiscount(ctx.admin, input);
+        result = await createDiscount(ctx.admin, input);
+        break;
       default:
         return { ok: false, error: `unknown write tool: ${name}` };
     }
+
+    // V2.4 — invalidate the read cache after any successful write so
+    // subsequent reads in the same conversation see fresh state. The
+    // 5-min TTL would catch this eventually, but cache-on-stale-write
+    // is bad UX (CEO confidently quotes the OLD price right after
+    // approving the NEW one). Coarse invalidation: drop everything
+    // cached for the conversation rather than try to map fields →
+    // affected entities.
+    if (result.ok && ctx.conversationId) {
+      readCacheInvalidate(ctx.conversationId, [
+        "read_products",
+        "read_collections",
+        "get_analytics",
+      ]);
+    }
+    return result;
   } catch (err) {
     return {
       ok: false,

@@ -2,6 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 
 import prisma from "../db.server";
 import { requireStoreAccess } from "../lib/auth.server";
+import { readCacheClearConversation } from "../lib/agent/read-cache.server";
 
 // GET /api/conversations → list conversations scoped to this store
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -28,6 +29,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 // POST   → create
 // DELETE → delete (body: { id })
+// V2.4 — also clears the read cache for this conversation; see
+// app/lib/agent/read-cache.server.ts.
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { store, session, userRole } = await requireStoreAccess(request);
 
@@ -94,6 +97,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: { id, storeId: store.id },
     });
     if (result.count === 0) return new Response("Not found", { status: 404 });
+
+    // V2.4 — drop the in-memory read-tool cache for this conversation
+    // so its slot doesn't sit there until the 5-min TTL expires. Cheap
+    // map-delete; no-op if no entries existed.
+    readCacheClearConversation(id);
 
     return { ok: true };
   }
