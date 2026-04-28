@@ -855,48 +855,49 @@ export default function CopilotPage() {
         onDismiss={handleMemoryDismiss}
       />
       {/*
-        V2.5 — Two-column grid: narrow sidebar + chat fills the remaining
-        width. Earlier attempt centered the chat at max-width 800 which left
-        a big right gutter on wide screens. Filling 1fr is what the merchant
-        wants for now; when the artifact panel lands in Phase 2.5, it slots
-        into a third column on the right and the chat shrinks naturally.
+        V2.5 — Gemini-style two-column shell. The grid itself is viewport-
+        height (minus page chrome), so neither column can push the page
+        below the fold. Both the sidebar and the chat get their own
+        internal overflow:auto, mirroring how Gemini / Claude.ai keep
+        the conversation list and the active thread independently
+        scrollable while the page itself stays put.
       */}
       <div
         style={{
           display: "grid",
           gridTemplateColumns: `${sidebarCollapsed ? "64px" : "280px"} minmax(0, 1fr)`,
           gap: "16px",
-          alignItems: "start",
+          height: "calc(100vh - 140px)",
+          minHeight: 480,
         }}
       >
-        <ConversationSidebar
-          conversations={conversations}
-          activeId={activeId}
-          onSelect={setActiveId}
-          onNew={handleNew}
-          onDelete={handleDelete}
-          onRename={handleRename}
-          creating={creating}
-          collapsed={sidebarCollapsed}
-          onToggleCollapsed={handleToggleSidebar}
-        />
+        {/* Sidebar column — independent scroll */}
+        <div style={{ overflowY: "auto", minHeight: 0 }}>
+          <ConversationSidebar
+            conversations={conversations}
+            activeId={activeId}
+            onSelect={setActiveId}
+            onNew={handleNew}
+            onDelete={handleDelete}
+            onRename={handleRename}
+            creating={creating}
+            collapsed={sidebarCollapsed}
+            onToggleCollapsed={handleToggleSidebar}
+          />
+        </div>
 
         {/*
-          V2.5 — Gemini-style fixed-height chat shell. The outer wrapper
-          uses calc(100vh - 180px) so the chat extends to the bottom of the
-          viewport (subtracting Shopify's host bar + page title chrome).
-          Inside, a flex column where the messages area gets flex: 1 +
-          overflow-y: auto, so messages scroll internally instead of
-          pushing the page down. Replaces Polaris Card because Card
-          doesn't expose a way to flex-grow to fill its parent — we keep
-          the Card-like visuals via inline styles.
+          Chat column — fills the column height. Inside, a flex column
+          where the messages area gets flex: 1 + overflow-y: auto, so
+          messages scroll internally instead of pushing the chat down.
+          Card-like visuals via inline styles because Polaris Card
+          doesn't expose a way to flex-grow to fill its parent.
         */}
         <div
           style={{
             display: "flex",
             flexDirection: "column",
-            height: "calc(100vh - 180px)",
-            minHeight: 480,
+            minHeight: 0,
           }}
         >
           <div
