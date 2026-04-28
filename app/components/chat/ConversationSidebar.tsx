@@ -10,7 +10,9 @@ import {
   Popover,
   Text,
   TextField,
+  Tooltip,
 } from "@shopify/polaris";
+import { PlusIcon, MenuIcon } from "@shopify/polaris-icons";
 
 import { ConversationSearch } from "./ConversationSearch";
 
@@ -28,6 +30,12 @@ type Props = {
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => Promise<void> | void;
   creating?: boolean;
+  // V2.5 — collapsible sidebar. When true, the sidebar renders an icon-only
+  // rail (~64px wide) with just expand + new-chat buttons; the conversation
+  // list is hidden until the merchant expands. Persisted at the page level
+  // in localStorage so it survives reloads.
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 };
 
 type Group = {
@@ -77,6 +85,8 @@ export function ConversationSidebar({
   onDelete,
   onRename,
   creating,
+  collapsed = false,
+  onToggleCollapsed,
 }: Props) {
   const [pendingDelete, setPendingDelete] = useState<ConversationSummary | null>(
     null,
@@ -131,10 +141,56 @@ export function ConversationSidebar({
   const pendingDeleteTitle =
     pendingDelete?.title ?? `Chat ${pendingDelete?.id.slice(0, 6) ?? ""}`;
 
+  // Collapsed rail: only the toggle (to expand) and a "+" for a new chat.
+  // Conversations are hidden — the merchant expands to see the list. Kept
+  // intentionally simple to mirror Gemini's slim-rail behavior.
+  if (collapsed) {
+    return (
+      <Card padding="200">
+        <BlockStack gap="200" align="start">
+          {onToggleCollapsed ? (
+            <Tooltip content="Expand conversations">
+              <Button
+                onClick={onToggleCollapsed}
+                variant="tertiary"
+                accessibilityLabel="Expand conversations sidebar"
+                icon={MenuIcon}
+              />
+            </Tooltip>
+          ) : null}
+          <Tooltip content="New conversation">
+            <Button
+              onClick={onNew}
+              variant="primary"
+              loading={creating}
+              accessibilityLabel="New conversation"
+              icon={PlusIcon}
+            />
+          </Tooltip>
+        </BlockStack>
+      </Card>
+    );
+  }
+
   return (
     <>
       <Card>
         <BlockStack gap="300">
+          {onToggleCollapsed ? (
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="span" variant="headingSm">
+                Conversations
+              </Text>
+              <Tooltip content="Collapse sidebar">
+                <Button
+                  onClick={onToggleCollapsed}
+                  variant="tertiary"
+                  accessibilityLabel="Collapse conversations sidebar"
+                  icon={MenuIcon}
+                />
+              </Tooltip>
+            </InlineStack>
+          ) : null}
           <ConversationSearch onSelect={onSelect} />
           <Button onClick={onNew} variant="primary" fullWidth loading={creating}>
             New conversation

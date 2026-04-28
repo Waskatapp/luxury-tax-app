@@ -13,7 +13,6 @@ import {
   BlockStack,
   Button,
   Card,
-  Layout,
   Page,
   Text,
 } from "@shopify/polaris";
@@ -100,6 +99,30 @@ export default function CopilotPage() {
     initialConversations[0]?.id ?? null,
   );
   const [creating, setCreating] = useState(false);
+  // V2.5 — sidebar collapse. Default to expanded; useEffect below reads
+  // localStorage post-mount so SSR + hydration stay consistent. Persisted
+  // so the merchant's preference survives reloads.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("copilot.sidebarCollapsed") === "1") {
+        setSidebarCollapsed(true);
+      }
+    } catch {
+      // Storage blocked — fine, sidebar stays expanded.
+    }
+  }, []);
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("copilot.sidebarCollapsed", next ? "1" : "0");
+      } catch {
+        // Storage blocked — preference is per-session, no big deal.
+      }
+      return next;
+    });
+  }, []);
   const [state, dispatch] = useReducer(chatReducer, INITIAL_CHAT_STATE);
   const [memoryToasts, setMemoryToasts] = useState<MemoryToastEntry[]>([]);
   // V2.3 — Plan rows for the active conversation, keyed by toolCallId. We
@@ -832,20 +855,40 @@ export default function CopilotPage() {
         onUndo={handleMemoryUndo}
         onDismiss={handleMemoryDismiss}
       />
-      <Layout>
-        <Layout.Section variant="oneThird">
-          <ConversationSidebar
-            conversations={conversations}
-            activeId={activeId}
-            onSelect={setActiveId}
-            onNew={handleNew}
-            onDelete={handleDelete}
-            onRename={handleRename}
-            creating={creating}
-          />
-        </Layout.Section>
+      {/*
+        V2.5 — CSS grid layout. Replaces Polaris Layout/Layout.Section, which
+        used "oneThird" → ~33% sidebar that hogged space on wide screens. The
+        new shape: a fixed-width sidebar column (280px expanded / 64px
+        collapsed) + a centered chat column with max-width 800px. Future
+        artifact panel slots into a third column on the right.
+      */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `${sidebarCollapsed ? "64px" : "280px"} minmax(0, 1fr)`,
+          gap: "16px",
+          alignItems: "start",
+        }}
+      >
+        <ConversationSidebar
+          conversations={conversations}
+          activeId={activeId}
+          onSelect={setActiveId}
+          onNew={handleNew}
+          onDelete={handleDelete}
+          onRename={handleRename}
+          creating={creating}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={handleToggleSidebar}
+        />
 
-        <Layout.Section>
+        <div
+          style={{
+            maxWidth: 800,
+            width: "100%",
+            margin: "0 auto",
+          }}
+        >
           <Card>
             <BlockStack gap="400">
               {state.error ? (
@@ -956,8 +999,8 @@ export default function CopilotPage() {
               <ChatInput disabled={!hasActive || sending} onSend={handleSend} />
             </BlockStack>
           </Card>
-        </Layout.Section>
-      </Layout>
+        </div>
+      </div>
     </Page>
   );
 }
