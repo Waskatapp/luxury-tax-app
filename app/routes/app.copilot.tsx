@@ -856,31 +856,34 @@ export default function CopilotPage() {
         onDismiss={handleMemoryDismiss}
       />
       {/*
-        V2.5 — CSS grid layout. Replaces Polaris Layout/Layout.Section, which
-        used "oneThird" → ~33% sidebar that hogged space on wide screens. The
-        new shape: a fixed-width sidebar column (280px expanded / 64px
-        collapsed) + a centered chat column with max-width 800px. Future
-        artifact panel slots into a third column on the right.
+        V2.5 — Gemini-style layout. The sidebar is ABSOLUTELY positioned in
+        the left whitespace so it doesn't push the chat off-center. The chat
+        is centered relative to the full viewport via max-width + margin: 0
+        auto. On wide screens this looks like Claude.ai / Gemini: chat in
+        the middle, sidebar floating in the left margin. On narrow screens
+        (<1100px) the merchant should collapse the sidebar to avoid overlap.
       */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: `${sidebarCollapsed ? "64px" : "280px"} minmax(0, 1fr)`,
-          gap: "16px",
-          alignItems: "start",
-        }}
-      >
-        <ConversationSidebar
-          conversations={conversations}
-          activeId={activeId}
-          onSelect={setActiveId}
-          onNew={handleNew}
-          onDelete={handleDelete}
-          onRename={handleRename}
-          creating={creating}
-          collapsed={sidebarCollapsed}
-          onToggleCollapsed={handleToggleSidebar}
-        />
+      <div style={{ position: "relative" }}>
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: sidebarCollapsed ? 64 : 280,
+          }}
+        >
+          <ConversationSidebar
+            conversations={conversations}
+            activeId={activeId}
+            onSelect={setActiveId}
+            onNew={handleNew}
+            onDelete={handleDelete}
+            onRename={handleRename}
+            creating={creating}
+            collapsed={sidebarCollapsed}
+            onToggleCollapsed={handleToggleSidebar}
+          />
+        </div>
 
         <div
           style={{
