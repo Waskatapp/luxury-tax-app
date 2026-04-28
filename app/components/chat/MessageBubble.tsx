@@ -9,7 +9,7 @@ import { AnalyticsCard } from "./cards/AnalyticsCard";
 import { ClarificationPrompt } from "./ClarificationPrompt";
 import { MarkdownContent } from "./MarkdownContent";
 import type { PlanStatus, PlanStep } from "./PlanCard";
-import { PlanCard } from "./PlanCard";
+import { PlanCard, shouldRenderPlanCard } from "./PlanCard";
 import { ToolRunningPill } from "./ToolRunningPill";
 
 export type PlanSnapshot = {
@@ -249,29 +249,46 @@ export function MessageBubble({
             ) : null}
             {plans.map((p) => {
               const sidecar = planByToolCallId[p.id];
-              // Fall back to the toolInput shape when sidecar isn't loaded
-              // yet (mid-stream, before the reloadMessages() round-trip).
-              // Once reload lands, sidecar wins.
+              // Fall back to the toolInput shape only when sidecar isn't
+              // loaded yet AND the toolInput has a valid step count
+              // (server-side schema caps at 2–8). When the server rejects
+              // a propose_plan call (too many / too few steps, malformed
+              // input), no Plan row is created, so the sidecar stays
+              // empty — and we should NOT render a phantom card backed
+              // by nothing. The CEO's follow-up text already tells the
+              // merchant the plan was rejected; rendering a fake
+              // approve/reject UI here would contradict that prose.
               const inp = (p.input ?? {}) as {
                 summary?: string;
                 steps?: unknown;
               };
+              const stepsFromInput: PlanStep[] = Array.isArray(inp.steps)
+                ? (inp.steps.filter(
+                    (s) =>
+                      s !== null &&
+                      typeof s === "object" &&
+                      typeof (s as { description?: unknown }).description ===
+                        "string" &&
+                      typeof (s as { departmentId?: unknown }).departmentId ===
+                        "string",
+                  ) as PlanStep[])
+                : [];
+              if (
+                !shouldRenderPlanCard({
+                  hasSidecar: Boolean(sidecar),
+                  inputStepCount: stepsFromInput.length,
+                })
+              ) {
+                // Plan creation failed server-side — don't render a
+                // phantom card. The CEO's next message in the conversation
+                // explains what happened.
+                return null;
+              }
+
               const summary =
                 sidecar?.summary ??
                 (typeof inp.summary === "string" ? inp.summary : "");
-              const steps =
-                sidecar?.steps ??
-                (Array.isArray(inp.steps)
-                  ? (inp.steps.filter(
-                      (s) =>
-                        s !== null &&
-                        typeof s === "object" &&
-                        typeof (s as { description?: unknown }).description ===
-                          "string" &&
-                        typeof (s as { departmentId?: unknown }).departmentId ===
-                          "string",
-                    ) as PlanStep[])
-                  : []);
+              const steps = sidecar?.steps ?? stepsFromInput;
               return (
                 <PlanCard
                   key={p.id}

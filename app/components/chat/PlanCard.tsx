@@ -22,6 +22,29 @@ export type PlanStep = {
 
 export type PlanStatus = "PENDING" | "APPROVED" | "REJECTED";
 
+// Pure helper exported for unit testing. Decides whether the plan card
+// should render at all, given what the message bubble knows: the
+// server-side sidecar (Plan row keyed by toolCallId, present iff the
+// plan was successfully persisted) and the steps extracted from the
+// tool_use input.
+//
+// The classifier guards against a regression we hit in live testing:
+// when Gemini sends propose_plan with > 8 steps (or some other
+// validation failure), the executor rejects it and no Plan row is
+// created. Without this guard the bubble would happily render a
+// phantom approve/reject card backed by nothing — confusing the
+// merchant because the CEO's follow-up text already says the plan was
+// rejected.
+export function shouldRenderPlanCard(opts: {
+  hasSidecar: boolean;
+  inputStepCount: number;
+}): boolean {
+  if (opts.hasSidecar) return true;
+  // No sidecar — toolInput is the only source. Server-side cap is 2–8;
+  // anything else means validation failed.
+  return opts.inputStepCount >= 2 && opts.inputStepCount <= 8;
+}
+
 type Props = {
   toolCallId: string;
   summary: string;
