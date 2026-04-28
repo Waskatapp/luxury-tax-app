@@ -57,12 +57,24 @@ const HISTORY_LIMIT = 40;
 const MAX_TURNS = 8;
 const MAX_OUTPUT_TOKENS = 4096;
 
-// Translate provider-thrown rate-limit errors into the same friendly message
-// the local guard emits, so the merchant doesn't see "RESOURCE_EXHAUSTED".
+// Translate provider-thrown errors into friendly merchant-facing messages
+// instead of leaking raw JSON like
+// `{"error":{"message":"{\n \"error\":{\n \"code\":503,...}}}}`.
+//
+// Two transient classes worth recognizing:
+//   - 429 / RESOURCE_EXHAUSTED — local rate-limit OR Gemini's per-key
+//     quota; same friendly message either way.
+//   - 503 / UNAVAILABLE / "high demand" — Gemini-side capacity dip.
+//     Common on free-tier 2.5 Flash. Same UX shape as 429 (just retry).
 function friendlyErrorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   if (/429|RESOURCE_EXHAUSTED|rate.?limit|too many requests/i.test(raw)) {
     return "Copilot is briefly resting — try again in a few seconds.";
+  }
+  if (
+    /503|UNAVAILABLE|service unavailable|high demand|temporarily/i.test(raw)
+  ) {
+    return "Gemini is briefly overloaded — try again in a moment.";
   }
   return raw;
 }
