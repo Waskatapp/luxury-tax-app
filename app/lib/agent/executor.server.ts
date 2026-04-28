@@ -26,6 +26,7 @@ const UpdateStoreMemoryInput = z.object({
     "CUSTOMER_RULES",
     "STORE_CONTEXT",
     "OPERATOR_PREFS",
+    "STRATEGIC_GUARDRAILS",
   ]),
   key: z
     .string()

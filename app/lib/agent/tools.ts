@@ -141,7 +141,7 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "update_store_memory",
     description:
-      "Save or update a durable fact about the merchant's store, brand, or preferences. Executes inline — NO approval card, because this only updates the Copilot's own memory, not the store. Call this when the merchant says 'remember', 'always', 'from now on', 'by default', or corrects a fact you have wrong. Use canonical snake_case keys (brand_voice, default_discount_percent, store_location) so the same key reuses (overwrites) prior values for the same concept.",
+      "Save or update a durable fact about the merchant's store, brand, or preferences. Executes inline — NO approval card, because this only updates the Copilot's own memory, not the store. Call this when the merchant says 'remember', 'always', 'from now on', 'by default', or corrects a fact you have wrong. Use canonical snake_case keys (brand_voice, default_discount_percent, store_location) so the same key reuses (overwrites) prior values for the same concept.\n\nCategories:\n- BRAND_VOICE: how the merchant wants product copy and replies to sound (e.g. 'casual, witty, never corporate-speak').\n- PRICING_RULES: rules about how prices are set (e.g. 'all hoodies end in .99', 'never below cost+30%').\n- PRODUCT_RULES: rules about product structure (e.g. 'every product needs an SEO description ≥120 chars').\n- CUSTOMER_RULES: rules about customer-facing behavior (e.g. 'always include free-shipping note over $50').\n- STORE_CONTEXT: durable facts about the store itself (e.g. 'we ship from Vancouver', 'B2B pricing requires login').\n- OPERATOR_PREFS: how the merchant wants the Copilot to behave (e.g. 'don't ask follow-up questions on weekends').\n- STRATEGIC_GUARDRAILS: load-bearing rules the Copilot must honor and warn about BEFORE violating. Use this when the merchant states a goal, principle, or absolute rule — examples: 'never apply discounts under 10%', 'Q2 goal: 20% revenue growth', 'always test on draft products first', 'never archive a top-5 seller without confirming'. The CEO checks every action against these and warns the merchant before doing anything that would violate them.",
     parametersJsonSchema: {
       type: "object",
       properties: {
@@ -154,6 +154,7 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
             "CUSTOMER_RULES",
             "STORE_CONTEXT",
             "OPERATOR_PREFS",
+            "STRATEGIC_GUARDRAILS",
           ],
         },
         key: {

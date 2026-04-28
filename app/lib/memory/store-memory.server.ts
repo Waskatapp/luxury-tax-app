@@ -36,10 +36,39 @@ export async function listMemoryForPrompt(
   limit: number = MEMORY_PROMPT_LIMIT,
 ): Promise<StoreMemory[]> {
   return prisma.storeMemory.findMany({
-    where: { storeId },
+    where: {
+      storeId,
+      // V2.1 — exclude STRATEGIC_GUARDRAILS from the general memory feed;
+      // they get their own dedicated section in the CEO prompt (rendered
+      // BEFORE memory so they read as operating constraints). Calling
+      // listGuardrails() pulls them separately.
+      NOT: { category: "STRATEGIC_GUARDRAILS" },
+    },
     orderBy: { updatedAt: "desc" },
     take: limit,
   });
+}
+
+// V2.1 — strategic guardrails: load-bearing rules the CEO must honor
+// (and warn about when an action would violate). Returned in stable
+// `key`-sorted order so the prompt is deterministic across turns; no
+// `take` limit because the merchant should never have so many of these
+// that they overflow the prompt — they're meant to be a short list of
+// principles, not a memory dump.
+export async function listGuardrails(storeId: string): Promise<StoreMemory[]> {
+  return prisma.storeMemory.findMany({
+    where: { storeId, category: "STRATEGIC_GUARDRAILS" },
+    orderBy: { key: "asc" },
+  });
+}
+
+// Renders guardrails as a flat markdown list (no per-category subheading
+// — they're all in the same conceptual bucket). Empty string when no
+// guardrails exist; the CEO assembler skips the section entirely in
+// that case.
+export function formatGuardrailsAsMarkdown(entries: StoreMemory[]): string {
+  if (entries.length === 0) return "";
+  return entries.map((e) => `- **${e.key}**: ${e.value}`).join("\n");
 }
 
 export async function listAllMemory(storeId: string): Promise<StoreMemory[]> {

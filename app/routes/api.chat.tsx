@@ -9,7 +9,8 @@ import {
 } from "../lib/security/rate-limit.server";
 import { sanitizeUserInput } from "../lib/security/sanitize.server";
 import { GEMINI_CHAT_MODEL, getGeminiClient } from "../lib/agent/gemini.server";
-import { buildSystemInstruction } from "../lib/agent/system-prompt";
+import { buildCeoSystemInstruction } from "../lib/agent/ceo-prompt.server";
+import { loadWorkflowsByDepartment } from "../lib/agent/workflow-loader.server";
 import { TOOL_DECLARATIONS } from "../lib/agent/tools";
 import {
   isApprovalRequiredWrite,
@@ -18,7 +19,9 @@ import {
 } from "../lib/agent/tool-classifier";
 import { executeTool } from "../lib/agent/executor.server";
 import {
+  formatGuardrailsAsMarkdown,
   formatMemoryAsMarkdown,
+  listGuardrails,
   listMemoryForPrompt,
 } from "../lib/memory/store-memory.server";
 import { extractAndStoreMemory } from "../lib/memory/memory-extractor.server";
@@ -167,11 +170,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     content: row.content as unknown as ContentBlock[],
   }));
 
-  const memoryEntries = await listMemoryForPrompt(store.id);
+  // V2.1 — CEO prompt assembler. Three parallel reads (memory, guardrails,
+  // workflow markdown) so a slow pull on any one doesn't compound latency.
+  // Workflow markdown is process-cached on first call so subsequent turns
+  // are essentially free.
+  const [memoryEntries, guardrailEntries] = await Promise.all([
+    listMemoryForPrompt(store.id),
+    listGuardrails(store.id),
+  ]);
   const memoryMarkdown = formatMemoryAsMarkdown(memoryEntries);
-  const systemInstruction = buildSystemInstruction({
+  const guardrailsMarkdown = formatGuardrailsAsMarkdown(guardrailEntries);
+  const systemInstruction = buildCeoSystemInstruction({
     shopDomain: store.shopDomain,
     memoryMarkdown: memoryMarkdown.length > 0 ? memoryMarkdown : null,
+    guardrailsMarkdown:
+      guardrailsMarkdown.length > 0 ? guardrailsMarkdown : null,
+    // Phase 2.6 (Reflection) populates this. Null until that ships.
+    observationsMarkdown: null,
+    workflowsByDept: loadWorkflowsByDepartment(),
   });
 
   const stream = new ReadableStream<Uint8Array>({

@@ -61,6 +61,7 @@ const CATEGORY_VALUES = [
   "CUSTOMER_RULES",
   "STORE_CONTEXT",
   "OPERATOR_PREFS",
+  "STRATEGIC_GUARDRAILS",
 ] as const;
 
 const ActionInput = z.discriminatedUnion("intent", [
@@ -180,8 +181,22 @@ export default function MemorySettingsPage() {
     fetcher.submit({ intent: "delete", id }, { method: "post" });
   };
 
-  const rows = entries.map((e) => [
-    <Badge key={`cat-${e.id}`} tone="info">
+  // V2.1 — render guardrails in their own table above the regular memory.
+  // They're load-bearing for CEO behavior (the CEO checks every action
+  // against them and warns before violating), so the merchant should see
+  // them as a distinct category, not buried in the general memory list.
+  const guardrailEntries = entries.filter(
+    (e) => e.category === "STRATEGIC_GUARDRAILS",
+  );
+  const memoryEntries = entries.filter(
+    (e) => e.category !== "STRATEGIC_GUARDRAILS",
+  );
+
+  const buildRow = (e: EntryRow): React.ReactNode[] => [
+    <Badge
+      key={`cat-${e.id}`}
+      tone={e.category === "STRATEGIC_GUARDRAILS" ? "warning" : "info"}
+    >
       {CATEGORY_LABEL[e.category]}
     </Badge>,
     <Text key={`key-${e.id}`} as="span" fontWeight="semibold">
@@ -204,7 +219,10 @@ export default function MemorySettingsPage() {
         Delete
       </Button>
     </ButtonGroup>,
-  ]);
+  ];
+
+  const guardrailRows = guardrailEntries.map(buildRow);
+  const memoryRows = memoryEntries.map(buildRow);
 
   return (
     <Page
@@ -222,7 +240,29 @@ export default function MemorySettingsPage() {
           </Banner>
         ) : null}
 
-        <Card padding="0">
+        {guardrailEntries.length > 0 ? (
+          <Card padding="400">
+            <BlockStack gap="200">
+              <BlockStack gap="050">
+                <Text as="h2" variant="headingMd">
+                  Strategic guardrails
+                </Text>
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Load-bearing rules the Copilot checks against every action.
+                  Before doing anything that would violate one of these, the
+                  Copilot warns you and asks for an explicit override.
+                </Text>
+              </BlockStack>
+              <DataTable
+                columnContentTypes={["text", "text", "text", "text", "text"]}
+                headings={["Category", "Key", "Value", "Updated", ""]}
+                rows={guardrailRows}
+              />
+            </BlockStack>
+          </Card>
+        ) : null}
+
+        <Card padding={memoryEntries.length === 0 ? "0" : "400"}>
           {entries.length === 0 ? (
             <div style={{ padding: 24 }}>
               <EmptyState
@@ -237,12 +277,32 @@ export default function MemorySettingsPage() {
                 </p>
               </EmptyState>
             </div>
+          ) : memoryEntries.length === 0 ? (
+            // Edge case: guardrails exist but no regular memory yet — keep
+            // the section visible so adding regular entries stays one click
+            // away.
+            <div style={{ padding: 24 }}>
+              <BlockStack gap="100">
+                <Text as="h2" variant="headingMd">
+                  Memory
+                </Text>
+                <Text as="p" tone="subdued" variant="bodySm">
+                  No general memory entries yet. As you chat, the Copilot will
+                  save durable facts here.
+                </Text>
+              </BlockStack>
+            </div>
           ) : (
-            <DataTable
-              columnContentTypes={["text", "text", "text", "text", "text"]}
-              headings={["Category", "Key", "Value", "Updated", ""]}
-              rows={rows}
-            />
+            <BlockStack gap="200">
+              <Text as="h2" variant="headingMd">
+                Memory
+              </Text>
+              <DataTable
+                columnContentTypes={["text", "text", "text", "text", "text"]}
+                headings={["Category", "Key", "Value", "Updated", ""]}
+                rows={memoryRows}
+              />
+            </BlockStack>
           )}
         </Card>
       </BlockStack>
