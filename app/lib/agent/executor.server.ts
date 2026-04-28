@@ -36,6 +36,18 @@ const UpdateStoreMemoryInput = z.object({
   value: z.string().min(1).max(500),
 });
 
+// V2.2 — ask_clarifying_question. Up to 4 short option strings. We cap
+// at 4 to keep the rendered prompt readable; Gemini will sometimes try
+// to send 6+ which we truncate rather than reject.
+const AskClarifyingQuestionInput = z.object({
+  question: z.string().min(1).max(400),
+  options: z
+    .array(z.string().min(1).max(80))
+    .max(8)
+    .optional()
+    .transform((arr) => (arr ? arr.slice(0, 4) : [])),
+});
+
 export type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
 
 export type ToolContext = {
@@ -61,6 +73,23 @@ export async function executeTool(
 
       case "get_analytics":
         return await getAnalytics(ctx.admin, input);
+
+      case "ask_clarifying_question": {
+        const parsed = AskClarifyingQuestionInput.safeParse(input);
+        if (!parsed.success) {
+          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+        }
+        // No store mutation — just echoes the question/options back. The
+        // chat route emits a `clarification_asked` SSE event from this
+        // result and breaks the agent loop so the merchant can answer.
+        return {
+          ok: true,
+          data: {
+            question: parsed.data.question,
+            options: parsed.data.options,
+          },
+        };
+      }
 
       case "update_store_memory": {
         const parsed = UpdateStoreMemoryInput.safeParse(input);

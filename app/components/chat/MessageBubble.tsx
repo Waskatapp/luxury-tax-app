@@ -6,6 +6,7 @@ import { isApprovalRequiredWrite } from "../../lib/agent/tool-classifier";
 import type { AnalyticsResult } from "../../lib/shopify/analytics.types";
 import { ApprovalCard } from "./ApprovalCard";
 import { AnalyticsCard } from "./cards/AnalyticsCard";
+import { ClarificationPrompt } from "./ClarificationPrompt";
 import { MarkdownContent } from "./MarkdownContent";
 import { ToolRunningPill } from "./ToolRunningPill";
 
@@ -14,8 +15,14 @@ type Props = {
   pendingByToolCallId: Record<string, PendingActionStatus>;
   runningTool: string | null;
   runningDepartment: DepartmentId | null;
+  // V2.2 — true when this message is NOT the latest assistant turn in
+  // the conversation (i.e. the merchant has already replied to whatever
+  // clarification it contains). The ClarificationPrompt uses this to
+  // render in read-only mode for older messages.
+  answered: boolean;
   onApprove: (toolCallIds: string[]) => Promise<void> | void;
   onReject: (toolCallIds: string[]) => Promise<void> | void;
+  onClarify: (text: string) => Promise<void> | void;
 };
 
 type ToolResultLike = {
@@ -94,8 +101,10 @@ export function MessageBubble({
   pendingByToolCallId,
   runningTool,
   runningDepartment,
+  answered,
   onApprove,
   onReject,
+  onClarify,
 }: Props) {
   const isUser = message.role === "user";
   const markdownRef = useRef<HTMLDivElement>(null);
@@ -139,12 +148,17 @@ export function MessageBubble({
   // Only surface WRITE tool_uses in the bubble — they need approval.
   // READ tool_uses are internal plumbing (the agent asking the server to fetch
   // data); the merchant shouldn't see them at all.
-  const toolUses = message.content
-    .filter(
-      (b): b is { type: "tool_use"; id: string; name: string; input: unknown } =>
-        b.type === "tool_use",
-    )
-    .filter((b) => isApprovalRequiredWrite(b.name));
+  const allToolUses = message.content.filter(
+    (b): b is { type: "tool_use"; id: string; name: string; input: unknown } =>
+      b.type === "tool_use",
+  );
+  const toolUses = allToolUses.filter((b) => isApprovalRequiredWrite(b.name));
+  // V2.2 — `ask_clarifying_question` calls render as inline prompts rather
+  // than approval cards. Each prompt has a question + optional list of
+  // pre-filled options the merchant can click.
+  const clarifications = allToolUses.filter(
+    (b) => b.name === "ask_clarifying_question",
+  );
 
   const showRunningPill =
     !isUser && message.status === "streaming" && runningTool !== null;
@@ -203,6 +217,24 @@ export function MessageBubble({
                 onReject={onReject}
               />
             ) : null}
+            {clarifications.map((c) => {
+              const inp = (c.input ?? {}) as {
+                question?: string;
+                options?: unknown;
+              };
+              const opts = Array.isArray(inp.options)
+                ? inp.options.filter((o): o is string => typeof o === "string")
+                : [];
+              return (
+                <ClarificationPrompt
+                  key={c.id}
+                  question={inp.question ?? ""}
+                  options={opts}
+                  answered={answered}
+                  onAnswer={onClarify}
+                />
+              );
+            })}
             {message.status === "error" ? (
               <Text as="p" variant="bodySm" tone="critical">
                 Something went wrong with this message.

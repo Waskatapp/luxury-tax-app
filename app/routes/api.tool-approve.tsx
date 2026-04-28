@@ -15,6 +15,7 @@ import {
   validateBatch,
   type PendingRow,
 } from "../lib/agent/approval-batch";
+import { promoteWriteTurnSignal } from "../lib/agent/turn-signals.server";
 
 // V1.8 batch-approve: accept either { toolCallId } (legacy single) or
 // { toolCallIds: [...] } (batch). The single shape is kept for backwards
@@ -138,6 +139,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   await prisma.$transaction(txOps);
 
   const { ok } = summarizeBatchOutcome(responseResults);
+
+  // V2.2 — promote the TurnSignal that triggered this approval from
+  // "informational" to "approved" (or "rejected" when nothing actually
+  // executed — typically every row was already terminal). Failure here
+  // is silent (logged) so the merchant's UX is unaffected.
+  const anyExecuted = processed.some((p) => !p.skip && !p.error);
+  await promoteWriteTurnSignal({
+    storeId: store.id,
+    conversationId,
+    outcome: anyExecuted ? "approved" : "rejected",
+  });
+
   return Response.json({
     ok,
     results: responseResults,

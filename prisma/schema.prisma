@@ -79,6 +79,7 @@ model Store {
   storeMemories    StoreMemory[]
   auditLogs        AuditLog[]
   suggestionEvents SuggestionEvent[]
+  turnSignals      TurnSignal[]
 }
 
 // ---- Chat thread per store+user ----
@@ -92,8 +93,9 @@ model Conversation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  store    Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  messages Message[]
+  store       Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  messages    Message[]
+  turnSignals TurnSignal[]
 
   @@index([storeId])
   @@index([storeId, userId])
@@ -116,6 +118,7 @@ model Message {
   createdAt      DateTime @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  turnSignal   TurnSignal?
 
   @@index([conversationId])
 }
@@ -193,4 +196,37 @@ model AuditLog {
 
   @@index([storeId])
   @@index([storeId, createdAt])
+}
+
+// V2.2 — Learning Foundation. One row per assistant turn that completes
+// (the SSE `done` event fires). Records the outcome (approved / rejected /
+// clarified / informational, with rephrased / abandoned re-classified
+// after the fact) plus latency and metadata. Phase 2.6 (Reflection) mines
+// this for prompt-block tweaks; Phase 2.4 (tiered model routing) reads
+// `modelUsed` for cost/quality analysis.
+//
+// `outcome` is a String not an enum so we can extend the taxonomy
+// without a schema migration as we learn what categories matter.
+model TurnSignal {
+  id               String   @id @default(cuid())
+  storeId          String
+  conversationId   String
+  messageId        String   @unique // 1:1 with the assistant Message
+  outcome          String // approved | rejected | clarified | rephrased | abandoned | informational
+  toolCalls        Int      @default(0) // # of tool_use blocks emitted
+  hadWriteTool     Boolean  @default(false)
+  hadClarification Boolean  @default(false)
+  hadPlan          Boolean  @default(false) // Phase 2.3
+  latencyMs        Int? // wall-clock from request entry to SSE done
+  modelUsed        String? // "gemini-2.5-flash" | "gemini-2.5-flash-lite"
+  ceoConfidence    Float? // 0–1, populated by Phase 2.6
+  createdAt        DateTime @default(now())
+
+  store        Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, createdAt])
+  @@index([storeId, outcome])
+  @@index([conversationId])
 }

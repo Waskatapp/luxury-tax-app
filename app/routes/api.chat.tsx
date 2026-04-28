@@ -26,6 +26,11 @@ import {
 } from "../lib/memory/store-memory.server";
 import { extractAndStoreMemory } from "../lib/memory/memory-extractor.server";
 import { generateTitle } from "../lib/agent/title-generator.server";
+import {
+  classifyTurnOutcome,
+  recordTurnSignal,
+} from "../lib/agent/turn-signals.server";
+import { reclassifyOnNewTurn } from "../lib/agent/turn-signals-reclassify.server";
 import { log } from "../lib/log.server";
 import {
   AssistantTurnAccumulator,
@@ -76,6 +81,11 @@ function sseErrorResponse(message: string): Response {
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
+  // V2.2 — wall-clock latency captured at action entry. The TurnSignal row
+  // recorded at SSE done uses this to track p50/p95 latency by model tier
+  // (Phase 2.4 will tier the model; for now always Flash).
+  const requestStart = Date.now();
+
   const { admin, store } = await requireStoreAccess(request);
 
   const parsed = BodySchema.safeParse(await request.json());
@@ -98,6 +108,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     select: { id: true, title: true },
   });
   if (!conversation) return new Response("Not found", { status: 404 });
+
+  // V2.2 — Reclassify the previous TurnSignal in this conversation if the
+  // merchant's new message looks like a rephrase ("no, I meant…"). Cheap
+  // (one indexed read + at most one updateMany). Also sweeps stale-24h
+  // informational rows to "abandoned". Skipped on continuation-mode
+  // requests (no new user input to test against).
+  if (typeof text === "string") {
+    await reclassifyOnNewTurn({
+      storeId: store.id,
+      conversationId,
+      newUserText: text,
+    });
+  }
 
   // Continuation mode (no text): skip user-message persistence; history
   // already includes the synthesized tool_result row from approve/reject.
@@ -208,6 +231,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // memory extractor with the merchant's full reply context.
       let assistantTextBuffer = "";
 
+      // V2.2 — TurnSignal accumulators. Tracked across the whole agent
+      // loop so we can record one signal at SSE done covering the entire
+      // user→assistant cycle (which can span multiple Gemini iterations).
+      let lastAssistantMessageId: string | null = null;
+      let lastAssistantContent: ContentBlock[] = [];
+      let totalToolCalls = 0;
+      let hadWriteTool = false;
+      let hadClarification = false;
+      // toolCallIds of approval-required writes minted in this turn — used
+      // by classifyTurnOutcome to look at terminal statuses (which at SSE
+      // done are still PENDING; tool-approve/reject promote later).
+      const writeToolCallIds: string[] = [];
+
       try {
         const ai = getGeminiClient();
         const contents = toGeminiContents(stored);
@@ -250,9 +286,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           }
 
           const assistantContent = accumulator.finalize();
+          lastAssistantContent = assistantContent;
 
           // Persist assistant turn verbatim (CLAUDE.md rule #3 — internal shape).
-          await prisma.message.create({
+          const assistantRow = await prisma.message.create({
             data: {
               conversationId,
               role: "assistant",
@@ -263,7 +300,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 ? { usage: lastUsageMetadata as unknown as object }
                 : {}),
             },
+            select: { id: true },
           });
+          lastAssistantMessageId = assistantRow.id;
 
           // Push the assistant turn onto Gemini contents for any next loop.
           contents.push(
@@ -273,6 +312,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           const toolUses = assistantContent.filter(
             (b): b is ToolUseBlock => b.type === "tool_use",
           );
+          totalToolCalls += toolUses.length;
+          for (const tu of toolUses) {
+            if (isApprovalRequiredWrite(tu.name)) {
+              hadWriteTool = true;
+              writeToolCallIds.push(tu.id);
+            }
+            if (tu.name === "ask_clarifying_question") {
+              hadClarification = true;
+            }
+          }
 
           if (toolUses.length === 0) break;
 
@@ -287,6 +336,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           // that had already executed.
           const toolResults: ToolResultBlock[] = [];
           const pendingWrites: ToolUseBlock[] = [];
+          // V2.2 — set when ask_clarifying_question fires; we still let the
+          // tool execute inline (its tool_result is needed in Gemini's
+          // history), but we break the agent loop afterward so the
+          // merchant can answer before Gemini speaks again.
+          let askedClarification = false;
 
           for (const tu of toolUses) {
             if (isApprovalRequiredWrite(tu.name)) {
@@ -295,9 +349,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             }
             if (isReadTool(tu.name) || isInlineWrite(tu.name)) {
               // Inline-execute path: reads + safe writes that don't mutate
-              // the store (e.g. update_store_memory). No approval card.
-              // Surface a "running" indicator so the merchant knows we're
-              // not frozen during the 1–3s Shopify call.
+              // the store (e.g. update_store_memory, ask_clarifying_question).
+              // No approval card. Surface a "running" indicator so the
+              // merchant knows we're not frozen during the 1–3s Shopify call.
               emit("tool_running", { tool_name: tu.name });
               const result = await executeTool(tu.name, tu.input, {
                 admin,
@@ -311,6 +365,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 ),
                 is_error: !result.ok,
               });
+
+              // V2.2 — clarification: emit the inline-prompt SSE event so
+              // the client can render the question with option buttons.
+              // The merchant's reply becomes the next user turn via the
+              // existing chat flow; Gemini sees the persisted tool_result
+              // and continues from there.
+              if (tu.name === "ask_clarifying_question" && result.ok) {
+                const data = result.data as {
+                  question?: string;
+                  options?: string[];
+                };
+                emit("clarification_asked", {
+                  tool_call_id: tu.id,
+                  question: data.question ?? "",
+                  options: Array.isArray(data.options) ? data.options : [],
+                });
+                askedClarification = true;
+              }
               continue;
             }
             // Unknown / not-yet-wired
@@ -374,11 +446,50 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             toGeminiContent({ role: "user", content: toolResults }),
           );
 
+          // V2.2 — clarification breaks the agent loop AFTER persisting the
+          // tool_result so Gemini's history is well-formed when the merchant
+          // responds. The CEO must wait for the answer before continuing.
+          if (askedClarification) break;
+
           // continue loop
           void bareToolCallUuid; // imported for future logging; suppress unused-warning
         }
 
         emit("done", {});
+
+        // V2.2 — record one TurnSignal per merchant→assistant cycle, tied
+        // to the LAST assistant Message (the one with the final summary).
+        // Outcome at this moment is provisional for write-tool turns: any
+        // PendingActions are still PENDING; tool-approve/reject promote
+        // the row to "approved"/"rejected" later. The reclassifier handles
+        // "rephrased" / "abandoned" downstream.
+        if (lastAssistantMessageId) {
+          const writeStatuses =
+            writeToolCallIds.length > 0
+              ? await prisma.pendingAction.findMany({
+                  where: {
+                    toolCallId: { in: writeToolCallIds },
+                    storeId: store.id,
+                  },
+                  select: { toolCallId: true, status: true },
+                })
+              : [];
+          const outcome = classifyTurnOutcome({
+            assistantContent: lastAssistantContent,
+            pendingActions: writeStatuses,
+          });
+          await recordTurnSignal({
+            storeId: store.id,
+            conversationId,
+            messageId: lastAssistantMessageId,
+            outcome,
+            toolCalls: totalToolCalls,
+            hadWriteTool,
+            hadClarification,
+            latencyMs: Date.now() - requestStart,
+            modelUsed: GEMINI_CHAT_MODEL,
+          });
+        }
 
         // Memory extraction is now inline (was fire-and-forget) so we can
         // emit `memory_saved` events on the still-open SSE stream — the

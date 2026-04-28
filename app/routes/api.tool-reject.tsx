@@ -10,6 +10,7 @@ import {
   validateBatch,
   type PendingRow,
 } from "../lib/agent/approval-batch";
+import { promoteWriteTurnSignal } from "../lib/agent/turn-signals.server";
 
 const BodySchema = z.union([
   z.object({ toolCallId: z.string().min(1) }),
@@ -109,6 +110,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   );
 
   await prisma.$transaction(txOps);
+
+  // V2.2 — promote the TurnSignal that triggered this rejection from
+  // "informational" to "rejected". Failure here is silent (logged) so
+  // the merchant's UX is unaffected.
+  await promoteWriteTurnSignal({
+    storeId: store.id,
+    conversationId,
+    outcome: "rejected",
+  });
 
   return Response.json({
     ok: true,

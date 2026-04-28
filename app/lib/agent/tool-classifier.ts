@@ -18,7 +18,14 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
 
 // update_store_memory is a write tool that executes inline (no approval card)
 // because it does not mutate the store. Landed in Phase 8.
-export const INLINE_WRITE_TOOLS = new Set<string>(["update_store_memory"]);
+//
+// ask_clarifying_question (V2.2) is a CEO-level orchestration tool: it
+// produces no store mutation, just a question rendered in the chat UI.
+// Treated as inline so api.chat.tsx routes it through executeTool.
+export const INLINE_WRITE_TOOLS = new Set<string>([
+  "update_store_memory",
+  "ask_clarifying_question",
+]);
 
 export function isReadTool(name: string): boolean {
   return READ_TOOLS.has(name);

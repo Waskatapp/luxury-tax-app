@@ -761,17 +761,33 @@ export default function CopilotPage() {
                     }}
                   >
                     <BlockStack gap="300">
-                      {state.messages.map((m) => (
-                        <MessageBubble
-                          key={m.id}
-                          message={m}
-                          pendingByToolCallId={state.pendingByToolCallId}
-                          runningTool={state.runningTool}
-                          runningDepartment={state.runningDepartment}
-                          onApprove={handleApprove}
-                          onReject={handleReject}
-                        />
-                      ))}
+                      {state.messages.map((m, idx) => {
+                        // V2.2 — a ClarificationPrompt renders as
+                        // "answered" when the merchant has already replied
+                        // to it. Heuristic: any later message in the same
+                        // conversation means this clarification has been
+                        // answered (the merchant's reply is the next user
+                        // message). The latest assistant message is still
+                        // open for input.
+                        const isLastAssistant =
+                          m.role === "assistant" &&
+                          state.messages
+                            .slice(idx + 1)
+                            .every((m2) => m2.role !== "user");
+                        return (
+                          <MessageBubble
+                            key={m.id}
+                            message={m}
+                            pendingByToolCallId={state.pendingByToolCallId}
+                            runningTool={state.runningTool}
+                            runningDepartment={state.runningDepartment}
+                            answered={!isLastAssistant}
+                            onApprove={handleApprove}
+                            onReject={handleReject}
+                            onClarify={handleSend}
+                          />
+                        );
+                      })}
                       <div ref={messagesEndRef} />
                     </BlockStack>
                   </div>

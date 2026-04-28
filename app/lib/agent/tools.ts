@@ -170,6 +170,28 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "ask_clarifying_question",
+    description:
+      "Ask the merchant ONE clarifying question — ONLY when intent is genuinely ambiguous AND the answer would change the action AND can't be inferred from history, store memory, or current store state. NEVER ask for product IDs, variant IDs, or currency (look those up yourself with read_products / read_collections). Use sparingly — the merchant prefers you figure it out yourself.\n\nProvide 2–4 short concrete options when the answer space is small (e.g. \"Which one — the cat one or the dog one?\"). Omit options entirely for genuinely free-form questions. The system pauses the turn after this call and waits for the merchant's reply, so don't combine it with other tool calls in the same turn.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        question: {
+          type: "string",
+          description:
+            "The single concise question. One sentence. No preamble.",
+        },
+        options: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Up to 4 short answer options the merchant can click. Each ≤40 chars. Omit for free-text.",
+        },
+      },
+      required: ["question"],
+    },
+  },
+  {
     name: "create_discount",
     description:
       "Create a percentage-off automatic discount. REQUIRES HUMAN APPROVAL. Provide the discount title, percent off (1-100), start date, and optional end date.",
