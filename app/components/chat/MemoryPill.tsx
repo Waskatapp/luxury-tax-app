@@ -10,7 +10,7 @@ import {
   Modal,
   Text,
 } from "@shopify/polaris";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 // V2.3 — small pill rendered above ChatInput, showing the count of
 // stored memory entries. Clicking opens a Modal listing all entries
@@ -54,6 +54,7 @@ const CATEGORY_ORDER = [
 ];
 
 export function MemoryPill() {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -142,13 +143,14 @@ export function MemoryPill() {
         primaryAction={{
           content: "Manage in settings",
           onAction: () => {
-            // Modal close + nav happen together. Polaris Modal closes via
-            // its own state, then the Link navigation runs. Using
-            // react-router's Link ensures we stay inside the embedded app.
+            // Polaris primaryAction doesn't accept an href in this
+            // version, so we close the modal AND navigate
+            // programmatically. useNavigate keeps the merchant inside
+            // the embedded app (full-page reload would drop the
+            // App Bridge session).
             setOpen(false);
+            navigate("/app/settings/memory");
           },
-          // We render the actual link as a hidden <Link>; primaryAction
-          // doesn't natively support an href in this Polaris version.
         }}
         secondaryActions={[
           { content: "Close", onAction: () => setOpen(false) },
