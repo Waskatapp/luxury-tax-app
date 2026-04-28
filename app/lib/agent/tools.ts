@@ -192,6 +192,54 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "propose_plan",
+    description:
+      "Propose a multi-step plan when the merchant's request needs MORE THAN ONE write tool, OR a sequence of read+write across departments (e.g. \"audit my catalog and lower any overpriced items\", \"clean up draft products and publish the ready ones\", \"prepare a 10% promo on hoodies and add a related collection\"). Call this FIRST, BEFORE any of the actual tool calls. The merchant approves the whole plan; you then execute its steps one by one, and each WRITE step still gets its own approval card.\n\nDO NOT use for: a single-tool action (just call the tool), a pure-read query (\"show me my products\" — just call read_products), or a clarifying question (use ask_clarifying_question). Plans are the right fit only when there are at least 2 distinct steps the merchant should see together before any of them execute.\n\nFormat: a one-sentence summary that names the goal, then 2–8 ordered steps. Each step has a short merchant-facing description (\"Lower price of cat food from $25 to $19.99\"), a department id (`products` / `pricing-promotions` / `insights` / `cross-cutting` for memory updates), and optionally an `estimatedTool` name as a hint. Don't combine propose_plan with other tool calls in the same turn — the system pauses the turn after this call so the merchant can approve.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description:
+            "One sentence (≤280 chars) naming the goal. Lead with the action, not preamble.",
+        },
+        steps: {
+          type: "array",
+          minItems: 2,
+          maxItems: 8,
+          items: {
+            type: "object",
+            properties: {
+              description: {
+                type: "string",
+                description:
+                  "Merchant-facing one-line description of what this step does. Concrete (\"Lower cat food from $25 to $19.99\"), not abstract (\"Update pricing\").",
+              },
+              departmentId: {
+                type: "string",
+                enum: [
+                  "products",
+                  "pricing-promotions",
+                  "insights",
+                  "cross-cutting",
+                ],
+                description:
+                  "Which department owns this step. `cross-cutting` for memory-update steps that span everything.",
+              },
+              estimatedTool: {
+                type: "string",
+                description:
+                  "Optional. The tool name you expect to call for this step (e.g. \"update_product_price\"). For info, not enforcement — actual tool calls happen later.",
+              },
+            },
+            required: ["description", "departmentId"],
+          },
+        },
+      },
+      required: ["summary", "steps"],
+    },
+  },
+  {
     name: "create_discount",
     description:
       "Create a percentage-off automatic discount. REQUIRES HUMAN APPROVAL. Provide the discount title, percent off (1-100), start date, and optional end date.",

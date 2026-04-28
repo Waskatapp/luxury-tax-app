@@ -80,6 +80,7 @@ model Store {
   auditLogs        AuditLog[]
   suggestionEvents SuggestionEvent[]
   turnSignals      TurnSignal[]
+  plans            Plan[]
 }
 
 // ---- Chat thread per store+user ----
@@ -96,6 +97,7 @@ model Conversation {
   store       Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
   messages    Message[]
   turnSignals TurnSignal[]
+  plans       Plan[]
 
   @@index([storeId])
   @@index([storeId, userId])
@@ -196,6 +198,40 @@ model AuditLog {
 
   @@index([storeId])
   @@index([storeId, createdAt])
+}
+
+// V2.3 — Plan-First. One row per `propose_plan` tool call. The CEO uses
+// this when a request takes more than one write or crosses departments
+// (e.g. "audit my catalog and lower any overpriced items"). The merchant
+// approves the plan as a whole; each step's write still goes through the
+// regular ApprovalCard flow.
+//
+// `toolCallId @unique` mirrors PendingAction: the CEO's tool_use block
+// in the assistant Message links to the Plan row by this id, and dedupes
+// against retries.
+//
+// `status` is a String not an enum so we can extend (e.g. PARTIALLY_EXECUTED)
+// without a schema migration. Lifecycle: PENDING → APPROVED | REJECTED.
+// EXECUTING / COMPLETED / FAILED states are reserved for if/when we ever
+// auto-execute the steps after approval (today the CEO drives execution
+// manually via the agent loop after seeing the synthesized tool_result).
+model Plan {
+  id             String   @id @default(cuid())
+  storeId        String
+  conversationId String
+  toolCallId     String   @unique
+  summary        String
+  steps          Json // PlanStep[] — see app/lib/agent/plans.server.ts
+  status         String   @default("PENDING")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  store        Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([conversationId])
+  @@index([storeId, status])
 }
 
 // V2.2 — Learning Foundation. One row per assistant turn that completes

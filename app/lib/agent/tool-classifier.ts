@@ -22,9 +22,15 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
 // ask_clarifying_question (V2.2) is a CEO-level orchestration tool: it
 // produces no store mutation, just a question rendered in the chat UI.
 // Treated as inline so api.chat.tsx routes it through executeTool.
+//
+// propose_plan (V2.3) is also CEO-level: it persists a Plan row and
+// renders a PlanCard for the merchant to approve, but doesn't touch
+// Shopify. Each step's WRITE still goes through the regular approval
+// flow when the CEO executes the plan after approval.
 export const INLINE_WRITE_TOOLS = new Set<string>([
   "update_store_memory",
   "ask_clarifying_question",
+  "propose_plan",
 ]);
 
 export function isReadTool(name: string): boolean {

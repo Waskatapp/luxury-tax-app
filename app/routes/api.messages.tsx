@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs } from "react-router";
 
 import prisma from "../db.server";
 import { requireStoreAccess } from "../lib/auth.server";
+import { listPlansForConversation } from "../lib/agent/plans.server";
 
 // GET /api/messages?conversationId=X → messages for a conversation (tenant-scoped).
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -51,6 +52,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const pendingByToolCallId: Record<string, string> = {};
   for (const p of pending) pendingByToolCallId[p.toolCallId] = p.status;
 
+  // V2.3 — same pattern for Plan rows. PlanCard reads
+  // `planByToolCallId[toolCallId]` to know whether to show Approve/Reject
+  // buttons (status === "PENDING") or a terminal status badge.
+  const plans = await listPlansForConversation(store.id, conversationId);
+  const planByToolCallId: Record<
+    string,
+    {
+      id: string;
+      summary: string;
+      steps: { description: string; departmentId: string; estimatedTool?: string | undefined }[];
+      status: "PENDING" | "APPROVED" | "REJECTED";
+    }
+  > = {};
+  for (const p of plans) {
+    planByToolCallId[p.toolCallId] = {
+      id: p.id,
+      summary: p.summary,
+      steps: p.steps,
+      status: p.status,
+    };
+  }
+
   return {
     messages: visible.map((m) => ({
       id: m.id,
@@ -59,5 +82,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       status: "complete" as const,
     })),
     pendingByToolCallId,
+    planByToolCallId,
   };
 };

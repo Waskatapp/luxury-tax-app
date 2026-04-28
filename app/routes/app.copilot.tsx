@@ -33,6 +33,7 @@ import {
   type ConversationSummary,
 } from "../components/chat/ConversationSidebar";
 import { ChatInput } from "../components/chat/ChatInput";
+import { MemoryPill } from "../components/chat/MemoryPill";
 import { MessageBubble } from "../components/chat/MessageBubble";
 import {
   MemoryToastStack,
@@ -82,13 +83,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
-  return { conversations, suggestions };
+  return { conversations, suggestions, shopDomain: store.shopDomain };
 };
 
 export default function CopilotPage() {
   const {
     conversations: initialConversations,
     suggestions,
+    shopDomain,
   } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
 
@@ -100,6 +102,27 @@ export default function CopilotPage() {
   const [creating, setCreating] = useState(false);
   const [state, dispatch] = useReducer(chatReducer, INITIAL_CHAT_STATE);
   const [memoryToasts, setMemoryToasts] = useState<MemoryToastEntry[]>([]);
+  // V2.3 — Plan rows for the active conversation, keyed by toolCallId. We
+  // keep this OUT of the chat reducer because it's a server-derived sidecar
+  // (same shape as pendingByToolCallId) and the reducer cases stay simpler
+  // when only the message list + pending statuses live there. Updated in
+  // reloadMessages alongside pendingByToolCallId; cleared on conversation
+  // switch via the same useEffect.
+  const [planByToolCallId, setPlanByToolCallId] = useState<
+    Record<
+      string,
+      {
+        id: string;
+        summary: string;
+        steps: Array<{
+          description: string;
+          departmentId: string;
+          estimatedTool?: string | undefined;
+        }>;
+        status: "PENDING" | "APPROVED" | "REJECTED";
+      }
+    >
+  >({});
 
   const handleMemorySaved = useCallback((entry: MemoryToastEntry) => {
     // Append; auto-dismiss inside the toast component manages its own
@@ -217,6 +240,19 @@ export default function CopilotPage() {
             status: "complete";
           }>;
           pendingByToolCallId?: Record<string, PendingActionStatus>;
+          planByToolCallId?: Record<
+            string,
+            {
+              id: string;
+              summary: string;
+              steps: Array<{
+                description: string;
+                departmentId: string;
+                estimatedTool?: string | undefined;
+              }>;
+              status: "PENDING" | "APPROVED" | "REJECTED";
+            }
+          >;
         };
         const messages: ChatMessage[] = data.messages.map((m) => ({
           id: m.id,
@@ -229,6 +265,7 @@ export default function CopilotPage() {
           messages,
           pendingByToolCallId: data.pendingByToolCallId ?? {},
         });
+        setPlanByToolCallId(data.planByToolCallId ?? {});
         return messages;
       } catch (err) {
         if ((err as Error).name === "AbortError") return null;
@@ -553,6 +590,109 @@ export default function CopilotPage() {
     [activeId, reloadMessages],
   );
 
+  // V2.3 — Plan approve/reject. Same pattern as tool approve/reject:
+  // POST the decision, then continueChat so the CEO summarizes (and on
+  // approval, starts walking through the plan's steps — each WRITE step
+  // still hits its own ApprovalCard).
+  const handleApprovePlan = useCallback(
+    async (toolCallId: string) => {
+      if (!activeId) return;
+      const conversationId = activeId;
+      // Optimistic — flip the sidecar so the card visibly locks while
+      // the request is in flight. Reload after continueChat will
+      // replace this with server-authoritative state.
+      setPlanByToolCallId((prev) => {
+        const existing = prev[toolCallId];
+        if (!existing) return prev;
+        return { ...prev, [toolCallId]: { ...existing, status: "APPROVED" } };
+      });
+      try {
+        const res = await fetch("/api/plan-approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ toolCallId }),
+        });
+        if (!res.ok) {
+          dispatch({
+            type: "ERROR",
+            error: `Plan approve failed (${res.status})`,
+          });
+          return;
+        }
+        const outcome = await continueChat({ conversationId, dispatch });
+        if (outcome === "done") {
+          retryFnRef.current = null;
+          await reloadMessages();
+        } else {
+          const buildRetry = (): (() => Promise<void>) => async () => {
+            const o = await continueChat({ conversationId, dispatch });
+            if (o === "done") {
+              retryFnRef.current = null;
+              await reloadMessages();
+            } else {
+              retryFnRef.current = buildRetry();
+            }
+          };
+          retryFnRef.current = buildRetry();
+        }
+      } catch (err) {
+        dispatch({
+          type: "ERROR",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [activeId, reloadMessages],
+  );
+
+  const handleRejectPlan = useCallback(
+    async (toolCallId: string) => {
+      if (!activeId) return;
+      const conversationId = activeId;
+      setPlanByToolCallId((prev) => {
+        const existing = prev[toolCallId];
+        if (!existing) return prev;
+        return { ...prev, [toolCallId]: { ...existing, status: "REJECTED" } };
+      });
+      try {
+        const res = await fetch("/api/plan-reject", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ toolCallId }),
+        });
+        if (!res.ok) {
+          dispatch({
+            type: "ERROR",
+            error: `Plan reject failed (${res.status})`,
+          });
+          return;
+        }
+        const outcome = await continueChat({ conversationId, dispatch });
+        if (outcome === "done") {
+          retryFnRef.current = null;
+          await reloadMessages();
+        } else {
+          const buildRetry = (): (() => Promise<void>) => async () => {
+            const o = await continueChat({ conversationId, dispatch });
+            if (o === "done") {
+              retryFnRef.current = null;
+              await reloadMessages();
+            } else {
+              retryFnRef.current = buildRetry();
+            }
+          };
+          retryFnRef.current = buildRetry();
+        }
+      } catch (err) {
+        dispatch({
+          type: "ERROR",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [activeId, reloadMessages],
+  );
+
   const handleRetry = useCallback(async () => {
     if (!activeId) return;
     const conversationId = activeId;
@@ -779,12 +919,16 @@ export default function CopilotPage() {
                             key={m.id}
                             message={m}
                             pendingByToolCallId={state.pendingByToolCallId}
+                            planByToolCallId={planByToolCallId}
                             runningTool={state.runningTool}
                             runningDepartment={state.runningDepartment}
+                            shopDomain={shopDomain}
                             answered={!isLastAssistant}
                             onApprove={handleApprove}
                             onReject={handleReject}
                             onClarify={handleSend}
+                            onApprovePlan={handleApprovePlan}
+                            onRejectPlan={handleRejectPlan}
                           />
                         );
                       })}
@@ -808,6 +952,7 @@ export default function CopilotPage() {
                 </div>
               )}
 
+              <MemoryPill />
               <ChatInput disabled={!hasActive || sending} onSend={handleSend} />
             </BlockStack>
           </Card>

@@ -15,6 +15,10 @@ import { readCollections } from "../shopify/collections.server";
 import { getAnalytics } from "../shopify/analytics.server";
 import type { ShopifyAdmin } from "../shopify/graphql-client.server";
 import { upsertMemory } from "../memory/store-memory.server";
+import {
+  ProposePlanInputSchema,
+  safeCreatePlan,
+} from "./plans.server";
 import type { MemoryCategory } from "@prisma/client";
 import { z } from "zod";
 
@@ -53,6 +57,13 @@ export type ToolResult = { ok: true; data: unknown } | { ok: false; error: strin
 export type ToolContext = {
   admin: ShopifyAdmin;
   storeId: string;
+  // V2.3 — set by api.chat.tsx when calling executeTool. Orchestration
+  // tools (propose_plan) need these to persist their state. Optional so
+  // the same ToolContext shape works for snapshotBefore / executeApprovedWrite
+  // callers that don't have a conversationId/toolCallId in scope.
+  // Orchestration handlers must guard with a null check.
+  conversationId?: string;
+  toolCallId?: string;
 };
 
 // READ tools — called inline by the agent loop in api.chat.tsx.
@@ -73,6 +84,49 @@ export async function executeTool(
 
       case "get_analytics":
         return await getAnalytics(ctx.admin, input);
+
+      case "propose_plan": {
+        if (!ctx.conversationId || !ctx.toolCallId) {
+          return {
+            ok: false,
+            error:
+              "propose_plan requires conversationId + toolCallId in context — this is an internal wiring bug, not a tool input issue",
+          };
+        }
+        const parsed = ProposePlanInputSchema.safeParse(input);
+        if (!parsed.success) {
+          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+        }
+        const plan = await safeCreatePlan({
+          storeId: ctx.storeId,
+          conversationId: ctx.conversationId,
+          toolCallId: ctx.toolCallId,
+          summary: parsed.data.summary,
+          steps: parsed.data.steps,
+        });
+        if (!plan) {
+          return {
+            ok: false,
+            error:
+              "could not persist the plan; if this happens again, ask the merchant to retry the request",
+          };
+        }
+        // Tool result echoes the plan + initial PENDING status. Gemini
+        // sees this on continuation and knows to wait for the merchant's
+        // approval before executing the steps. The chat route also breaks
+        // the agent loop after a propose_plan call — same pattern as
+        // ask_clarifying_question.
+        return {
+          ok: true,
+          data: {
+            planId: plan.id,
+            summary: plan.summary,
+            steps: plan.steps,
+            status: plan.status,
+            note: "Plan persisted. Wait for the merchant's approval before executing any of these steps. Each WRITE step will still get its own approval card when you call its tool.",
+          },
+        };
+      }
 
       case "ask_clarifying_question": {
         const parsed = AskClarifyingQuestionInput.safeParse(input);

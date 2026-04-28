@@ -8,13 +8,29 @@ import { ApprovalCard } from "./ApprovalCard";
 import { AnalyticsCard } from "./cards/AnalyticsCard";
 import { ClarificationPrompt } from "./ClarificationPrompt";
 import { MarkdownContent } from "./MarkdownContent";
+import type { PlanStatus, PlanStep } from "./PlanCard";
+import { PlanCard } from "./PlanCard";
 import { ToolRunningPill } from "./ToolRunningPill";
+
+export type PlanSnapshot = {
+  id: string;
+  summary: string;
+  steps: PlanStep[];
+  status: PlanStatus;
+};
 
 type Props = {
   message: ChatMessage;
   pendingByToolCallId: Record<string, PendingActionStatus>;
+  // V2.3 — Plan rows keyed by the propose_plan tool_use's toolCallId.
+  // Empty record by default; PlanCard treats missing entries as
+  // "just-streamed PENDING" until the next reload populates it.
+  planByToolCallId: Record<string, PlanSnapshot>;
   runningTool: string | null;
   runningDepartment: DepartmentId | null;
+  // V2.3 — passed through to MarkdownContent for citation link
+  // resolution (`product:<gid>` schemes need it to build admin URLs).
+  shopDomain?: string | null | undefined;
   // V2.2 — true when this message is NOT the latest assistant turn in
   // the conversation (i.e. the merchant has already replied to whatever
   // clarification it contains). The ClarificationPrompt uses this to
@@ -23,6 +39,8 @@ type Props = {
   onApprove: (toolCallIds: string[]) => Promise<void> | void;
   onReject: (toolCallIds: string[]) => Promise<void> | void;
   onClarify: (text: string) => Promise<void> | void;
+  onApprovePlan: (toolCallId: string) => Promise<void> | void;
+  onRejectPlan: (toolCallId: string) => Promise<void> | void;
 };
 
 type ToolResultLike = {
@@ -99,12 +117,16 @@ function parseAnalytics(block: ToolResultLike): AnalyticsResult | null {
 export function MessageBubble({
   message,
   pendingByToolCallId,
+  planByToolCallId,
   runningTool,
   runningDepartment,
+  shopDomain,
   answered,
   onApprove,
   onReject,
   onClarify,
+  onApprovePlan,
+  onRejectPlan,
 }: Props) {
   const isUser = message.role === "user";
   const markdownRef = useRef<HTMLDivElement>(null);
@@ -159,6 +181,10 @@ export function MessageBubble({
   const clarifications = allToolUses.filter(
     (b) => b.name === "ask_clarifying_question",
   );
+  // V2.3 — `propose_plan` calls render as PlanCards above the regular
+  // approval flow. Status comes from the planByToolCallId sidecar (or
+  // PENDING if missing — that's the just-streamed case before reload).
+  const plans = allToolUses.filter((b) => b.name === "propose_plan");
 
   const showRunningPill =
     !isUser && message.status === "streaming" && runningTool !== null;
@@ -191,7 +217,11 @@ export function MessageBubble({
                   {text}
                 </Text>
               ) : (
-                <MarkdownContent ref={markdownRef} text={text} />
+                <MarkdownContent
+                  ref={markdownRef}
+                  text={text}
+                  shopDomain={shopDomain}
+                />
               )
             ) : message.status === "streaming" && toolUses.length === 0 && !showRunningPill ? (
               <Text as="p" variant="bodyMd">
@@ -217,6 +247,43 @@ export function MessageBubble({
                 onReject={onReject}
               />
             ) : null}
+            {plans.map((p) => {
+              const sidecar = planByToolCallId[p.id];
+              // Fall back to the toolInput shape when sidecar isn't loaded
+              // yet (mid-stream, before the reloadMessages() round-trip).
+              // Once reload lands, sidecar wins.
+              const inp = (p.input ?? {}) as {
+                summary?: string;
+                steps?: unknown;
+              };
+              const summary =
+                sidecar?.summary ??
+                (typeof inp.summary === "string" ? inp.summary : "");
+              const steps =
+                sidecar?.steps ??
+                (Array.isArray(inp.steps)
+                  ? (inp.steps.filter(
+                      (s) =>
+                        s !== null &&
+                        typeof s === "object" &&
+                        typeof (s as { description?: unknown }).description ===
+                          "string" &&
+                        typeof (s as { departmentId?: unknown }).departmentId ===
+                          "string",
+                    ) as PlanStep[])
+                  : []);
+              return (
+                <PlanCard
+                  key={p.id}
+                  toolCallId={p.id}
+                  summary={summary}
+                  steps={steps}
+                  status={sidecar?.status}
+                  onApprove={onApprovePlan}
+                  onReject={onRejectPlan}
+                />
+              );
+            })}
             {clarifications.map((c) => {
               const inp = (c.input ?? {}) as {
                 question?: string;

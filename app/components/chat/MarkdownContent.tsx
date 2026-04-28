@@ -3,6 +3,9 @@ import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Badge, Box, Divider, Link, Text } from "@shopify/polaris";
+import { Link as RouterLink } from "react-router";
+
+import { parseCitationHref } from "./citation";
 
 // Renders Gemini's markdown output with Polaris primitives. Forwarded ref
 // lets the parent CopyButton read `.innerText` for plain-text copy.
@@ -10,9 +13,15 @@ import { Badge, Box, Divider, Link, Text } from "@shopify/polaris";
 // Beyond the basics, we walk text nodes for known status tokens (ACTIVE,
 // DRAFT, etc.) and replace them with Polaris <Badge> components so a chat
 // listing of products visually matches the Shopify admin.
+//
+// V2.3 — citation links: when `shopDomain` is provided, links with
+// `analytics:`, `product:`, or `memory:` schemes route to the right
+// in-app destination. Links with unrecognized schemes render as plain
+// bold text (never broken external links — see citation.ts comment).
 
 type Props = {
   text: string;
+  shopDomain?: string | null | undefined;
 };
 
 type BadgeTone = "success" | "info" | "warning" | "attention" | "critical";
@@ -87,7 +96,7 @@ function badgify(children: ReactNode): ReactNode {
 }
 
 export const MarkdownContent = forwardRef<HTMLDivElement, Props>(
-  function MarkdownContent({ text }, ref) {
+  function MarkdownContent({ text, shopDomain }, ref) {
     return (
       <div ref={ref} className="copilot-markdown">
         <style>{`
@@ -199,11 +208,41 @@ export const MarkdownContent = forwardRef<HTMLDivElement, Props>(
                 {children}
               </Text>
             ),
-            a: ({ children, href }) => (
-              <Link url={href ?? "#"} target="_blank">
-                {children}
-              </Link>
-            ),
+            a: ({ children, href }) => {
+              const parsed = parseCitationHref(href, shopDomain);
+              if (!parsed) {
+                // Unresolvable citation — render as bold text rather than
+                // a broken link. Prevents hallucinated `memory:doesnotexist`
+                // refs from showing up as dead clickable targets.
+                return (
+                  <Text as="span" variant="bodyMd" fontWeight="semibold">
+                    {children}
+                  </Text>
+                );
+              }
+              if (parsed.external) {
+                return (
+                  <Link url={parsed.url} target="_blank">
+                    {children}
+                  </Link>
+                );
+              }
+              // Internal nav (analytics dashboard, memory settings,
+              // anchor-only). RouterLink keeps the merchant inside the
+              // embedded app — Polaris Link with a relative href would
+              // also work but would briefly trigger a full reload.
+              return (
+                <RouterLink
+                  to={parsed.url}
+                  style={{
+                    color: "var(--p-color-text-link, #006fbb)",
+                    textDecoration: "underline",
+                  }}
+                >
+                  {children}
+                </RouterLink>
+              );
+            },
             hr: () => <Divider />,
             blockquote: ({ children }) => <blockquote>{children}</blockquote>,
             pre: ({ children }) => (
