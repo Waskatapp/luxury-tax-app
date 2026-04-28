@@ -12,7 +12,6 @@ import {
   Banner,
   BlockStack,
   Button,
-  Card,
   Page,
   Text,
 } from "@shopify/polaris";
@@ -882,38 +881,71 @@ export default function CopilotPage() {
           onToggleCollapsed={handleToggleSidebar}
         />
 
-        <div>
-          <Card>
-            <BlockStack gap="400">
-              {state.error ? (
-                <Banner
-                  tone="critical"
-                  title="Something went wrong"
-                  action={
-                    canRetry
-                      ? { content: "Try again", onAction: handleRetry }
-                      : undefined
-                  }
-                >
-                  <p>{state.error}</p>
-                </Banner>
-              ) : dataDerivedStuck ? (
-                // No in-memory error but the conversation is owed a response —
-                // typical after switching conversations / refreshing during a
-                // rate-limited turn. Surface a softer banner so the merchant
-                // can pick up where they left off.
-                <Banner
-                  tone="warning"
-                  title="Awaiting Copilot's response"
-                  action={{ content: "Try again", onAction: handleRetry }}
-                >
-                  <p>
-                    Your last message wasn't answered — likely a brief
-                    rate-limit hiccup. Click "Try again" to continue.
-                  </p>
-                </Banner>
-              ) : null}
+        {/*
+          V2.5 — Gemini-style fixed-height chat shell. The outer wrapper
+          uses calc(100vh - 180px) so the chat extends to the bottom of the
+          viewport (subtracting Shopify's host bar + page title chrome).
+          Inside, a flex column where the messages area gets flex: 1 +
+          overflow-y: auto, so messages scroll internally instead of
+          pushing the page down. Replaces Polaris Card because Card
+          doesn't expose a way to flex-grow to fill its parent — we keep
+          the Card-like visuals via inline styles.
+        */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            height: "calc(100vh - 180px)",
+            minHeight: 480,
+          }}
+        >
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "column",
+              gap: 16,
+              background: "#ffffff",
+              border: "1px solid var(--p-color-border, #e1e3e5)",
+              borderRadius: 12,
+              padding: 16,
+              boxShadow: "0 1px 0 rgba(0, 0, 0, 0.05)",
+            }}
+          >
+            {state.error ? (
+              <Banner
+                tone="critical"
+                title="Something went wrong"
+                action={
+                  canRetry
+                    ? { content: "Try again", onAction: handleRetry }
+                    : undefined
+                }
+              >
+                <p>{state.error}</p>
+              </Banner>
+            ) : dataDerivedStuck ? (
+              // No in-memory error but the conversation is owed a response —
+              // typical after switching conversations / refreshing during a
+              // rate-limited turn. Surface a softer banner so the merchant
+              // can pick up where they left off.
+              <Banner
+                tone="warning"
+                title="Awaiting Copilot's response"
+                action={{ content: "Try again", onAction: handleRetry }}
+              >
+                <p>
+                  Your last message wasn't answered — likely a brief
+                  rate-limit hiccup. Click "Try again" to continue.
+                </p>
+              </Banner>
+            ) : null}
 
+            {/* Content area fills available vertical space; min-height: 0
+                lets the flex child shrink below content size so overflow
+                actually scrolls instead of expanding. */}
+            <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
               {!hasActive ? (
                 <Text as="p" tone="subdued">
                   Start a new conversation to begin.
@@ -927,12 +959,12 @@ export default function CopilotPage() {
                   refreshing={revalidator.state !== "idle"}
                 />
               ) : (
-                <div style={{ position: "relative" }}>
+                <>
                   <div
                     ref={messagesContainerRef}
                     onScroll={handleScroll}
                     style={{
-                      maxHeight: 520,
+                      height: "100%",
                       overflowY: "auto",
                       paddingRight: 4,
                     }}
@@ -986,13 +1018,13 @@ export default function CopilotPage() {
                       </Button>
                     </div>
                   ) : null}
-                </div>
+                </>
               )}
+            </div>
 
-              <MemoryPill />
-              <ChatInput disabled={!hasActive || sending} onSend={handleSend} />
-            </BlockStack>
-          </Card>
+            <MemoryPill />
+            <ChatInput disabled={!hasActive || sending} onSend={handleSend} />
+          </div>
         </div>
       </div>
     </Page>
