@@ -3,6 +3,7 @@ import type { LoaderFunctionArgs } from "react-router";
 import prisma from "../db.server";
 import { requireStoreAccess } from "../lib/auth.server";
 import { listPlansForConversation } from "../lib/agent/plans.server";
+import { listDraftArtifactsForConversation } from "../lib/agent/artifacts.server";
 
 // GET /api/messages?conversationId=X → messages for a conversation (tenant-scoped).
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -74,6 +75,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   }
 
+  // V2.5 — same pattern for Artifact DRAFT rows. The chat reducer reads
+  // `draftArtifacts` and reopens the side panel for the latest one if
+  // the merchant reloads mid-edit. Only DRAFT rows are returned —
+  // approved / discarded artifacts shouldn't reopen the panel.
+  const drafts = await listDraftArtifactsForConversation(
+    store.id,
+    conversationId,
+  );
+  const draftArtifacts = drafts.map((a) => ({
+    id: a.id,
+    toolCallId: a.toolCallId,
+    kind: a.kind,
+    productId: a.content.productId,
+    productTitle: a.content.productTitle,
+    content: a.content.html,
+    updatedAt: a.updatedAt,
+  }));
+
   return {
     messages: visible.map((m) => ({
       id: m.id,
@@ -83,5 +102,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     })),
     pendingByToolCallId,
     planByToolCallId,
+    draftArtifacts,
   };
 };

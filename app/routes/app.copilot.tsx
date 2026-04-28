@@ -41,6 +41,11 @@ import {
   EmptyStateGuide,
   type Suggestion,
 } from "../components/chat/EmptyStateGuide";
+import {
+  ArtifactPanel,
+  type ArtifactPanelData,
+} from "../components/chat/ArtifactPanel";
+import type { ArtifactOpenPayload } from "../hooks/useChatStream";
 import { pickSuggestions } from "../lib/agent/suggestions.server";
 import { log } from "../lib/log.server";
 
@@ -145,6 +150,34 @@ export default function CopilotPage() {
       }
     >
   >({});
+
+  // V2.5 — Active artifact in the right-side panel. null when no draft is
+  // open. Set on the SSE `artifact_open` event AND on conversation reload
+  // (api.messages returns draftArtifacts so the panel reopens after a
+  // reload mid-edit). Cleared on Approve / Discard / explicit close.
+  // Like planByToolCallId, kept outside the chat reducer because it's a
+  // server-derived sidecar.
+  const [activeArtifact, setActiveArtifact] =
+    useState<ArtifactPanelData | null>(null);
+  // Tracks "approve in flight" so the panel disables its buttons while
+  // the underlying Shopify mutation runs.
+  const [artifactBusy, setArtifactBusy] = useState(false);
+
+  // V2.5 — set the active artifact from the SSE `artifact_open` event.
+  // Defined here near other state setters (rather than alongside the
+  // approve / discard handlers below) because handleSend / continueChat
+  // calls reference it and useCallback dependency ordering needs the
+  // callback declared first.
+  const handleArtifactOpen = useCallback((payload: ArtifactOpenPayload) => {
+    setActiveArtifact({
+      id: payload.artifactId,
+      toolCallId: payload.toolCallId,
+      kind: payload.kind,
+      productId: payload.productId,
+      productTitle: payload.productTitle,
+      content: payload.content,
+    });
+  }, []);
 
   const handleMemorySaved = useCallback((entry: MemoryToastEntry) => {
     // Append; auto-dismiss inside the toast component manages its own
@@ -275,6 +308,15 @@ export default function CopilotPage() {
               status: "PENDING" | "APPROVED" | "REJECTED";
             }
           >;
+          draftArtifacts?: Array<{
+            id: string;
+            toolCallId: string;
+            kind: string;
+            productId: string;
+            productTitle: string;
+            content: string;
+            updatedAt: string;
+          }>;
         };
         const messages: ChatMessage[] = data.messages.map((m) => ({
           id: m.id,
@@ -288,6 +330,24 @@ export default function CopilotPage() {
           pendingByToolCallId: data.pendingByToolCallId ?? {},
         });
         setPlanByToolCallId(data.planByToolCallId ?? {});
+        // V2.5 — reopen the panel for the most-recent DRAFT artifact (if
+        // any). If none, the panel stays closed. We pick the LAST draft
+        // because the API returns oldest-first; the freshest is what
+        // the merchant was last editing.
+        const drafts = data.draftArtifacts ?? [];
+        if (drafts.length > 0) {
+          const latest = drafts[drafts.length - 1];
+          setActiveArtifact({
+            id: latest.id,
+            toolCallId: latest.toolCallId,
+            kind: latest.kind,
+            productId: latest.productId,
+            productTitle: latest.productTitle,
+            content: latest.content,
+          });
+        } else {
+          setActiveArtifact(null);
+        }
         return messages;
       } catch (err) {
         if ((err as Error).name === "AbortError") return null;
@@ -446,6 +506,7 @@ export default function CopilotPage() {
         dispatch,
         onMemorySaved: handleMemorySaved,
         onConversationTitled: handleConversationTitled,
+        onArtifactOpen: handleArtifactOpen,
       });
       // Replace streamed bubbles with persisted state ONLY on success.
       // LOAD_MESSAGES clears state.error, so reloading after an error would
@@ -479,6 +540,7 @@ export default function CopilotPage() {
             dispatch,
             onMemorySaved: handleMemorySaved,
             onConversationTitled: handleConversationTitled,
+            onArtifactOpen: handleArtifactOpen,
           });
           if (o === "done") {
             retryFnRef.current = null;
@@ -493,7 +555,13 @@ export default function CopilotPage() {
       };
       retryFnRef.current = buildRetry();
     },
-    [activeId, reloadMessages, handleMemorySaved, handleConversationTitled],
+    [
+      activeId,
+      reloadMessages,
+      handleMemorySaved,
+      handleConversationTitled,
+      handleArtifactOpen,
+    ],
   );
 
   const handleApprove = useCallback(
@@ -715,6 +783,137 @@ export default function CopilotPage() {
     [activeId, reloadMessages],
   );
 
+  const handleArtifactSave = useCallback(
+    async (content: string) => {
+      if (!activeArtifact) return;
+      // PATCH the latest content. The endpoint validates DRAFT status —
+      // if the artifact has already been approved or discarded, the PATCH
+      // 409s and the panel surfaces "Unsaved changes" until the merchant
+      // closes it. We don't update activeArtifact.content here because
+      // the panel's local state is the source of truth between renders.
+      await fetch("/api/artifact", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: activeArtifact.id,
+          content: {
+            productId: activeArtifact.productId,
+            productTitle: activeArtifact.productTitle,
+            html: content,
+          },
+        }),
+      });
+    },
+    [activeArtifact],
+  );
+
+  const handleArtifactApprove = useCallback(async () => {
+    if (!activeArtifact || !activeId) return;
+    const conversationId = activeId;
+    setArtifactBusy(true);
+    try {
+      const res = await fetch("/api/artifact-approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: activeArtifact.id }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        alreadyDone?: boolean;
+      };
+      if (!res.ok || body.ok === false) {
+        dispatch({
+          type: "ERROR",
+          error: body.error ?? `Approve failed (${res.status})`,
+        });
+        return;
+      }
+      // Success: close the panel and continueChat so the CEO summarizes.
+      setActiveArtifact(null);
+      const outcome = await continueChat({
+        conversationId,
+        dispatch,
+        onMemorySaved: handleMemorySaved,
+        onConversationTitled: handleConversationTitled,
+        onArtifactOpen: handleArtifactOpen,
+      });
+      if (outcome === "done") {
+        retryFnRef.current = null;
+        await reloadMessages();
+      }
+    } catch (err) {
+      dispatch({
+        type: "ERROR",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setArtifactBusy(false);
+    }
+  }, [
+    activeArtifact,
+    activeId,
+    reloadMessages,
+    handleMemorySaved,
+    handleConversationTitled,
+    handleArtifactOpen,
+  ]);
+
+  const handleArtifactDiscard = useCallback(async () => {
+    if (!activeArtifact || !activeId) return;
+    const conversationId = activeId;
+    setArtifactBusy(true);
+    try {
+      const res = await fetch("/api/artifact", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: activeArtifact.id }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        dispatch({
+          type: "ERROR",
+          error: body.error ?? `Discard failed (${res.status})`,
+        });
+        return;
+      }
+      setActiveArtifact(null);
+      // continueChat so the CEO acknowledges and asks what's next.
+      const outcome = await continueChat({
+        conversationId,
+        dispatch,
+        onMemorySaved: handleMemorySaved,
+        onConversationTitled: handleConversationTitled,
+        onArtifactOpen: handleArtifactOpen,
+      });
+      if (outcome === "done") {
+        retryFnRef.current = null;
+        await reloadMessages();
+      }
+    } catch (err) {
+      dispatch({
+        type: "ERROR",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setArtifactBusy(false);
+    }
+  }, [
+    activeArtifact,
+    activeId,
+    reloadMessages,
+    handleMemorySaved,
+    handleConversationTitled,
+    handleArtifactOpen,
+  ]);
+
+  // Just collapse — the artifact stays DRAFT in the DB, so a reload
+  // reopens it. Useful when the merchant wants to read more chat
+  // before deciding.
+  const handleArtifactCollapse = useCallback(() => {
+    setActiveArtifact(null);
+  }, []);
+
   const handleRetry = useCallback(async () => {
     if (!activeId) return;
     const conversationId = activeId;
@@ -744,6 +943,7 @@ export default function CopilotPage() {
         dispatch,
         onMemorySaved: handleMemorySaved,
         onConversationTitled: handleConversationTitled,
+        onArtifactOpen: handleArtifactOpen,
       });
       if (o === "done") {
         retryFnRef.current = null;
@@ -753,7 +953,13 @@ export default function CopilotPage() {
       }
     };
     await buildRetry()();
-  }, [activeId, reloadMessages, handleMemorySaved, handleConversationTitled]);
+  }, [
+    activeId,
+    reloadMessages,
+    handleMemorySaved,
+    handleConversationTitled,
+    handleArtifactOpen,
+  ]);
 
   const sending = state.phase === "streaming";
   const hasActive = activeId !== null;
@@ -865,7 +1071,15 @@ export default function CopilotPage() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: `${sidebarCollapsed ? "64px" : "280px"} minmax(0, 1fr)`,
+          // V2.5 — when an artifact is open, slot it into a 3rd column on
+          // the right (~480px). Sidebar still on left, chat in the middle
+          // (now 1fr / shrinks to share with the artifact), artifact
+          // takes its fixed slot. minmax(0, 1fr) on the chat lets it
+          // collapse below its content's natural width when the artifact
+          // is open — without min: 0 the chat would refuse to shrink.
+          gridTemplateColumns: activeArtifact
+            ? `${sidebarCollapsed ? "64px" : "280px"} minmax(0, 1fr) 480px`
+            : `${sidebarCollapsed ? "64px" : "280px"} minmax(0, 1fr)`,
           gap: "16px",
           height: "calc(100vh - 140px)",
           minHeight: 480,
@@ -1027,6 +1241,18 @@ export default function CopilotPage() {
             <ChatInput disabled={!hasActive || sending} onSend={handleSend} />
           </div>
         </div>
+
+        {/* V2.5 — Artifact panel (third column, only when active). */}
+        {activeArtifact ? (
+          <ArtifactPanel
+            artifact={activeArtifact}
+            onSave={handleArtifactSave}
+            onApprove={handleArtifactApprove}
+            onDiscard={handleArtifactDiscard}
+            onCollapse={handleArtifactCollapse}
+            busy={artifactBusy}
+          />
+        ) : null}
       </div>
     </Page>
   );

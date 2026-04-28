@@ -27,10 +27,19 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
 // renders a PlanCard for the merchant to approve, but doesn't touch
 // Shopify. Each step's WRITE still goes through the regular approval
 // flow when the CEO executes the plan after approval.
+//
+// propose_artifact (V2.5) persists an Artifact row and opens the side
+// panel for the merchant to edit. The Shopify write fires later when the
+// merchant clicks Approve in the panel, via api.artifact-approve which
+// creates a fresh PendingAction with the merchant's edited content and
+// runs it through the regular approval flow. So this tool is inline by
+// the same rationale as propose_plan — the meta-tool itself doesn't
+// mutate Shopify.
 export const INLINE_WRITE_TOOLS = new Set<string>([
   "update_store_memory",
   "ask_clarifying_question",
   "propose_plan",
+  "propose_artifact",
 ]);
 
 export function isReadTool(name: string): boolean {

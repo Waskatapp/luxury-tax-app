@@ -81,6 +81,7 @@ model Store {
   suggestionEvents SuggestionEvent[]
   turnSignals      TurnSignal[]
   plans            Plan[]
+  artifacts        Artifact[]
 }
 
 // ---- Chat thread per store+user ----
@@ -98,6 +99,7 @@ model Conversation {
   messages    Message[]
   turnSignals TurnSignal[]
   plans       Plan[]
+  artifacts   Artifact[]
 
   @@index([storeId])
   @@index([storeId, userId])
@@ -265,4 +267,40 @@ model TurnSignal {
   @@index([storeId, createdAt])
   @@index([storeId, outcome])
   @@index([conversationId])
+}
+
+// V2.5 — Artifacts Canvas. The CEO's editable buffer for prose drafts
+// (product descriptions today; discount configs / promo copy later). When
+// the CEO calls `propose_artifact`, an Artifact row is created in DRAFT
+// status and the merchant edits it in the side panel. When approved, the
+// content is funneled through the regular write tool's PendingAction flow
+// (created on the fly with the latest edited content) so AuditLog and the
+// "every Shopify write requires approval" rule both still hold.
+//
+// `toolCallId @unique` links to the propose_artifact tool_use block in the
+// assistant Message (mirrors PendingAction / Plan).
+//
+// `content` shape varies by `kind`:
+//   - "description": { productId, productTitle, html }
+//
+// `status` is a String not an enum so we can extend (e.g. SUPERSEDED if the
+// CEO drafts a new version) without a schema migration. Lifecycle:
+// DRAFT → APPROVED | REJECTED | DISCARDED.
+model Artifact {
+  id             String   @id @default(cuid())
+  storeId        String
+  conversationId String
+  messageId      String?
+  toolCallId     String   @unique
+  kind           String
+  content        Json
+  status         String   @default("DRAFT")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  store        Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([storeId, status])
 }

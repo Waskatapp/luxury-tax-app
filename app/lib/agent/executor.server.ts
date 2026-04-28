@@ -20,6 +20,11 @@ import {
   safeCreatePlan,
 } from "./plans.server";
 import {
+  ProposeArtifactInputSchema,
+  safeCreateArtifact,
+  artifactSummary,
+} from "./artifacts.server";
+import {
   CACHEABLE_READ_TOOLS,
   readCacheGet,
   readCacheInvalidate,
@@ -157,6 +162,51 @@ export async function executeTool(
             steps: plan.steps,
             status: plan.status,
             note: "Plan persisted. Wait for the merchant's approval before executing any of these steps. Each WRITE step will still get its own approval card when you call its tool.",
+          },
+        };
+      }
+
+      case "propose_artifact": {
+        if (!ctx.conversationId || !ctx.toolCallId) {
+          return {
+            ok: false,
+            error:
+              "propose_artifact requires conversationId + toolCallId in context — this is an internal wiring bug, not a tool input issue",
+          };
+        }
+        const parsed = ProposeArtifactInputSchema.safeParse(input);
+        if (!parsed.success) {
+          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+        }
+        const artifact = await safeCreateArtifact({
+          storeId: ctx.storeId,
+          conversationId: ctx.conversationId,
+          toolCallId: ctx.toolCallId,
+          kind: parsed.data.kind,
+          content: {
+            productId: parsed.data.productId,
+            productTitle: parsed.data.productTitle,
+            html: parsed.data.content,
+          },
+        });
+        if (!artifact) {
+          return {
+            ok: false,
+            error:
+              "could not persist the artifact; if this happens again, ask the merchant to retry the request",
+          };
+        }
+        // The chat route emits an `artifact_open` SSE event from this
+        // result and breaks the agent loop so the merchant can edit and
+        // approve in the panel. Note: the result intentionally does NOT
+        // include the full HTML body — only a preview/summary — so
+        // Gemini's history doesn't bloat with redundant prose. The
+        // canonical content lives in the Artifact row + the open panel.
+        return {
+          ok: true,
+          data: {
+            ...artifactSummary(artifact),
+            note: "Artifact draft saved. The merchant is editing it in the side panel — wait for their decision before proceeding. On approval, the edited content will be applied via update_product_description (its regular approval audit still fires).",
           },
         };
       }

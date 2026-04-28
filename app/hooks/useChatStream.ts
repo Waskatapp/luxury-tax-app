@@ -27,6 +27,20 @@ export type ConversationTitledPayload = {
   title: string;
 };
 
+// V2.5 — Emitted when the CEO calls `propose_artifact`. Carries the full
+// initial draft so the panel can open with the content already populated
+// (rather than needing a follow-up GET). The merchant can then edit and
+// approve. ID + tool_call_id let the client correlate this with the
+// persisted Artifact row + the tool_use block in the message stream.
+export type ArtifactOpenPayload = {
+  artifactId: string;
+  toolCallId: string;
+  kind: string;
+  productId: string;
+  productTitle: string;
+  content: string;
+};
+
 // Raw-fetch SSE consumer. useFetcher buffers until complete; EventSource is
 // GET-only. Both are wrong for streaming chat (CLAUDE.md rule #4).
 export async function sendChatMessage(params: {
@@ -36,8 +50,9 @@ export async function sendChatMessage(params: {
   signal?: AbortSignal;
   onMemorySaved?: (entry: MemorySavedEntry) => void;
   onConversationTitled?: (payload: ConversationTitledPayload) => void;
+  onArtifactOpen?: (payload: ArtifactOpenPayload) => void;
 }): Promise<StreamOutcome> {
-  const { conversationId, text, dispatch, signal, onMemorySaved, onConversationTitled } = params;
+  const { conversationId, text, dispatch, signal, onMemorySaved, onConversationTitled, onArtifactOpen } = params;
 
   const assistantId = generateId("assistant");
   const userMessage: ChatMessage = {
@@ -56,6 +71,7 @@ export async function sendChatMessage(params: {
     signal,
     onMemorySaved,
     onConversationTitled,
+    onArtifactOpen,
   });
 }
 
@@ -68,8 +84,9 @@ export async function continueChat(params: {
   signal?: AbortSignal;
   onMemorySaved?: (entry: MemorySavedEntry) => void;
   onConversationTitled?: (payload: ConversationTitledPayload) => void;
+  onArtifactOpen?: (payload: ArtifactOpenPayload) => void;
 }): Promise<StreamOutcome> {
-  const { conversationId, dispatch, signal, onMemorySaved, onConversationTitled } = params;
+  const { conversationId, dispatch, signal, onMemorySaved, onConversationTitled, onArtifactOpen } = params;
 
   const assistantId = generateId("assistant");
   dispatch({ type: "CONTINUE_START", assistantId });
@@ -81,6 +98,7 @@ export async function continueChat(params: {
     signal,
     onMemorySaved,
     onConversationTitled,
+    onArtifactOpen,
   });
 }
 
@@ -91,8 +109,9 @@ async function streamChatTurn(params: {
   signal?: AbortSignal;
   onMemorySaved?: (entry: MemorySavedEntry) => void;
   onConversationTitled?: (payload: ConversationTitledPayload) => void;
+  onArtifactOpen?: (payload: ArtifactOpenPayload) => void;
 }): Promise<StreamOutcome> {
-  const { body, assistantId, dispatch, signal, onMemorySaved, onConversationTitled } = params;
+  const { body, assistantId, dispatch, signal, onMemorySaved, onConversationTitled, onArtifactOpen } = params;
 
   let response: Response;
   try {
@@ -131,7 +150,7 @@ async function streamChatTurn(params: {
       while (sep !== -1) {
         const rawFrame = buffer.slice(0, sep);
         buffer = buffer.slice(sep + 2);
-        handleFrame(rawFrame, assistantId, dispatch, tracker, onMemorySaved, onConversationTitled);
+        handleFrame(rawFrame, assistantId, dispatch, tracker, onMemorySaved, onConversationTitled, onArtifactOpen);
         sep = buffer.indexOf("\n\n");
       }
     }
@@ -157,6 +176,7 @@ function handleFrame(
   tracker: { outcome: StreamOutcome },
   onMemorySaved?: (entry: MemorySavedEntry) => void,
   onConversationTitled?: (payload: ConversationTitledPayload) => void,
+  onArtifactOpen?: (payload: ArtifactOpenPayload) => void,
 ) {
   let event: string | null = null;
   let dataStr: string | null = null;
@@ -180,6 +200,11 @@ function handleFrame(
     value?: string;
     conversationId?: string;
     title?: string;
+    artifact_id?: string;
+    kind?: string;
+    product_id?: string;
+    product_title?: string;
+    content?: string;
   };
   try {
     data = JSON.parse(dataStr);
@@ -231,6 +256,18 @@ function handleFrame(
         onConversationTitled({
           conversationId: data.conversationId,
           title: data.title,
+        });
+      }
+      return;
+    case "artifact_open":
+      if (onArtifactOpen && typeof data.artifact_id === "string") {
+        onArtifactOpen({
+          artifactId: data.artifact_id,
+          toolCallId: String(data.tool_call_id ?? ""),
+          kind: String(data.kind ?? "description"),
+          productId: String(data.product_id ?? ""),
+          productTitle: String(data.product_title ?? ""),
+          content: String(data.content ?? ""),
         });
       }
       return;

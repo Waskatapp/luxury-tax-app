@@ -240,6 +240,38 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "propose_artifact",
+    description:
+      "Open an editable side panel with a prose draft the merchant can review and edit BEFORE the underlying write fires. Use this INSTEAD of update_product_description when generating a NEW or REWRITTEN product description from scratch — the merchant almost always wants to tweak prose copy before it goes live, and editing inside an open canvas is much faster than asking them to dictate edits as chat replies. The panel approval flow then funnels the merchant's edited content through update_product_description with its regular AuditLog + diff, so we don't lose the existing approval guarantees.\n\nKinds (today): `description` — a product's body HTML. (More kinds may be added in later phases — discount-config, promo-copy.)\n\nDO NOT use for: short structured edits where there's no prose to draft (price, status, tags) — those go through their direct write tools. Don't use it for tiny fixes (\"capitalize the brand name\") — for a few-word change, just call update_product_description directly. Use it when you'd otherwise be writing 50+ words of new copy in chat that the merchant would need to copy-paste or dictate edits to.\n\nFormat: provide the productId GID, the human-readable productTitle (for the panel header), and the FULL draft body in `content` (HTML; use `<p>`, `<strong>`, `<ul><li>`, etc.). Don't combine with other tool calls in the same turn — the system pauses the turn after this call so the merchant can edit and approve.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["description"],
+          description:
+            "What kind of draft this is. Today only `description` is supported.",
+        },
+        productId: {
+          type: "string",
+          description:
+            "Product GID, e.g. gid://shopify/Product/12345. Get this from read_products.",
+        },
+        productTitle: {
+          type: "string",
+          description:
+            "Human-readable product title, shown in the panel header so the merchant sees which product they're editing.",
+        },
+        content: {
+          type: "string",
+          description:
+            "The full HTML draft body. Will be saved as the artifact's initial content; the merchant can then edit it in the panel before approving.",
+        },
+      },
+      required: ["kind", "productId", "productTitle", "content"],
+    },
+  },
+  {
     name: "create_discount",
     description:
       "Create a percentage-off automatic discount. REQUIRES HUMAN APPROVAL. Provide the discount title, percent off (1-100), start date, and optional end date.",
