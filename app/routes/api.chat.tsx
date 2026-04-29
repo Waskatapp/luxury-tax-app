@@ -390,6 +390,32 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           });
           lastAssistantMessageId = assistantRow.id;
 
+          // V2.5a — token-budget visibility. Already persisted to
+          // Message.usage above (queryable later); also log so we can
+          // see per-turn token counts in Railway logs in real time
+          // and verify the impact of the lazy-injection / compaction
+          // fixes without a Prisma round-trip.
+          if (lastUsageMetadata) {
+            const usage = lastUsageMetadata as {
+              promptTokenCount?: number;
+              candidatesTokenCount?: number;
+              totalTokenCount?: number;
+            };
+            log.info("ceo turn tokens", {
+              storeId: store.id,
+              conversationId,
+              messageId: assistantRow.id,
+              modelUsed: router.modelId,
+              modelTier: router.tier,
+              routerReason: router.reason,
+              promptTokens: usage.promptTokenCount ?? null,
+              outputTokens: usage.candidatesTokenCount ?? null,
+              totalTokens: usage.totalTokenCount ?? null,
+              historyMessages: stored.length,
+              loopTurn: turn,
+            });
+          }
+
           // Push the assistant turn onto Gemini contents for any next loop.
           contents.push(
             toGeminiContent({ role: "assistant", content: assistantContent }),
