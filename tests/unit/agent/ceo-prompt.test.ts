@@ -15,6 +15,7 @@ function baseOpts(over: Partial<CeoPromptOptions> = {}): CeoPromptOptions {
     memoryMarkdown: null,
     guardrailsMarkdown: null,
     observationsMarkdown: null,
+    pastDecisionsMarkdown: null,
     workflowIndex: [],
     now: FIXED_DATE,
     ...over,
@@ -98,6 +99,43 @@ describe("buildCeoSystemInstruction", () => {
   it("omits the observations section when null/empty (Phase 2.6 default)", () => {
     const out = buildCeoSystemInstruction(baseOpts({ observationsMarkdown: null }));
     expect(out).not.toContain("## CEO observations");
+  });
+
+  it("renders past decisions section when retrieval surfaces matches", () => {
+    const out = buildCeoSystemInstruction(
+      baseOpts({
+        pastDecisionsMarkdown:
+          "- (3 days ago, similarity 91%) conversion_rate: rewriting warranty paragraph should lift conversion\n  Outcome: improved: conversion lifted 4.2%",
+      }),
+    );
+    expect(out).toContain("## Past decisions on similar situations");
+    expect(out).toContain("warranty paragraph");
+  });
+
+  it("omits the past decisions section when null/empty", () => {
+    const out = buildCeoSystemInstruction(
+      baseOpts({ pastDecisionsMarkdown: null }),
+    );
+    expect(out).not.toContain("## Past decisions on similar situations");
+
+    const outEmpty = buildCeoSystemInstruction(
+      baseOpts({ pastDecisionsMarkdown: "   \n  " }),
+    );
+    expect(outEmpty).not.toContain("## Past decisions on similar situations");
+  });
+
+  it("renders past decisions AFTER observations (context-specific is last)", () => {
+    const out = buildCeoSystemInstruction(
+      baseOpts({
+        observationsMarkdown: "- (some observation)",
+        pastDecisionsMarkdown: "- (some past decision)",
+      }),
+    );
+    const obsIdx = out.indexOf("## CEO observations");
+    const pastIdx = out.indexOf("## Past decisions");
+    expect(obsIdx).toBeGreaterThan(0);
+    expect(pastIdx).toBeGreaterThan(0);
+    expect(obsIdx).toBeLessThan(pastIdx);
   });
 
   it("section separator is exactly one blank line (no triple-newline runs)", () => {

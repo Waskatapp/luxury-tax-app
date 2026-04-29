@@ -28,6 +28,10 @@ export type CeoPromptOptions = {
   memoryMarkdown: string | null;
   guardrailsMarkdown: string | null;
   observationsMarkdown: string | null;
+  // V4.3 — Phase 4 Decision Memory & Retrieval. Semantically-similar past
+  // decisions injected only on the merchant's first user message in a new
+  // conversation. Empty/null skips the section entirely.
+  pastDecisionsMarkdown: string | null;
   workflowIndex: WorkflowIndexEntry[];
   now?: Date;
 };
@@ -78,6 +82,19 @@ export function buildCeoSystemInstruction(opts: CeoPromptOptions): string {
   ) {
     sections.push(
       `## CEO observations (what I learned about how you work)\n\n${opts.observationsMarkdown.trim()}`,
+    );
+  }
+
+  // 8. Past decisions on similar situations — V4.3 retrieval. Comes
+  //    LAST because it's context-specific to this conversation: the CEO
+  //    should read identity / rules / memory / observations first, then
+  //    consult precedent for this particular question.
+  if (
+    opts.pastDecisionsMarkdown &&
+    opts.pastDecisionsMarkdown.trim().length > 0
+  ) {
+    sections.push(
+      `## Past decisions on similar situations\n\n${opts.pastDecisionsMarkdown.trim()}`,
     );
   }
 

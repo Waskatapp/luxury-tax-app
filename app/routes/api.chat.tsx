@@ -32,6 +32,8 @@ import {
   pickInsightsToSurface,
 } from "../lib/agent/insights.server";
 import {
+  findSimilarDecisions,
+  formatDecisionsAsMarkdown,
   listDecisionsNeedingEmbedding,
   setDecisionEmbedding,
 } from "../lib/agent/decisions.server";
@@ -328,12 +330,49 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       ? formatInsightsAsMarkdown(surfacedInsights)
       : null;
 
+  // V4.3 — Phase 4 Decision Memory & Retrieval. Embed the merchant's
+  // first user message and pull semantically-similar past decisions
+  // from the journal. Only on the FIRST user message of a new
+  // conversation (same gate as insight surfacing) — continuation
+  // turns reuse what's already in conversation history rather than
+  // re-injecting precedent fresh each turn (which would be confusing
+  // if the topic shifts mid-thread).
+  //
+  // findSimilarDecisions enforces minSimilarity=0.85 and topN=3. If the
+  // embed call fails (rate limit, network) we silently skip the section
+  // — chat experience never blocks on retrieval.
+  let pastDecisionsMarkdown: string | null = null;
+  if (isFirstUserMessage && typeof text === "string") {
+    try {
+      const queryEmbedding = await embedText(text);
+      if (queryEmbedding !== null) {
+        const similar = await findSimilarDecisions({
+          storeId: store.id,
+          queryEmbedding,
+          topN: 3,
+          minSimilarity: 0.85,
+        });
+        if (similar.length > 0) {
+          pastDecisionsMarkdown = formatDecisionsAsMarkdown(
+            similar,
+            similar.length,
+          );
+        }
+      }
+    } catch (err) {
+      log.warn("decisions: retrieval failed (non-fatal)", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   const systemInstruction = buildCeoSystemInstruction({
     shopDomain: store.shopDomain,
     memoryMarkdown: memoryMarkdown.length > 0 ? memoryMarkdown : null,
     guardrailsMarkdown:
       guardrailsMarkdown.length > 0 ? guardrailsMarkdown : null,
     observationsMarkdown,
+    pastDecisionsMarkdown,
     workflowIndex: loadWorkflowIndex(),
   });
 
