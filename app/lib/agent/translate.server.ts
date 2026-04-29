@@ -264,6 +264,74 @@ function summarizeReadWorkflow(parsed: unknown): string {
   return `(read_workflow result, summarized: '${name}' SOP body — re-call read_workflow if you need it again.)`;
 }
 
+// ---- V2.5a: artifact content trimming after approval ----------------------
+//
+// When the CEO calls propose_artifact, the FULL HTML body of the draft
+// lives in the tool_use input. After the merchant approves and the
+// description is applied to Shopify, that 1-2K HTML body keeps sitting
+// in conversation history forever — even though the canonical content is
+// in the Artifact row + already on Shopify.
+//
+// We replace `input.content` with a placeholder for non-DRAFT artifacts
+// before sending history to Gemini. DRAFT artifacts (panel still open)
+// keep their content because the CEO might still be looking at it.
+
+const APPLIED_ARTIFACT_PLACEHOLDER =
+  "<artifact applied — original draft trimmed from history; canonical content in Artifact row>";
+
+const DISCARDED_ARTIFACT_PLACEHOLDER =
+  "<artifact discarded — original draft trimmed from history>";
+
+// Returns the tool_use ids of every propose_artifact tool_use block in the
+// stored history. Pure scan — caller batches a Prisma lookup of statuses
+// to drive compactAppliedArtifacts.
+export function collectProposeArtifactIds(stored: StoredMessage[]): string[] {
+  const ids: string[] = [];
+  for (const msg of stored) {
+    if (msg.role !== "assistant") continue;
+    for (const block of msg.content) {
+      if (block.type === "tool_use" && block.name === "propose_artifact") {
+        ids.push(block.id);
+      }
+    }
+  }
+  return ids;
+}
+
+// For each propose_artifact tool_use whose status is APPROVED / REJECTED /
+// DISCARDED, replace `input.content` with a short placeholder. DRAFT keeps
+// the full content (the panel might still be open). Unknown ids (no row)
+// also keep the content — defensive.
+export function compactAppliedArtifacts(
+  stored: StoredMessage[],
+  statuses: Array<{ toolCallId: string; status: string }>,
+): StoredMessage[] {
+  if (statuses.length === 0) return stored;
+  const statusByToolCallId = new Map<string, string>();
+  for (const s of statuses) statusByToolCallId.set(s.toolCallId, s.status);
+
+  return stored.map((msg) => {
+    if (msg.role !== "assistant") return msg;
+    let touched = false;
+    const nextContent: ContentBlock[] = msg.content.map((block) => {
+      if (block.type !== "tool_use") return block;
+      if (block.name !== "propose_artifact") return block;
+      const status = statusByToolCallId.get(block.id);
+      if (!status || status === "DRAFT") return block;
+      // Pick the right placeholder so the CEO can read the history
+      // and know whether the artifact was applied or discarded.
+      const placeholder =
+        status === "DISCARDED"
+          ? DISCARDED_ARTIFACT_PLACEHOLDER
+          : APPLIED_ARTIFACT_PLACEHOLDER;
+      const nextInput = { ...block.input, content: placeholder };
+      touched = true;
+      return { ...block, input: nextInput };
+    });
+    return touched ? { ...msg, content: nextContent } : msg;
+  });
+}
+
 // ---- Gemini stream chunk → our ContentBlock[] for one assistant turn ----
 //
 // Call accumulateChunk() inside the streaming loop; call finalize() once the

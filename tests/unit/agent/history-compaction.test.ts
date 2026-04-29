@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   bareToolName,
+  collectProposeArtifactIds,
+  compactAppliedArtifacts,
   compactOldToolResults,
   type StoredMessage,
 } from "../../../app/lib/agent/translate.server";
@@ -262,6 +264,160 @@ describe("compactOldToolResults", () => {
     expect(block.type).toBe("tool_result");
     if (block.type === "tool_result") {
       expect(block.content).toContain("read_products result, summarized");
+    }
+  });
+});
+
+// V2.5a — applied propose_artifact bodies don't need to live in history
+// forever. The canonical content is in the Artifact row + already on
+// Shopify; we replace the tool_use input's `content` field with a short
+// placeholder for non-DRAFT artifacts.
+
+function assistantProposeArtifact(
+  id: string,
+  input: Record<string, unknown>,
+): StoredMessage {
+  return {
+    role: "assistant",
+    content: [
+      {
+        type: "tool_use",
+        id,
+        name: "propose_artifact",
+        input,
+      },
+    ],
+  };
+}
+
+describe("collectProposeArtifactIds", () => {
+  it("returns the ids of every propose_artifact tool_use in stored history", () => {
+    const stored: StoredMessage[] = [
+      userText("draft a description"),
+      assistantProposeArtifact("propose_artifact::a", { content: "<p>A</p>" }),
+      userText("now another"),
+      assistantProposeArtifact("propose_artifact::b", { content: "<p>B</p>" }),
+    ];
+    expect(collectProposeArtifactIds(stored)).toEqual([
+      "propose_artifact::a",
+      "propose_artifact::b",
+    ]);
+  });
+
+  it("ignores tool_use blocks for other tools", () => {
+    const stored: StoredMessage[] = [
+      assistantToolUse("read_products", {}),
+      assistantProposeArtifact("propose_artifact::a", { content: "<p>A</p>" }),
+    ];
+    expect(collectProposeArtifactIds(stored)).toEqual(["propose_artifact::a"]);
+  });
+
+  it("ignores tool_use blocks in user-role messages (defensive)", () => {
+    const stored: StoredMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "tool_use", id: "propose_artifact::x", name: "propose_artifact", input: { content: "x" } },
+        ],
+      },
+    ];
+    expect(collectProposeArtifactIds(stored)).toEqual([]);
+  });
+
+  it("returns [] for an empty history", () => {
+    expect(collectProposeArtifactIds([])).toEqual([]);
+  });
+});
+
+describe("compactAppliedArtifacts", () => {
+  it("replaces content for APPROVED artifacts with the applied placeholder", () => {
+    const stored: StoredMessage[] = [
+      assistantProposeArtifact("propose_artifact::a", {
+        productId: "gid://shopify/Product/1",
+        productTitle: "Cat Food",
+        content: "<p>Long HTML body</p>",
+      }),
+    ];
+    const out = compactAppliedArtifacts(stored, [
+      { toolCallId: "propose_artifact::a", status: "APPROVED" },
+    ]);
+    const block = out[0].content[0];
+    expect(block.type).toBe("tool_use");
+    if (block.type === "tool_use") {
+      expect(block.input.content).toContain("artifact applied");
+      expect(block.input.content).not.toContain("Long HTML body");
+      // Other input fields preserved.
+      expect(block.input.productTitle).toBe("Cat Food");
+    }
+  });
+
+  it("uses the discarded placeholder for DISCARDED artifacts", () => {
+    const stored: StoredMessage[] = [
+      assistantProposeArtifact("propose_artifact::a", { content: "<p>x</p>" }),
+    ];
+    const out = compactAppliedArtifacts(stored, [
+      { toolCallId: "propose_artifact::a", status: "DISCARDED" },
+    ]);
+    const block = out[0].content[0];
+    if (block.type === "tool_use") {
+      expect(block.input.content).toContain("artifact discarded");
+    }
+  });
+
+  it("preserves DRAFT artifacts verbatim (panel may still be open)", () => {
+    const stored: StoredMessage[] = [
+      assistantProposeArtifact("propose_artifact::a", { content: "<p>still editing</p>" }),
+    ];
+    const out = compactAppliedArtifacts(stored, [
+      { toolCallId: "propose_artifact::a", status: "DRAFT" },
+    ]);
+    expect(out[0]).toBe(stored[0]); // referential equality — untouched
+  });
+
+  it("preserves artifacts with unknown ids verbatim (defensive)", () => {
+    const stored: StoredMessage[] = [
+      assistantProposeArtifact("propose_artifact::a", { content: "<p>x</p>" }),
+    ];
+    const out = compactAppliedArtifacts(stored, []);
+    expect(out[0]).toBe(stored[0]);
+  });
+
+  it("is a no-op when statuses is empty", () => {
+    const stored: StoredMessage[] = [
+      assistantProposeArtifact("propose_artifact::a", { content: "<p>x</p>" }),
+      userText("hi"),
+    ];
+    const out = compactAppliedArtifacts(stored, []);
+    expect(out).toBe(stored);
+  });
+
+  it("leaves non-propose_artifact tool_use blocks alone", () => {
+    const stored: StoredMessage[] = [
+      assistantToolUse("read_products", { query: "x" }),
+      assistantProposeArtifact("propose_artifact::a", { content: "<p>x</p>" }),
+    ];
+    const out = compactAppliedArtifacts(stored, [
+      { toolCallId: "propose_artifact::a", status: "APPROVED" },
+      // read_products id wouldn't be in the status list anyway, but verify
+      // we don't accidentally rewrite based on name match.
+      { toolCallId: "read_products::abc", status: "APPROVED" },
+    ]);
+    expect(out[0]).toBe(stored[0]);
+  });
+
+  it("handles REJECTED status the same as APPROVED (applied placeholder)", () => {
+    // The artifact lifecycle today is DRAFT → APPROVED | DISCARDED, with
+    // REJECTED reserved for a future "reject without discard" UX. We
+    // bucket it with applied so the placeholder still hides the body.
+    const stored: StoredMessage[] = [
+      assistantProposeArtifact("propose_artifact::a", { content: "<p>x</p>" }),
+    ];
+    const out = compactAppliedArtifacts(stored, [
+      { toolCallId: "propose_artifact::a", status: "REJECTED" },
+    ]);
+    const block = out[0].content[0];
+    if (block.type === "tool_use") {
+      expect(block.input.content).toContain("artifact applied");
     }
   });
 });

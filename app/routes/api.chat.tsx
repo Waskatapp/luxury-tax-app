@@ -37,6 +37,8 @@ import { log } from "../lib/log.server";
 import {
   AssistantTurnAccumulator,
   bareToolCallUuid,
+  collectProposeArtifactIds,
+  compactAppliedArtifacts,
   compactOldToolResults,
   extractSearchText,
   toGeminiContent,
@@ -203,10 +205,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
   historyRows.reverse();
 
-  const stored: StoredMessage[] = historyRows.map((row) => ({
+  const storedRaw: StoredMessage[] = historyRows.map((row) => ({
     role: row.role === "user" ? "user" : "assistant",
     content: row.content as unknown as ContentBlock[],
   }));
+
+  // V2.5a — pre-compaction pass. Trim applied/discarded propose_artifact
+  // bodies before they reach the agent loop. One Prisma round-trip,
+  // indexed on (toolCallId, storeId), fans out to N updates of the
+  // tool_use input.content field. DRAFT artifacts (panel still open)
+  // keep their content because the CEO might still be looking at it.
+  // Net effect: each applied description trims ~1-2K tokens permanently
+  // from this conversation's history budget.
+  const artifactToolCallIds = collectProposeArtifactIds(storedRaw);
+  const artifactStatuses = artifactToolCallIds.length > 0
+    ? await prisma.artifact.findMany({
+        where: {
+          toolCallId: { in: artifactToolCallIds },
+          storeId: store.id,
+        },
+        select: { toolCallId: true, status: true },
+      })
+    : [];
+  const stored = compactAppliedArtifacts(storedRaw, artifactStatuses);
 
   // V2.1 — CEO prompt assembler. Three parallel reads (memory, guardrails,
   // workflow markdown) so a slow pull on any one doesn't compound latency.
