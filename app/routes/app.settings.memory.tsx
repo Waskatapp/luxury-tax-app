@@ -111,7 +111,7 @@ const CATEGORY_LABEL: Record<MemoryCategory, string> = {
   PRODUCT_RULES: "Product rules",
   CUSTOMER_RULES: "Customer rules",
   STORE_CONTEXT: "Store context",
-  OPERATOR_PREFS: "Operator preferences",
+  OPERATOR_PREFS: "Merchant preferences",
   STRATEGIC_GUARDRAILS: "Strategic guardrails",
 };
 

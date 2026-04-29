@@ -163,7 +163,13 @@ const CATEGORY_HEADINGS: Record<MemoryCategory, string> = {
   PRODUCT_RULES: "Product rules",
   CUSTOMER_RULES: "Customer rules",
   STORE_CONTEXT: "Store context",
-  OPERATOR_PREFS: "Operator preferences",
+  // V2.5a — was "Operator preferences"; the word "operator" was being
+  // mis-read by the CEO as itself (the AI operator), so a memory entry
+  // like `operator_name: Ashoqullah` produced the response "you can call
+  // me Ashoqullah" — the CEO adopting the merchant's name as its own.
+  // Renaming the heading (the underlying enum still says OPERATOR_PREFS;
+  // no migration required) makes it unambiguous in the prompt.
+  OPERATOR_PREFS: "Merchant preferences (how the merchant wants the Copilot to behave)",
   STRATEGIC_GUARDRAILS: "Strategic guardrails",
 };
 
