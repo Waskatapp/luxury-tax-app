@@ -31,6 +31,14 @@ import {
   formatInsightsAsMarkdown,
   pickInsightsToSurface,
 } from "../lib/agent/insights.server";
+import {
+  listDecisionsNeedingEmbedding,
+  setDecisionEmbedding,
+} from "../lib/agent/decisions.server";
+import {
+  buildDecisionEmbeddingSource,
+  embedText,
+} from "../lib/agent/embeddings.server";
 import { generateTitle } from "../lib/agent/title-generator.server";
 import {
   classifyTurnOutcome,
@@ -743,6 +751,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             for (const entry of saved) {
               emit("memory_saved", entry);
             }
+          }
+
+          // V4.2 — Lazy embedding tick. Process up to 2 Decision rows
+          // that haven't been embedded yet. Bounded so chat latency
+          // doesn't grow with the size of the embedding backlog. Each
+          // turn fires after the SSE stream is closed, so we're not
+          // stealing user-visible time. Failure is silent (logged in
+          // embedText / setDecisionEmbedding) — the next turn's tick
+          // retries. Wrapped in try/catch so a transient embedding
+          // outage never bubbles up to the merchant.
+          try {
+            const pending = await listDecisionsNeedingEmbedding(store.id, 2);
+            for (const d of pending) {
+              const source = buildDecisionEmbeddingSource({
+                category: d.category,
+                hypothesis: d.hypothesis,
+                expectedOutcome: d.expectedOutcome,
+                actualOutcome: d.actualOutcome,
+              });
+              const vec = await embedText(source);
+              if (vec !== null) {
+                await setDecisionEmbedding({ id: d.id, embedding: vec });
+              }
+            }
+          } catch (err) {
+            log.warn("decision embedding tick failed (non-fatal)", {
+              err: err instanceof Error ? err.message : String(err),
+            });
           }
 
           // First-turn title generation. Only fires when the conversation
