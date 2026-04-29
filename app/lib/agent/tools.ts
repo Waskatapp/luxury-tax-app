@@ -69,6 +69,23 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "read_workflow",
+    description:
+      "Read the full body of a specific workflow SOP. Use this on demand when you're about to execute a task and want the detailed runbook (rules, edge cases, audit details) — the system prompt only shows you a workflow INDEX by default to keep token cost low. Worth fetching for: bulk operations, multi-step plans, edge cases you haven't seen recently. Don't pre-fetch every workflow; call it only when the SOP would actually inform your next action.\n\nValid `name` values match the workflow filenames (without `.md`) — see the workflow index in your system prompt for the exact list, e.g. `price-change`, `product-creation`, `discount-creation`. Names are kebab-case and case-insensitive.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          pattern: "^[A-Za-z0-9_-]+$",
+          description:
+            "Workflow name from the index, e.g. `price-change`. Lowercase letters, digits, hyphens, underscores. No path traversal.",
+        },
+      },
+      required: ["name"],
+    },
+  },
+  {
     name: "update_product_price",
     description:
       "Update the price of a product variant. REQUIRES HUMAN APPROVAL — you only request the change; an approval card is shown to the merchant. Never claim you have made the change before the approval result arrives.",

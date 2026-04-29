@@ -1,5 +1,6 @@
 ---
 department: cross-cutting
+summary: When and how to save durable facts about the merchant's store, brand, rules
 ---
 
 # Store memory

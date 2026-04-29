@@ -24,6 +24,11 @@ export const CACHEABLE_READ_TOOLS = new Set<string>([
   "read_products",
   "read_collections",
   "get_analytics",
+  // V2.5a — read_workflow reads from the in-memory parsed-workflows
+  // cache, so the work itself is already O(1). We still cache here so
+  // the same workflow body in conversation history doesn't re-bloat
+  // Gemini token cost across re-prompts within the 5-min TTL.
+  "read_workflow",
 ]);
 
 type CachedResult = {

@@ -6,6 +6,10 @@ export const READ_TOOLS = new Set<string>([
   "read_products",
   "read_collections",
   "get_analytics",
+  // V2.5a — read_workflow fetches the full body of a workflow SOP on
+  // demand. The system prompt only carries an index; this tool is how
+  // the CEO opens a specific runbook when it actually needs one.
+  "read_workflow",
 ]);
 
 export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([

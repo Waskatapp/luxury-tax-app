@@ -24,6 +24,7 @@ import {
   safeCreateArtifact,
   artifactSummary,
 } from "./artifacts.server";
+import { loadWorkflowBodyByName } from "./workflow-loader.server";
 import {
   CACHEABLE_READ_TOOLS,
   readCacheGet,
@@ -118,6 +119,44 @@ export async function executeTool(
       case "get_analytics": {
         const result = await getAnalytics(ctx.admin, input);
         if (result.ok && ctx.conversationId) {
+          readCacheSet(ctx.conversationId, name, input, result.data);
+        }
+        return result;
+      }
+
+      case "read_workflow": {
+        // V2.5a — fetch one workflow's body on demand. The CEO sees only
+        // a workflow index in its system prompt; this tool exposes the
+        // full SOP. Pure file-system read (no Shopify, no DB), so we
+        // skip the admin/storeId path entirely.
+        const parsed = z
+          .object({
+            name: z
+              .string()
+              .min(1)
+              .max(80)
+              .regex(/^[A-Za-z0-9_-]+$/)
+              .transform((s) => s.toLowerCase()),
+          })
+          .safeParse(input);
+        if (!parsed.success) {
+          return {
+            ok: false,
+            error: `invalid input: ${parsed.error.message}`,
+          };
+        }
+        const body = loadWorkflowBodyByName(parsed.data.name);
+        if (body === null) {
+          return {
+            ok: false,
+            error: `unknown workflow: '${parsed.data.name}'. Check the workflow index in your system prompt for valid names.`,
+          };
+        }
+        const result = {
+          ok: true as const,
+          data: { name: parsed.data.name, body },
+        };
+        if (ctx.conversationId) {
           readCacheSet(ctx.conversationId, name, input, result.data);
         }
         return result;

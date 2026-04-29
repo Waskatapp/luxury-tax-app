@@ -1,5 +1,6 @@
 ---
 department: insights
+summary: Reading store sales analytics — revenue, top products, inventory at risk
 ---
 
 # Workflow: Sales analytics

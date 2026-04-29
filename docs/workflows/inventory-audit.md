@@ -1,5 +1,6 @@
 ---
 department: products
+summary: Inventory audit — flagging variants below a stock threshold
 ---
 
 # Workflow: Inventory audit & at-risk reporting

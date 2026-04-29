@@ -1,5 +1,6 @@
 ---
 department: pricing-promotions
+summary: Creating a percentage-off automatic discount with title, percent, dates
 ---
 
 # Workflow: Creating a discount

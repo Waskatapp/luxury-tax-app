@@ -1,5 +1,6 @@
 ---
 department: products
+summary: Changing a product's lifecycle status — DRAFT / ACTIVE / ARCHIVED
 ---
 
 # Workflow: Changing a product's lifecycle status

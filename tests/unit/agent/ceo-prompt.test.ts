@@ -5,6 +5,7 @@ import {
   buildDepartmentsSection,
   type CeoPromptOptions,
 } from "../../../app/lib/agent/ceo-prompt.server";
+import type { WorkflowIndexEntry } from "../../../app/lib/agent/workflow-loader.server";
 
 const FIXED_DATE = new Date("2026-04-27T12:00:00Z");
 
@@ -14,8 +15,18 @@ function baseOpts(over: Partial<CeoPromptOptions> = {}): CeoPromptOptions {
     memoryMarkdown: null,
     guardrailsMarkdown: null,
     observationsMarkdown: null,
-    workflowsByDept: {},
+    workflowIndex: [],
     now: FIXED_DATE,
+    ...over,
+  };
+}
+
+function entry(over: Partial<WorkflowIndexEntry> = {}): WorkflowIndexEntry {
+  return {
+    name: "price-change",
+    department: "pricing-promotions",
+    summary: "Changing a product variant's price",
+    toolName: "update_product_price",
     ...over,
   };
 }
@@ -31,13 +42,9 @@ describe("buildCeoSystemInstruction", () => {
 
   it("includes all four mandatory section blocks (identity / departments / decision-rules / output-format)", () => {
     const out = buildCeoSystemInstruction(baseOpts());
-    // Identity is first; merchant-facing strings unique to it.
     expect(out).toMatch(/You are the Merchant Copilot's CEO/);
-    // Departments header.
     expect(out).toMatch(/## Departments and workflows/);
-    // Decision rules header.
     expect(out).toMatch(/## Core decision rules/);
-    // Output format header.
     expect(out).toMatch(/## Output formatting/);
   });
 
@@ -103,29 +110,34 @@ describe("buildCeoSystemInstruction", () => {
     expect(out).not.toMatch(/\n\n\n\n/);
   });
 
-  it("stays under Gemini Flash's 32k context budget at realistic merchant scale", () => {
-    // ~30 memory lines + ~5 guardrails + all 7 V1 workflows worth of markdown.
+  // V2.5a — the realistic-scale test now uses an INDEX (one line per workflow)
+  // instead of full bodies. Realistic merchant scale = ~30 memory lines + ~5
+  // guardrails + ~10 workflows in the index. The base prompt should now stay
+  // well under 30k chars (was previously bumping toward 60k).
+  it("stays well under Gemini Flash's 32k context budget at realistic merchant scale", () => {
     const fakeMemory = Array.from({ length: 30 }, (_, i) => `- key_${i}: value ${i}`).join("\n");
     const fakeGuardrails = Array.from({ length: 5 }, (_, i) => `- rule_${i}: a strategic guardrail with some prose attached`).join("\n");
+    const fakeIndex: WorkflowIndexEntry[] = Array.from({ length: 10 }, (_, i) => ({
+      name: `workflow-${i}`,
+      department: i % 2 === 0 ? "products" : "pricing-promotions",
+      summary: `One-line summary for workflow ${i}`,
+      toolName: `tool_${i}`,
+    }));
     const out = buildCeoSystemInstruction(
       baseOpts({
         memoryMarkdown: fakeMemory,
         guardrailsMarkdown: fakeGuardrails,
-        workflowsByDept: {
-          products: "# Products workflow\n\nLong workflow text ".repeat(50),
-          "pricing-promotions": "# Pricing workflow\n\nLong workflow text ".repeat(50),
-          insights: "# Insights workflow\n\nLong workflow text ".repeat(50),
-        },
+        workflowIndex: fakeIndex,
       }),
     );
-    // ~4 chars/token → ~32k tokens ≈ 128k chars. Stay well under that.
-    expect(out.length).toBeLessThan(60_000);
+    // V2.5a target: lazy injection should keep base prompt well under 30k chars.
+    expect(out.length).toBeLessThan(30_000);
   });
 });
 
-describe("buildDepartmentsSection", () => {
+describe("buildDepartmentsSection (V2.5a — index, not bodies)", () => {
   it("emits one heading per declared department in DEPARTMENTS order", () => {
-    const out = buildDepartmentsSection({});
+    const out = buildDepartmentsSection([]);
     const productsIdx = out.indexOf("### Products");
     const pricingIdx = out.indexOf("### Pricing & Promotions");
     const insightsIdx = out.indexOf("### Insights");
@@ -135,41 +147,62 @@ describe("buildDepartmentsSection", () => {
   });
 
   it("lists each department's tools in code-fenced inline form", () => {
-    const out = buildDepartmentsSection({});
+    const out = buildDepartmentsSection([]);
     expect(out).toContain("`update_product_price`");
     expect(out).toContain("`create_discount`");
     expect(out).toContain("`read_products`");
     expect(out).toContain("`get_analytics`");
   });
 
-  it("embeds workflow markdown when provided per-department", () => {
-    const out = buildDepartmentsSection({
-      products: "# Products workflow body",
-      "pricing-promotions": "# Pricing workflow body",
-    });
-    expect(out).toContain("# Products workflow body");
-    expect(out).toContain("# Pricing workflow body");
+  it("renders one index line per workflow under its owning department", () => {
+    const out = buildDepartmentsSection([
+      entry({ name: "price-change", department: "pricing-promotions", summary: "Changing a product variant's price", toolName: "update_product_price" }),
+      entry({ name: "discount-creation", department: "pricing-promotions", summary: "Creating a percentage-off discount", toolName: "create_discount" }),
+      entry({ name: "product-creation", department: "products", summary: "Creating a new product (DRAFT)", toolName: "create_product_draft" }),
+    ]);
+    expect(out).toContain("`price-change`");
+    expect(out).toContain("Changing a product variant's price");
+    expect(out).toContain("`update_product_price`");
+    expect(out).toContain("`discount-creation`");
+    expect(out).toContain("`product-creation`");
+  });
+
+  it("shows the read_workflow hint so the CEO knows to fetch on demand", () => {
+    const out = buildDepartmentsSection([
+      entry({ name: "price-change", department: "pricing-promotions", summary: "Changing a product variant's price", toolName: "update_product_price" }),
+    ]);
+    expect(out).toContain("read_workflow");
   });
 
   it("renders the Cross-cutting section when workflows have that tag", () => {
-    const out = buildDepartmentsSection({
-      "cross-cutting": "# Memory rules apply everywhere",
-    });
+    const out = buildDepartmentsSection([
+      entry({ name: "store-memory", department: "cross-cutting", summary: "When and how to save durable facts", toolName: null }),
+    ]);
     expect(out).toContain("Cross-cutting");
-    expect(out).toContain("# Memory rules apply everywhere");
+    expect(out).toContain("`store-memory`");
   });
 
   it("surfaces uncategorized workflows under their own heading (no silent loss)", () => {
-    const out = buildDepartmentsSection({
-      uncategorized: "# Stray workflow with no department tag",
-    });
+    const out = buildDepartmentsSection([
+      entry({ name: "stray", department: null, summary: "A workflow with no department tag", toolName: null }),
+    ]);
     expect(out).toContain("Uncategorized workflows");
-    expect(out).toContain("Stray workflow with no department tag");
+    expect(out).toContain("`stray`");
   });
 
   it("does not render Cross-cutting / Uncategorized headers when those buckets are absent", () => {
-    const out = buildDepartmentsSection({});
+    const out = buildDepartmentsSection([]);
     expect(out).not.toContain("Cross-cutting");
     expect(out).not.toContain("Uncategorized workflows");
+  });
+
+  it("omits the toolName segment when an entry has none", () => {
+    const out = buildDepartmentsSection([
+      entry({ name: "general", department: "products", summary: "A general SOP", toolName: null }),
+    ]);
+    expect(out).toContain("`general`");
+    expect(out).toContain("A general SOP");
+    // Shouldn't render an empty `tool: ` clause.
+    expect(out).not.toMatch(/tool: ``/);
   });
 });

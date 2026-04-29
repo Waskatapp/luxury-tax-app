@@ -1,5 +1,6 @@
 ---
 department: products
+summary: Rewriting a product's description body (use propose_artifact for canvas)
 ---
 
 # Workflow: Updating a product's description

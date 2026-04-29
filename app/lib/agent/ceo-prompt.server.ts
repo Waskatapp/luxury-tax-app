@@ -3,6 +3,7 @@ import DECISION_RULES_MD from "./ceo-prompt/decision-rules.md?raw";
 import OUTPUT_FORMAT_MD from "./ceo-prompt/output-format.md?raw";
 
 import { DEPARTMENTS } from "./departments";
+import type { WorkflowIndexEntry } from "./workflow-loader.server";
 
 // V2.1 CEO Brain — replaces V1's monolithic buildSystemInstruction with a
 // modular assembler. Each prompt block lives in its own .md file so a
@@ -11,18 +12,23 @@ import { DEPARTMENTS } from "./departments";
 // Vite's `?raw` import (env.d.ts already references vite/client). At
 // runtime this is just string concatenation — no fs, no parsing.
 //
+// V2.5a — switched from inlining every workflow body (~4,600 tokens per
+// turn) to inlining a workflow INDEX (~200 tokens). The CEO now calls
+// `read_workflow(name)` on demand to fetch the full SOP. Saves ~4,000
+// tokens of system-prompt budget per turn at zero quality cost — the
+// workflows are still authoritative when needed; just not pre-loaded.
+//
 // The departments section is GENERATED from the DEPARTMENTS array (single
-// source of truth from departments.ts) plus the workflow markdown grouped
-// by department (loaded via workflow-loader's loadWorkflowsByDepartment()).
-// Guardrails go BEFORE memory so the CEO reads operating constraints
-// before reading preference facts.
+// source of truth from departments.ts) plus the workflow index loaded via
+// workflow-loader's loadWorkflowIndex(). Guardrails go BEFORE memory so
+// the CEO reads operating constraints before reading preference facts.
 
 export type CeoPromptOptions = {
   shopDomain: string;
   memoryMarkdown: string | null;
   guardrailsMarkdown: string | null;
   observationsMarkdown: string | null;
-  workflowsByDept: Record<string, string>;
+  workflowIndex: WorkflowIndexEntry[];
   now?: Date;
 };
 
@@ -38,8 +44,10 @@ export function buildCeoSystemInstruction(opts: CeoPromptOptions): string {
       .replaceAll("${today}", today),
   );
 
-  // 2. Departments + their workflows (auto-generated, never a static file).
-  sections.push(buildDepartmentsSection(opts.workflowsByDept));
+  // 2. Departments + their workflow index (auto-generated, never a static
+  //    file). V2.5a — only an index is inlined; full bodies fetched via
+  //    read_workflow on demand.
+  sections.push(buildDepartmentsSection(opts.workflowIndex));
 
   // 3. Decision rules.
   sections.push(DECISION_RULES_MD);
@@ -77,44 +85,64 @@ export function buildCeoSystemInstruction(opts: CeoPromptOptions): string {
 }
 
 // Builds the "Departments" section dynamically from the DEPARTMENTS array
-// (single source of truth) plus the loaded workflow markdown grouped by
-// department. Workflows tagged `cross-cutting` get their own subsection
-// because they apply to every department (e.g. store memory). Workflows
-// without a `department:` frontmatter end up in `uncategorized` and are
-// appended at the end so the CEO still sees them.
+// (single source of truth) plus a workflow INDEX (V2.5a). Each workflow
+// shows up as a one-liner: name, summary, owning tool. The CEO calls
+// `read_workflow(name)` on demand for the full body.
+//
+// Workflows tagged `cross-cutting` get their own subsection (apply to
+// every department). Workflows without a `department:` frontmatter land
+// in `uncategorized` and are appended at the end so they don't silently
+// disappear from the prompt.
 export function buildDepartmentsSection(
-  workflowsByDept: Record<string, string>,
+  workflowIndex: WorkflowIndexEntry[],
 ): string {
   const lines: string[] = ["## Departments and workflows"];
   lines.push(
     "You are the CEO of a small company. Each department below owns a set of tools and a set of operating procedures (workflows). When the merchant asks for something, decide which department(s) handle it, then call the relevant tools. Some requests cross departments — coordinate them yourself; the departments don't talk to each other directly.",
   );
+  lines.push(
+    "Below each department is an INDEX of the workflows available to you — name, what it covers, owning tool. To read the full SOP for one of them (rules, edge cases, audit details), call `read_workflow` with its name. Don't fetch every workflow up front; only when you actually need the runbook.",
+  );
+
+  // Group the index by department once for O(1) per-department lookup.
+  const byDept = new Map<string, WorkflowIndexEntry[]>();
+  for (const entry of workflowIndex) {
+    const key = entry.department ?? "uncategorized";
+    const list = byDept.get(key) ?? [];
+    list.push(entry);
+    byDept.set(key, list);
+  }
 
   for (const dept of DEPARTMENTS) {
     lines.push(`### ${dept.label}`);
     lines.push(dept.description);
     lines.push(`**Tools owned:** ${dept.toolNames.map((t) => `\`${t}\``).join(", ")}`);
-    const wf = workflowsByDept[dept.id]?.trim();
-    if (wf && wf.length > 0) {
-      lines.push("**Operating procedures:**");
-      lines.push(wf);
+    const entries = byDept.get(dept.id) ?? [];
+    if (entries.length > 0) {
+      lines.push("**Operating procedures available** (call `read_workflow` for the full SOP):");
+      lines.push(entries.map((e) => formatIndexLine(e)).join("\n"));
     }
   }
 
-  // Cross-cutting workflows — apply to every department.
-  const crossCutting = workflowsByDept["cross-cutting"]?.trim();
-  if (crossCutting && crossCutting.length > 0) {
+  // Cross-cutting — apply to every department.
+  const crossCutting = byDept.get("cross-cutting") ?? [];
+  if (crossCutting.length > 0) {
     lines.push("### Cross-cutting (applies to every department)");
-    lines.push(crossCutting);
+    lines.push(crossCutting.map(formatIndexLine).join("\n"));
   }
 
   // Anything without frontmatter — surface so prompts don't silently
   // disappear if a workflow is missing its tag.
-  const uncategorized = workflowsByDept["uncategorized"]?.trim();
-  if (uncategorized && uncategorized.length > 0) {
+  const uncategorized = byDept.get("uncategorized") ?? [];
+  if (uncategorized.length > 0) {
     lines.push("### Uncategorized workflows");
-    lines.push(uncategorized);
+    lines.push(uncategorized.map(formatIndexLine).join("\n"));
   }
 
   return lines.join("\n\n");
+}
+
+function formatIndexLine(e: WorkflowIndexEntry): string {
+  const tool = e.toolName ? `; tool: \`${e.toolName}\`` : "";
+  return `- \`${e.name}\` — ${e.summary}${tool}`;
 }

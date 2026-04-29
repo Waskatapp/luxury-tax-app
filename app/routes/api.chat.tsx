@@ -10,7 +10,7 @@ import {
 import { sanitizeUserInput } from "../lib/security/sanitize.server";
 import { GEMINI_CHAT_MODEL, getGeminiClient } from "../lib/agent/gemini.server";
 import { buildCeoSystemInstruction } from "../lib/agent/ceo-prompt.server";
-import { loadWorkflowsByDepartment } from "../lib/agent/workflow-loader.server";
+import { loadWorkflowIndex } from "../lib/agent/workflow-loader.server";
 import { TOOL_DECLARATIONS } from "../lib/agent/tools";
 import {
   isApprovalRequiredWrite,
@@ -263,7 +263,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       guardrailsMarkdown.length > 0 ? guardrailsMarkdown : null,
     // Phase 2.6 (Reflection) populates this. Null until that ships.
     observationsMarkdown: null,
-    workflowsByDept: loadWorkflowsByDepartment(),
+    workflowIndex: loadWorkflowIndex(),
   });
 
   const stream = new ReadableStream<Uint8Array>({

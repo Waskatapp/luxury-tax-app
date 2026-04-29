@@ -1,5 +1,6 @@
 ---
 department: products
+summary: Creating a new product in DRAFT status for the merchant to review
 ---
 
 # Workflow: Creating a new product (DRAFT)

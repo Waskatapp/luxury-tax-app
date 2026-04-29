@@ -33,6 +33,22 @@ export type ParsedWorkflow = {
   filename: string;
   department: string | null; // "products" | "pricing-promotions" | "insights" | "cross-cutting" | null (uncategorized)
   body: string;              // markdown body without the frontmatter block
+  // V2.5a — extracted at parse time so the index assembler doesn't re-scan
+  // every file. summary comes from `summary:` frontmatter, falling back to
+  // the first `# Workflow: ...` H1 line, falling back to filename. toolName
+  // comes from a top-of-body `Tool: \`<name>\`` reference if present.
+  summary: string;
+  toolName: string | null;
+};
+
+export type WorkflowIndexEntry = {
+  // Stable name used by the read_workflow tool: the filename without .md.
+  // e.g. "price-change", "product-creation". Lowercase + kebab-case
+  // matches our markdown file naming convention.
+  name: string;
+  department: string | null;
+  summary: string;
+  toolName: string | null;
 };
 
 type Cache = {
@@ -85,7 +101,14 @@ export function parseWorkflowFile(
   const lines = normalized.split("\n");
 
   if (lines[0]?.trim() !== "---") {
-    return { filename, department: null, body: normalized.trim() };
+    const body = normalized.trim();
+    return {
+      filename,
+      department: null,
+      body,
+      summary: deriveSummary(filename, null, body),
+      toolName: extractToolName(body),
+    };
   }
 
   let endIdx = -1;
@@ -97,11 +120,19 @@ export function parseWorkflowFile(
   }
   if (endIdx === -1) {
     // Unclosed frontmatter — treat whole thing as body.
-    return { filename, department: null, body: normalized.trim() };
+    const body = normalized.trim();
+    return {
+      filename,
+      department: null,
+      body,
+      summary: deriveSummary(filename, null, body),
+      toolName: extractToolName(body),
+    };
   }
 
   const fmLines = lines.slice(1, endIdx);
   let department: string | null = null;
+  let frontmatterSummary: string | null = null;
   for (const line of fmLines) {
     // Tolerate leading whitespace, padding around `:`, and trailing
     // whitespace on the value.
@@ -111,11 +142,57 @@ export function parseWorkflowFile(
     const value = m[2].trim();
     if (key === "department" && value.length > 0) {
       department = value;
+    } else if (key === "summary" && value.length > 0) {
+      frontmatterSummary = value;
     }
   }
 
   const body = lines.slice(endIdx + 1).join("\n").trim();
-  return { filename, department, body };
+  return {
+    filename,
+    department,
+    body,
+    summary: deriveSummary(filename, frontmatterSummary, body),
+    toolName: extractToolName(body),
+  };
+}
+
+// V2.5a — the index needs a 1-line description per workflow. Source order:
+// 1. explicit `summary:` frontmatter (preferred — merchant-controlled)
+// 2. first `# Workflow: <X>` H1 → "<X>"
+// 3. any first H1 → that H1's text
+// 4. filename (without .md) as last resort
+function deriveSummary(
+  filename: string,
+  frontmatterSummary: string | null,
+  body: string,
+): string {
+  if (frontmatterSummary && frontmatterSummary.length > 0) {
+    return frontmatterSummary;
+  }
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("#")) continue;
+    // Strip leading `#`s and whitespace.
+    const heading = trimmed.replace(/^#+\s*/, "").trim();
+    if (heading.length === 0) continue;
+    // "Workflow: Foo" → "Foo"; otherwise return whole heading.
+    const m = heading.match(/^Workflow:\s*(.+)$/i);
+    return m ? m[1].trim() : heading;
+  }
+  return filename.replace(/\.md$/, "");
+}
+
+// V2.5a — many of our workflow files have a "Tool: `update_product_price`"
+// reference near the top. Surfaces in the index so the CEO can correlate
+// "I want to call update_product_price" with "read_workflow('price-change')"
+// without re-scanning the body.
+function extractToolName(body: string): string | null {
+  for (const line of body.split("\n")) {
+    const m = line.match(/^Tool:\s*`([a-z_][a-z0-9_]*)`/);
+    if (m) return m[1];
+  }
+  return null;
 }
 
 export function loadWorkflowsMarkdown(): string {
@@ -137,6 +214,33 @@ export function loadWorkflowsByDepartment(): Record<string, string> {
     out[key] = bodies.join("\n\n---\n\n");
   }
   return out;
+}
+
+// V2.5a — lazy workflow injection. The CEO prompt now carries only an
+// index (filename + summary + owning tool), and the new `read_workflow`
+// tool fetches the full body on demand. Saves ~4,000 tokens per turn vs.
+// inlining every workflow body.
+export function loadWorkflowIndex(): WorkflowIndexEntry[] {
+  return loadAll().parsed.map((wf) => ({
+    name: wf.filename.replace(/\.md$/, ""),
+    department: wf.department,
+    summary: wf.summary,
+    toolName: wf.toolName,
+  }));
+}
+
+// Look up a single workflow body by its index name (filename without .md).
+// Returns null for unknown names. The read_workflow tool exposes this; the
+// regex in the tool's parametersJsonSchema (^[a-z0-9_-]+$) prevents path
+// traversal even before this call, but we also defensively reject any
+// name that doesn't match that shape here.
+export function loadWorkflowBodyByName(name: string): string | null {
+  if (!/^[a-z0-9_-]+$/i.test(name)) return null;
+  const target = `${name}.md`;
+  for (const wf of loadAll().parsed) {
+    if (wf.filename === target) return wf.body;
+  }
+  return null;
 }
 
 // Test seam — lets unit tests reset the cache between runs.

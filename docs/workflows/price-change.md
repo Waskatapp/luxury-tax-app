@@ -1,5 +1,6 @@
 ---
 department: pricing-promotions
+summary: Changing a product variant's price (with margin and rounding rules)
 ---
 
 # Workflow: Changing a product's price
