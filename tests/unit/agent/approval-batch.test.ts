@@ -268,8 +268,40 @@ describe("buildApproveToolResults", () => {
     expect(block.type).toBe("tool_result");
     if (block.type === "tool_result") {
       expect(block.tool_use_id).toBe("tc-1");
-      expect(JSON.parse(block.content)).toEqual({ price: "50" });
+      // V3.3 — outcome-bearing successful writes get an `applied: true`
+      // flag + `_note` to nudge propose_followup. The original `after`
+      // payload is preserved verbatim alongside.
+      const parsed = JSON.parse(block.content);
+      expect(parsed.price).toBe("50");
+      expect(parsed.applied).toBe(true);
+      expect(typeof parsed._note).toBe("string");
+      expect(parsed._note).toMatch(/propose_followup/);
       expect(block.is_error).toBe(false);
+    }
+  });
+
+  it("non-outcome-bearing successful write: no applied flag, no follow-up nudge", () => {
+    // Sentinel: only the 4 explicitly-listed outcome-bearing writes get
+    // the applied/_note treatment. Everything else passes through
+    // verbatim. update_store_memory is the canonical "write that has no
+    // measurable outcome" — adding a follow-up here would be noise.
+    const [block] = buildApproveToolResults([
+      {
+        pendingId: "p1",
+        toolCallId: "tc-1",
+        toolName: "update_store_memory",
+        finalStatus: "EXECUTED",
+        before: null,
+        after: { key: "brand_voice", value: "casual" },
+        error: null,
+        skip: false,
+      },
+    ]);
+    if (block.type === "tool_result") {
+      const parsed = JSON.parse(block.content);
+      expect(parsed).toEqual({ key: "brand_voice", value: "casual" });
+      expect(parsed.applied).toBeUndefined();
+      expect(parsed._note).toBeUndefined();
     }
   });
 

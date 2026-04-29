@@ -45,13 +45,13 @@ function buildApprovedToolResult(
         applied: true,
         productTitle: outcome.productTitle,
         charCount: outcome.charCount,
-        note: "The merchant approved this artifact and the description was applied to Shopify. Acknowledge briefly — don't re-quote the full description back. The diff is already visible in the audit log.",
+        note: "The merchant approved this artifact and the description was applied to Shopify. In this turn you MUST do BOTH: (1) write a one-sentence acknowledgement to the merchant — don't re-quote the full description, the diff is already in the audit log; (2) ALSO call `propose_followup` to commit to checking whether the new description actually moves conversion. Pick `evaluationCriteria` based on this product's traffic — high-traffic SKU `min_sessions: 200, max_days: 30`; slow mover `min_days: 45, max_days: 90`. Don't skip the followup — it's how you remember your own work.",
       }
     : {
         approved: true,
         applied: false,
         error: outcome.error,
-        note: "The merchant approved the artifact but applying it to Shopify failed. Tell the merchant what went wrong and offer to retry.",
+        note: "The merchant approved the artifact but applying it to Shopify failed. Tell the merchant what went wrong and offer to retry. Do NOT call propose_followup — there's nothing to evaluate yet.",
       };
   return [
     {

@@ -55,24 +55,54 @@ export function validateBatch(
   return { ok: true, conversationId: rows[0].conversationId };
 }
 
+// V3.3 — Tools whose successful execution should trigger a follow-up
+// evaluation per decision rule 13. Surface this as a flag in the
+// tool_result so the CEO has a structural cue (`applied: true` +
+// `note`) to call propose_followup in the same turn it acknowledges
+// the success. update_store_memory and create_product_draft are not
+// in this set — memory updates have no measurable outcome, draft
+// creation is "lit a fuse" rather than "shipped a change."
+const OUTCOME_BEARING_WRITES = new Set<string>([
+  "update_product_price",
+  "update_product_description",
+  "update_product_status",
+  "create_discount",
+]);
+
+const FOLLOWUP_NOTE =
+  "applied: true — this change is live on Shopify. In this same turn you MUST do BOTH: (1) write a one-sentence acknowledgement to the merchant, AND (2) call `propose_followup` with `evaluationCriteria` sized to this product's traffic. Don't skip the followup — see decision rule 13 for sizing examples.";
+
 // Build the consolidated synthetic user-turn tool_result blocks for an
 // approve batch. One block per processed row; skipped rows record their
 // existing status; failed rows mark is_error: true.
+//
+// Successful outcome-bearing writes get an extra `applied: true` flag
+// + a `_note` field (underscored to avoid colliding with whatever shape
+// the per-tool result already has) nudging the CEO to call
+// propose_followup. Without this hint the CEO often acknowledges the
+// success but forgets to queue the followup.
 export function buildApproveToolResults(
   processed: ProcessedApproveRow[],
 ): ContentBlock[] {
-  return processed.map((p) => ({
-    type: "tool_result",
-    tool_use_id: p.toolCallId,
-    content: JSON.stringify(
-      p.skip
-        ? { status: p.finalStatus.toLowerCase() }
-        : p.error
-          ? { error: p.error }
-          : (p.after ?? { ok: true }),
-    ),
-    is_error: !p.skip && p.error !== null,
-  }));
+  return processed.map((p) => {
+    let payload: unknown;
+    if (p.skip) {
+      payload = { status: p.finalStatus.toLowerCase() };
+    } else if (p.error) {
+      payload = { error: p.error };
+    } else {
+      const after = (p.after as Record<string, unknown> | null) ?? { ok: true };
+      payload = OUTCOME_BEARING_WRITES.has(p.toolName)
+        ? { ...after, applied: true, _note: FOLLOWUP_NOTE }
+        : after;
+    }
+    return {
+      type: "tool_result",
+      tool_use_id: p.toolCallId,
+      content: JSON.stringify(payload),
+      is_error: !p.skip && p.error !== null,
+    };
+  });
 }
 
 // Same shape for the reject path. All non-skipped rows are { rejected: true }.
