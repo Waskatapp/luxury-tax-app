@@ -73,6 +73,17 @@ const MAX_OUTPUT_TOKENS = 4096;
 //     Common on free-tier 2.5 Flash. Same UX shape as 429 (just retry).
 function friendlyErrorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
+  // Schema / payload errors come BEFORE transient buckets so a malformed
+  // tool registration doesn't masquerade as "overloaded" and waste the
+  // merchant's time clicking Try again. Real 400s are persistent until
+  // the deploy is fixed.
+  if (
+    /400|INVALID_ARGUMENT|FAILED_PRECONDITION|invalid.?json|schema|cannot parse/i.test(
+      raw,
+    )
+  ) {
+    return "There's a bug in this build of the Copilot — the request to Gemini is malformed. This will keep failing until we fix it; please report this to your developer.";
+  }
   if (/429|RESOURCE_EXHAUSTED|rate.?limit|too many requests/i.test(raw)) {
     return "Copilot is briefly resting — try again in a few seconds.";
   }
