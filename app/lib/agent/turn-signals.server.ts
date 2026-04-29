@@ -91,6 +91,41 @@ export function hasClarificationCall(assistantContent: ContentBlock[]): boolean 
   return false;
 }
 
+// V6.2 — Phase 6.2 Confidence Calibration. Pure parser: scan the assistant
+// text for `Confidence: 0.X` tags (per output-format.md), return the highest
+// value seen this turn, clamped to [0, 1]. Returns null when no tag is
+// present — most informational turns won't have one (greetings, lookups,
+// confirmations after a successful tool ran).
+//
+// The CEO is instructed to render the tag on its own italic line at the end
+// of a recommendation:
+//   *Confidence: 0.6 — based on 30-day analytics.*
+//
+// We accept both `0.6` and `.6`, ignore the rest of the line, and tolerate
+// surrounding markdown (italics, bold, parentheses) so a slight rendering
+// drift doesn't lose the signal. Case-insensitive on the literal "Confidence".
+export function extractMaxConfidence(text: string): number | null {
+  if (!text || text.length === 0) return null;
+  // Match optional surrounding * or _ (italics/bold) before "Confidence",
+  // then the number. Bare \d+(?:\.\d+)? captures both `0.6` and integer
+  // forms like `1` (which we'll clamp/cap appropriately).
+  const re = /confidence\s*:\s*(\d+(?:\.\d+)?|\.\d+)/gi;
+  let max: number | null = null;
+  for (const m of text.matchAll(re)) {
+    const raw = parseFloat(m[1]);
+    if (!Number.isFinite(raw)) continue;
+    // Clamp to [0, 1]. Discard nonsense values (e.g. the CEO writing
+    // "Confidence: 95" intending 95% — that's a 0.95 in our scale, but
+    // we don't try to reinterpret; we clamp to 1.0 and trust the prompt
+    // to teach the format. False positives this catches: the CEO
+    // accidentally writing "Confidence: 5" meaning "5/10" — clamp keeps
+    // the row from being garbage.
+    const clamped = Math.max(0, Math.min(1, raw));
+    if (max === null || clamped > max) max = clamped;
+  }
+  return max;
+}
+
 export type RecordTurnSignalInput = {
   storeId: string;
   conversationId: string;

@@ -44,6 +44,7 @@ import {
 import { generateTitle } from "../lib/agent/title-generator.server";
 import {
   classifyTurnOutcome,
+  extractMaxConfidence,
   recordTurnSignal,
 } from "../lib/agent/turn-signals.server";
 import { reclassifyOnNewTurn } from "../lib/agent/turn-signals-reclassify.server";
@@ -777,6 +778,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             hadPlan,
             latencyMs: Date.now() - requestStart,
             modelUsed: router.modelId,
+            // V6.2 — extract `Confidence: 0.X` tag from assistant text per
+            // output-format.md. Null when the turn didn't warrant a tag
+            // (greetings, lookups, confirmations) — that's the right
+            // default for the calibration scoreboard in
+            // /app/settings/turn-signals.
+            ceoConfidence: extractMaxConfidence(assistantTextBuffer),
           });
         }
 

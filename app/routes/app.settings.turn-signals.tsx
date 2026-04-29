@@ -31,6 +31,7 @@ type Row = {
   hadClarification: boolean;
   latencyMs: number | null;
   modelUsed: string | null;
+  ceoConfidence: number | null;
   createdAt: string;
 };
 
@@ -50,6 +51,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       hadClarification: true,
       latencyMs: true,
       modelUsed: true,
+      ceoConfidence: true,
       createdAt: true,
     },
   });
@@ -79,6 +81,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       hadClarification: r.hadClarification,
       latencyMs: r.latencyMs,
       modelUsed: r.modelUsed,
+      ceoConfidence: r.ceoConfidence,
       createdAt: r.createdAt.toISOString(),
     })),
     distribution,
@@ -138,6 +141,7 @@ export default function TurnSignalsPage() {
     </InlineStack>,
     e.latencyMs == null ? "—" : `${e.latencyMs} ms`,
     e.modelUsed ?? "—",
+    e.ceoConfidence == null ? "—" : e.ceoConfidence.toFixed(2),
     <Link key={`c-${e.id}`} to={`/app/copilot?cid=${e.conversationId}`}>
       Open
     </Link>,
@@ -211,6 +215,7 @@ export default function TurnSignalsPage() {
                   "text",
                   "text",
                   "text",
+                  "numeric",
                   "text",
                 ]}
                 headings={[
@@ -220,6 +225,7 @@ export default function TurnSignalsPage() {
                   "Flags",
                   "Latency",
                   "Model",
+                  "Confidence",
                   "Conversation",
                 ]}
                 rows={tableRows}
