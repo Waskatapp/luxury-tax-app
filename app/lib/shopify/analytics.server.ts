@@ -324,3 +324,170 @@ export async function getAnalytics(
     },
   };
 }
+
+// V3.2 — Phase 3 Autonomous Reasoning Loop. Per-window metrics, optionally
+// filtered to a single product. Used by the offline evaluator to compute
+// after-state metrics matching a followup's baseline. NOT exposed as a
+// merchant-facing tool — the existing get_analytics is the merchant-facing
+// surface.
+//
+// Returns:
+//   { productId, startsAt, endsAt, unitsSold, orderCount, revenue, currencyCode }
+//
+// `productId === null` means "store-wide" (don't filter line items).
+// `productId` non-null means filter the line items array on each order so
+// only line items matching this product contribute to unitsSold / revenue.
+//
+// Scans up to PRODUCT_WINDOW_MAX_PAGES × PRODUCT_WINDOW_PAGE_SIZE orders
+// (250 × 4 = 1000). For long windows or high-volume stores this caps; the
+// `cappedAtPageLimit` flag flows up so the verdict can fall back to
+// insufficient_data instead of misclassifying a partial scan.
+//
+// LIMITATIONS (deferred to Phase 3.4 / future):
+//   - sessions / conversion_rate are NOT computable here. Shopify Admin API
+//     doesn't expose session data. The evaluator returns insufficient_data
+//     for those metrics until a Storefront-Analytics or external (GA / GSC)
+//     integration ships.
+
+const PRODUCT_WINDOW_PAGE_SIZE = 250;
+const PRODUCT_WINDOW_MAX_PAGES = 4;
+
+const PRODUCT_WINDOW_QUERY = `#graphql
+  query AnalyticsProductWindow($first: Int!, $query: String!, $after: String) {
+    orders(first: $first, query: $query, after: $after, sortKey: CREATED_AT) {
+      edges {
+        cursor
+        node {
+          id
+          createdAt
+          totalPriceSet {
+            shopMoney { amount currencyCode }
+          }
+          lineItems(first: 50) {
+            edges {
+              node {
+                quantity
+                originalUnitPriceSet {
+                  shopMoney { amount currencyCode }
+                }
+                product { id }
+              }
+            }
+          }
+        }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+type ProductWindowResponse = {
+  orders: {
+    edges: Array<{
+      cursor: string;
+      node: {
+        id: string;
+        createdAt: string;
+        totalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
+        lineItems: {
+          edges: Array<{
+            node: {
+              quantity: number;
+              originalUnitPriceSet: {
+                shopMoney: { amount: string; currencyCode: string };
+              };
+              product: { id: string } | null;
+            };
+          }>;
+        };
+      };
+    }>;
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  };
+};
+
+export type ProductWindowResult = {
+  productId: string | null;
+  startsAt: string;
+  endsAt: string;
+  unitsSold: number;
+  orderCount: number;
+  revenue: string; // decimal string, summed in cents to avoid float drift
+  currencyCode: string;
+  cappedAtPageLimit: boolean;
+};
+
+export async function getProductWindowAnalytics(
+  admin: ShopifyAdmin,
+  opts: { productId?: string | null; startsAt: Date; endsAt: Date },
+): Promise<ToolModuleResult<ProductWindowResult>> {
+  const productId = opts.productId ?? null;
+  const startsAt = opts.startsAt.toISOString();
+  const endsAt = opts.endsAt.toISOString();
+  const queryFilter = `created_at:>=${startsAt} AND created_at:<${endsAt}`;
+
+  let unitsSold = 0;
+  let orderCount = 0;
+  let totalCents = 0;
+  let currencyCode = "USD";
+  let after: string | null = null;
+  let cappedAtPageLimit = false;
+
+  for (let page = 0; page < PRODUCT_WINDOW_MAX_PAGES; page++) {
+    const result: GraphQLResult<ProductWindowResponse> =
+      await graphqlRequest<ProductWindowResponse>(
+        admin,
+        PRODUCT_WINDOW_QUERY,
+        { first: PRODUCT_WINDOW_PAGE_SIZE, query: queryFilter, after },
+      );
+    if (!result.ok) return { ok: false, error: result.error };
+
+    for (const edge of result.data.orders.edges) {
+      let orderContributed = false;
+      // Line-item-level walk: if productId is set, only count that
+      // product; if null, count every line item but the order's full
+      // total revenue (we use line-item-summed revenue when productId is
+      // set; total order revenue when null, since that's what merchants
+      // associate with a "store-wide" measurement).
+      if (productId === null) {
+        const amount = edge.node.totalPriceSet.shopMoney.amount;
+        currencyCode = edge.node.totalPriceSet.shopMoney.currencyCode;
+        totalCents += Math.round(parseFloat(amount) * 100);
+        for (const li of edge.node.lineItems.edges) {
+          unitsSold += li.node.quantity;
+        }
+        orderContributed = true;
+      } else {
+        for (const li of edge.node.lineItems.edges) {
+          if (!li.node.product || li.node.product.id !== productId) continue;
+          unitsSold += li.node.quantity;
+          const lineAmount = parseFloat(
+            li.node.originalUnitPriceSet.shopMoney.amount,
+          );
+          currencyCode = li.node.originalUnitPriceSet.shopMoney.currencyCode;
+          totalCents += Math.round(lineAmount * li.node.quantity * 100);
+          orderContributed = true;
+        }
+      }
+      if (orderContributed) orderCount += 1;
+    }
+
+    if (!result.data.orders.pageInfo.hasNextPage) break;
+    after = result.data.orders.pageInfo.endCursor;
+    if (page === PRODUCT_WINDOW_MAX_PAGES - 1) cappedAtPageLimit = true;
+  }
+
+  return {
+    ok: true,
+    data: {
+      productId,
+      startsAt,
+      endsAt,
+      unitsSold,
+      orderCount,
+      revenue: (totalCents / 100).toFixed(2),
+      currencyCode,
+      cappedAtPageLimit,
+    },
+  };
+}

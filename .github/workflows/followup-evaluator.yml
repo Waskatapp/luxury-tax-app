@@ -1,0 +1,50 @@
+name: followup-evaluator
+
+# V3.2 — Phase 3 Autonomous Reasoning Loop. Daily cron that walks
+# ActionFollowup rows where dueAt has passed, runs the offline
+# post-mortem evaluator (lib/agent/evaluator.server.ts), and writes
+# Insight rows that surface in the merchant's next conversation.
+#
+# Required GitHub secrets:
+#   - DATABASE_URL    Railway Postgres URL (same value the web service uses)
+#   - ENCRYPTION_KEY  AES-256-GCM key (32 bytes hex) for Store.accessToken decrypt
+#   - GEMINI_API_KEY  Google AI Studio key for Flash-Lite narrative generation
+#
+# Permissions: contents: read only — this workflow does NOT commit; it
+# writes Insight rows to the DB.
+#
+# Manually triggerable via the Actions tab (workflow_dispatch).
+
+on:
+  schedule:
+    - cron: "13 6 * * *" # 06:13 UTC daily — staggered off the suggestion tuner.
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          # >=22.18 needed by @shopify/polaris-types@1.0.6 transitive dep.
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run evaluator
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: npm run run:evaluator

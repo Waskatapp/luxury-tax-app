@@ -22,7 +22,8 @@
     "test:watch": "vitest",
     "stats:suggestions": "tsx scripts/suggestion-stats.ts",
     "tune:suggestions": "tsx scripts/auto-tune-suggestions.ts",
-    "audit:tuning": "tsx scripts/tuning-audit-report.ts"
+    "audit:tuning": "tsx scripts/tuning-audit-report.ts",
+    "run:evaluator": "tsx scripts/run-evaluator.ts"
   },
   "type": "module",
   "engines": {
@@ -46,6 +47,7 @@
     "react-markdown": "^9.1.0",
     "react-router": "^7.12.0",
     "remark-gfm": "^4.0.1",
+    "simple-statistics": "^7.8.9",
     "vite-tsconfig-paths": "^5.1.4",
     "zod": "^4.3.6"
   },
