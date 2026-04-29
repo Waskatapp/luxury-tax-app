@@ -80,11 +80,16 @@ const MAX_OUTPUT_TOKENS = 4096;
 // instead of leaking raw JSON like
 // `{"error":{"message":"{\n \"error\":{\n \"code\":503,...}}}}`.
 //
-// Two transient classes worth recognizing:
-//   - 429 / RESOURCE_EXHAUSTED — local rate-limit OR Gemini's per-key
-//     quota; same friendly message either way.
-//   - 503 / UNAVAILABLE / "high demand" — Gemini-side capacity dip.
-//     Common on free-tier 2.5 Flash. Same UX shape as 429 (just retry).
+// Bucket order matters — more specific patterns must run BEFORE more general
+// ones so a daily-quota error doesn't masquerade as "briefly throttled" (a
+// 60-second retry won't fix a daily limit; the merchant needs to know to
+// switch keys or wait until midnight UTC).
+//
+// 1. Schema (400) — persistent build bug, not transient.
+// 2. Daily quota — generativelanguage free tier "per day" limits. Recover
+//    requires a key swap or 24h wait; "try again in seconds" is wrong.
+// 3. Per-minute / general 429 — actually transient; retry in seconds works.
+// 4. 503 / UNAVAILABLE — Gemini-side capacity dip; retry in seconds works.
 function friendlyErrorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   // Schema / payload errors come BEFORE transient buckets so a malformed
@@ -98,8 +103,19 @@ function friendlyErrorMessage(err: unknown): string {
   ) {
     return "There's a bug in this build of the Copilot — the request to Gemini is malformed. This will keep failing until we fix it; please report this to your developer.";
   }
+  // Daily-quota bucket — Gemini free tier returns 429 with text like
+  // "exceeded your current quota" / "free_tier_requests" / "GenerateContentRequestsPerDay" /
+  // "PerDay". Retry-in-seconds doesn't help; only a key swap or midnight
+  // UTC reset does.
+  if (
+    /per[\s_-]?day|daily.?(quota|limit)|GenerateContentRequestsPerDay|free_tier_requests|exceeded.+(your)?\s*(current )?quota/i.test(
+      raw,
+    )
+  ) {
+    return "Daily Gemini quota hit on this API key. Either wait until midnight UTC for the free-tier limit to reset, or switch GEMINI_API_KEY in Railway to a different account. Retrying in seconds won't help.";
+  }
   if (/429|RESOURCE_EXHAUSTED|rate.?limit|too many requests/i.test(raw)) {
-    return "Copilot is briefly resting — try again in a few seconds.";
+    return "Copilot is briefly throttled (per-minute Gemini limit) — try again in 30–60 seconds.";
   }
   if (
     /503|UNAVAILABLE|service unavailable|high demand|temporarily/i.test(raw)
