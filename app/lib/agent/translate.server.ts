@@ -124,6 +124,146 @@ export function bareToolCallUuid(toolUseId: string): string {
   return sep > 0 ? toolUseId.slice(sep + 2) : toolUseId;
 }
 
+// Strip the "<name>::" prefix to get just the encoded tool name. Returns
+// null if the id doesn't follow the convention (defensive — older messages
+// might predate the encoding).
+export function bareToolName(toolUseId: string): string | null {
+  const sep = toolUseId.indexOf("::");
+  return sep > 0 ? toolUseId.slice(0, sep) : null;
+}
+
+// ---- V2.5a: history compaction ---------------------------------------------
+//
+// Old tool_result bodies are the single biggest source of token waste in
+// long conversations. A `read_products` result from 10 turns ago can be
+// 2-3K tokens — the merchant has clearly moved past it, but Gemini sees
+// the full payload on every continuation. We summarize tool_results
+// outside a recent window to a one-liner so Gemini still knows what
+// happened without paying for the full body.
+//
+// Recent window: by default the last 10 stored messages. Anything before
+// that gets compacted. Short conversations (≤ window) are no-ops.
+//
+// Successful tool_results get a per-tool summary; error tool_results are
+// kept verbatim because the CEO genuinely needs the error text on
+// continuation. Non-tool_result blocks (text, tool_use) pass through.
+
+const DEFAULT_RECENT_WINDOW = 10;
+
+export type CompactOldToolResultsOptions = {
+  recentWindow?: number;
+};
+
+export function compactOldToolResults(
+  stored: StoredMessage[],
+  opts: CompactOldToolResultsOptions = {},
+): StoredMessage[] {
+  const window = opts.recentWindow ?? DEFAULT_RECENT_WINDOW;
+  if (stored.length <= window) return stored;
+
+  const cutoff = stored.length - window; // indices [0, cutoff) are "old"
+  return stored.map((msg, idx) => {
+    if (idx >= cutoff) return msg;
+    let touched = false;
+    const nextContent: ContentBlock[] = msg.content.map((block) => {
+      if (block.type !== "tool_result") return block;
+      if (block.is_error) return block; // errors stay verbatim
+      const toolName = bareToolName(block.tool_use_id);
+      if (!toolName) return block; // can't resolve → stay verbatim
+      const summary = summarizeToolResultContent(toolName, block.content);
+      if (summary === null) return block; // tool not summarizable → verbatim
+      touched = true;
+      return { ...block, content: summary };
+    });
+    return touched ? { ...msg, content: nextContent } : msg;
+  });
+}
+
+// Per-tool summary formatter. Returns null when the tool's result isn't
+// worth summarizing (already small, or unknown shape). All summaries are
+// short ASCII strings the CEO can read to decide whether to re-fetch.
+function summarizeToolResultContent(
+  toolName: string,
+  contentJson: string,
+): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contentJson);
+  } catch {
+    return null; // not JSON — leave it alone
+  }
+  switch (toolName) {
+    case "read_products":
+      return summarizeReadProducts(parsed);
+    case "read_collections":
+      return summarizeReadCollections(parsed);
+    case "get_analytics":
+      return summarizeGetAnalytics(parsed);
+    case "read_workflow":
+      return summarizeReadWorkflow(parsed);
+    default:
+      return null;
+  }
+}
+
+function summarizeReadProducts(parsed: unknown): string {
+  const obj = (parsed ?? {}) as { products?: unknown };
+  const products = Array.isArray(obj.products) ? obj.products : [];
+  const titles = products
+    .slice(0, 5)
+    .map((p) => {
+      const t = (p as { title?: unknown })?.title;
+      return typeof t === "string" ? t : null;
+    })
+    .filter((t): t is string => t !== null);
+  const more = products.length > 5 ? `, +${products.length - 5} more` : "";
+  const titleList = titles.length > 0 ? `: ${titles.join(", ")}${more}` : "";
+  return `(read_products result, summarized: ${products.length} product${products.length === 1 ? "" : "s"}${titleList}. Re-call read_products if you need the full details again.)`;
+}
+
+function summarizeReadCollections(parsed: unknown): string {
+  const obj = (parsed ?? {}) as { collections?: unknown };
+  const collections = Array.isArray(obj.collections) ? obj.collections : [];
+  const titles = collections
+    .slice(0, 5)
+    .map((c) => {
+      const t = (c as { title?: unknown })?.title;
+      return typeof t === "string" ? t : null;
+    })
+    .filter((t): t is string => t !== null);
+  const more = collections.length > 5 ? `, +${collections.length - 5} more` : "";
+  const titleList = titles.length > 0 ? `: ${titles.join(", ")}${more}` : "";
+  return `(read_collections result, summarized: ${collections.length} collection${collections.length === 1 ? "" : "s"}${titleList}. Re-call read_collections if you need the full details.)`;
+}
+
+function summarizeGetAnalytics(parsed: unknown): string {
+  // Analytics results vary by metric. Best-effort: pull a few stable keys
+  // if present. The exact shape is in app/lib/shopify/analytics.server.ts;
+  // we don't want to import it (keeps translate.server.ts pure).
+  const obj = (parsed ?? {}) as Record<string, unknown>;
+  const fields: string[] = [];
+  for (const key of ["metric", "days", "amount", "currency"]) {
+    const v = obj[key];
+    if (typeof v === "string" || typeof v === "number") {
+      fields.push(`${key}=${v}`);
+    }
+  }
+  if (Array.isArray(obj.products)) {
+    fields.push(`top_products_count=${obj.products.length}`);
+  }
+  if (Array.isArray(obj.variants)) {
+    fields.push(`at_risk_count=${obj.variants.length}`);
+  }
+  const tail = fields.length > 0 ? `: ${fields.join(", ")}` : "";
+  return `(get_analytics result, summarized${tail}. Re-call get_analytics if you need the full numbers.)`;
+}
+
+function summarizeReadWorkflow(parsed: unknown): string {
+  const obj = (parsed ?? {}) as { name?: unknown };
+  const name = typeof obj.name === "string" ? obj.name : "?";
+  return `(read_workflow result, summarized: '${name}' SOP body — re-call read_workflow if you need it again.)`;
+}
+
 // ---- Gemini stream chunk → our ContentBlock[] for one assistant turn ----
 //
 // Call accumulateChunk() inside the streaming loop; call finalize() once the

@@ -37,6 +37,7 @@ import { log } from "../lib/log.server";
 import {
   AssistantTurnAccumulator,
   bareToolCallUuid,
+  compactOldToolResults,
   extractSearchText,
   toGeminiContent,
   toGeminiContents,
@@ -300,7 +301,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       try {
         const ai = getGeminiClient();
-        const contents = toGeminiContents(stored);
+        // V2.5a — compact old tool_results before sending history to
+        // Gemini. Tool_results outside the last 10 messages get
+        // replaced with a one-line summary; the CEO can re-fetch via
+        // the (still-cached) read tool if it needs the full data
+        // again. Newly-generated turns inside the agent loop are
+        // pushed verbatim to `contents` so the CEO sees its current
+        // tool calls in full.
+        const contents = toGeminiContents(compactOldToolResults(stored));
 
         for (let turn = 0; turn < MAX_TURNS; turn++) {
           // Per-storeId Gemini RPM guard. Free-tier 2.5 Flash is 10 RPM;
