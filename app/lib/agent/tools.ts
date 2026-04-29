@@ -324,14 +324,51 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
             "Did you expect the metric to go up, down, or stay the same?",
         },
         expectedEffectPct: {
-          type: "number",
+          type: "integer",
           description:
-            "Optional confident guess of the effect size in percentage points, e.g. 5 for '+5% conversion'. Use only when you have a real number in mind, not as filler.",
+            "Optional confident guess of the effect size in whole percentage points, e.g. 5 for '+5% conversion' or -10 for a 10% drop. Use only when you have a real number in mind, not as filler.",
         },
         baselineSnapshot: {
           type: "object",
           description:
-            "Current metric values at the time of the action. Shape depends on metric — see tool description.",
+            "Current metric values at the time of the action. Set the field(s) that match your metric — for `conversion_rate` set `sessions` + `conversions`; for `revenue` set `revenue` + `currency`; for `units_sold` set `units`. Always set `asOf`. Other fields can be left out.",
+          properties: {
+            sessions: {
+              type: "integer",
+              description:
+                "Sessions on the affected product / store during the baseline period.",
+            },
+            conversions: {
+              type: "integer",
+              description:
+                "Conversions during the baseline period (orders attributed to this product or, store-wide, total orders).",
+            },
+            units: {
+              type: "integer",
+              description:
+                "Units sold during the baseline period.",
+            },
+            orderCount: {
+              type: "integer",
+              description:
+                "Number of orders during the baseline period.",
+            },
+            revenue: {
+              type: "string",
+              description:
+                "Revenue during the baseline period as a decimal string, e.g. '1234.56'. Pass as a string to avoid float drift.",
+            },
+            currency: {
+              type: "string",
+              description:
+                "ISO 4217 currency code matching the store, e.g. 'USD'.",
+            },
+            asOf: {
+              type: "string",
+              description:
+                "ISO 8601 timestamp of when this snapshot was captured (typically right before/after the change).",
+            },
+          },
         },
         evaluationCriteria: {
           type: "object",
