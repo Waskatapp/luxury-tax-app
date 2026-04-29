@@ -288,6 +288,102 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "propose_followup",
+    description:
+      "Queue a follow-up evaluation of a meaningful change you just made (description rewrite, price change, status flip, discount). The offline evaluator runs daily — when YOUR evaluation criteria are met, it pulls before/after metrics, runs significance math, and writes an Insight that surfaces in the merchant's NEXT conversation. This is how you remember to check whether your work actually moved the needle.\n\nCall this AFTER an outcome-bearing write, in the same turn as the tool_result lands. Do NOT call it for writes that have no measurable outcome (memory updates, store-only edits, cosmetic fixes). Don't call it for read tools. Don't call it speculatively without a write.\n\n**The `evaluationCriteria` is YOUR JUDGMENT for THIS specific action — never a fixed default.** Size them based on the product's traffic, the change's magnitude, and what kind of effect you'd expect. Examples (illustrative only — pick numbers that fit the case):\n  - High-traffic SKU + meaningful copy change → `min_sessions: 200, max_days: 30`. You'll see signal fast.\n  - Slow-mover description rewrite → `min_days: 45, max_days: 90`. Sessions won't accumulate; lean on time.\n  - Hot SKU pricing change → `min_sessions: 50, max_days: 14`. Pricing reactions are fast.\n  - Store-wide discount campaign → `min_orders: 30, max_days: 21`. Orders are the right gate, not sessions.\n  - Genuinely uncertain → wider window: `min_days: 21, max_days: 60`.\n\nThe merchant has explicitly stated nothing should be static. Picking '30 days for everything' is wrong — different products and different changes deserve different windows. The CEO's per-action judgment IS the value here.\n\n`baselineSnapshot` captures the metric values at the time of the change as a JSON object — its shape depends on `metric`. For `conversion_rate`: `{ sessions, conversions, asOf }`. For `revenue`: `{ revenue, currency, asOf }`. For `units_sold`: `{ units, asOf }`. The evaluator reads this back when running the post-mortem.\n\n`hypothesis` should state what you expected and why, in one sentence: 'rewriting the warranty paragraph should lift conversion because the previous copy buried the lifetime guarantee'. The post-mortem will read this and decide whether the data supports it.\n\n`expectedDirection` is `lift` (improvement), `drop` (intentional pricing/positioning move you expect to reduce a metric), or `neutral` (you don't expect a change but want to verify).\n\nThis tool is inline — it persists the followup row and continues your turn. No approval card. The merchant only sees the result weeks later as a surfaced Insight.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        productId: {
+          type: "string",
+          description:
+            "GID of the product under evaluation, e.g. gid://shopify/Product/12345. Optional — omit for store-wide followups (e.g. checking overall conversion).",
+        },
+        metric: {
+          type: "string",
+          enum: [
+            "conversion_rate",
+            "revenue",
+            "sessions",
+            "units_sold",
+            "aov",
+            "inventory_at_risk",
+          ],
+          description:
+            "What metric this followup tracks. Match it to what the change is supposed to move.",
+        },
+        hypothesis: {
+          type: "string",
+          description:
+            "One sentence: what you expected and why. The post-mortem reads this when deciding if the data supports your bet.",
+        },
+        expectedDirection: {
+          type: "string",
+          enum: ["lift", "drop", "neutral"],
+          description:
+            "Did you expect the metric to go up, down, or stay the same?",
+        },
+        expectedEffectPct: {
+          type: "number",
+          description:
+            "Optional confident guess of the effect size in percentage points, e.g. 5 for '+5% conversion'. Use only when you have a real number in mind, not as filler.",
+        },
+        baselineSnapshot: {
+          type: "object",
+          description:
+            "Current metric values at the time of the action. Shape depends on metric — see tool description.",
+        },
+        evaluationCriteria: {
+          type: "object",
+          description:
+            "YOUR JUDGMENT for when this followup is ready to evaluate. NOT a default. At least one of min_sessions / min_days must be set; max_days is required.",
+          properties: {
+            min_sessions: {
+              type: "integer",
+              minimum: 1,
+              description:
+                "Wait until the affected product/store has accumulated at least this many sessions. For traffic-driven evaluation.",
+            },
+            min_days: {
+              type: "integer",
+              minimum: 1,
+              maximum: 365,
+              description:
+                "Wait at least this many days before evaluating. For time-driven evaluation.",
+            },
+            max_days: {
+              type: "integer",
+              minimum: 1,
+              maximum: 365,
+              description:
+                "Hard upper bound. After this many days, evaluate even if min_sessions wasn't reached (verdict will be 'insufficient_data').",
+            },
+            min_units: {
+              type: "integer",
+              minimum: 1,
+              description:
+                "Optional: gate on units sold instead of sessions, when transactions are the meaningful signal.",
+            },
+            min_orders: {
+              type: "integer",
+              minimum: 1,
+              description:
+                "Optional: gate on order count, useful for discount campaigns and high-AOV stores.",
+            },
+          },
+          required: ["max_days"],
+        },
+      },
+      required: [
+        "metric",
+        "hypothesis",
+        "expectedDirection",
+        "baselineSnapshot",
+        "evaluationCriteria",
+      ],
+    },
+  },
+  {
     name: "create_discount",
     description:
       "Create a percentage-off automatic discount. REQUIRES HUMAN APPROVAL. Provide the discount title, percent off (1-100), start date, and optional end date.",

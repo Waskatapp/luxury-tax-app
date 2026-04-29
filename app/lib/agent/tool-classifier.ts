@@ -39,11 +39,19 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
 // runs it through the regular approval flow. So this tool is inline by
 // the same rationale as propose_plan — the meta-tool itself doesn't
 // mutate Shopify.
+//
+// propose_followup (V3.1) persists an ActionFollowup row — the CEO's
+// "I'll check this later" queue for outcome-bearing writes. The offline
+// evaluator (.github/workflows/followup-evaluator.yml) reads these rows
+// and writes Insights when criteria are met. No Shopify mutation; inline.
+// Unlike propose_plan / propose_artifact, this tool does NOT pause the
+// agent loop — the CEO queues a followup and continues responding.
 export const INLINE_WRITE_TOOLS = new Set<string>([
   "update_store_memory",
   "ask_clarifying_question",
   "propose_plan",
   "propose_artifact",
+  "propose_followup",
 ]);
 
 export function isReadTool(name: string): boolean {

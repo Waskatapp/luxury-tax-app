@@ -24,6 +24,11 @@ import {
   safeCreateArtifact,
   artifactSummary,
 } from "./artifacts.server";
+import {
+  ProposeFollowupInputSchema,
+  safeCreateFollowup,
+  followupSummary,
+} from "./followups.server";
 import { loadWorkflowBodyByName } from "./workflow-loader.server";
 import {
   CACHEABLE_READ_TOOLS,
@@ -246,6 +251,44 @@ export async function executeTool(
           data: {
             ...artifactSummary(artifact),
             note: "Artifact draft saved. The merchant is editing it in the side panel — wait for their decision before proceeding. On approval, the edited content will be applied via update_product_description (its regular approval audit still fires).",
+          },
+        };
+      }
+
+      case "propose_followup": {
+        // V3.1 — Phase 3 Autonomous Reasoning Loop. Persist an
+        // ActionFollowup row so the offline evaluator can pick it up
+        // when the criteria are met. No approval card, no Shopify
+        // mutation. Unlike propose_plan / propose_artifact, this does
+        // NOT pause the agent loop — the CEO queues the followup and
+        // continues the turn (often with a confirmation message).
+        const parsed = ProposeFollowupInputSchema.safeParse(input);
+        if (!parsed.success) {
+          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+        }
+        const followup = await safeCreateFollowup({
+          storeId: ctx.storeId,
+          conversationId: ctx.conversationId ?? null,
+          input: {
+            ...parsed.data,
+            // Forward the toolCallId from context if the CEO didn't
+            // pass it explicitly — useful for tying the followup back
+            // to the assistant message that spawned it.
+            toolCallId: parsed.data.toolCallId ?? ctx.toolCallId,
+          },
+        });
+        if (!followup) {
+          return {
+            ok: false,
+            error:
+              "could not persist the followup; if this happens again, ask the merchant to retry the request",
+          };
+        }
+        return {
+          ok: true,
+          data: {
+            ...followupSummary(followup),
+            note: "Followup queued. The offline evaluator runs daily — when your criteria are met, it'll write an Insight the merchant sees in the next conversation. Continue the turn; no need to wait.",
           },
         };
       }

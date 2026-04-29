@@ -82,6 +82,8 @@ model Store {
   turnSignals      TurnSignal[]
   plans            Plan[]
   artifacts        Artifact[]
+  actionFollowups  ActionFollowup[]
+  insights         Insight[]
 }
 
 // ---- Chat thread per store+user ----
@@ -95,11 +97,12 @@ model Conversation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  store       Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  messages    Message[]
-  turnSignals TurnSignal[]
-  plans       Plan[]
-  artifacts   Artifact[]
+  store           Store            @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  messages        Message[]
+  turnSignals     TurnSignal[]
+  plans           Plan[]
+  artifacts       Artifact[]
+  actionFollowups ActionFollowup[]
 
   @@index([storeId])
   @@index([storeId, userId])
@@ -303,4 +306,95 @@ model Artifact {
 
   @@index([conversationId])
   @@index([storeId, status])
+}
+
+// V3.1 — Phase 3 Autonomous Reasoning Loop. One row per outcome-bearing
+// write where the CEO commits to "I'll check this later." The CEO writes
+// `evaluationCriteria` per action (min_sessions / min_days / max_days)
+// based on the product's traffic and the change's magnitude — NOT a fixed
+// schedule. The offline evaluator (GitHub Actions cron) picks rows with
+// status=PENDING and dueAt<=now, runs significance math, and writes an
+// Insight.
+//
+// `status` is a String not an enum so we can extend the lifecycle without
+// a migration. Lifecycle: PENDING → EVALUATED | ABANDONED.
+// ABANDONED = max_days elapsed without enough data to evaluate; the
+// matching Insight has verdict=insufficient_data.
+//
+// `metric` is also String — extensible vocabulary
+// (conversion_rate, revenue, sessions, units_sold, aov, …).
+//
+// conversationId / auditLogId / toolCallId are all optional: the CEO can
+// queue a followup without a corresponding write (e.g. "check overall
+// store conversion in 2 weeks"). insightId is set on evaluation; the
+// reverse pointer (Insight.followupId) is also @unique so this is a
+// logical 1:1 — modeled as plain string columns to avoid Prisma circular
+// relation complexity.
+model ActionFollowup {
+  id                 String    @id @default(cuid())
+  storeId            String
+  conversationId     String?
+  auditLogId         String?
+  toolCallId         String?
+  productId          String?
+  metric             String
+  hypothesis         String
+  expectedDirection  String
+  expectedEffectPct  Float?
+  baselineSnapshot   Json
+  evaluationCriteria Json
+  status             String    @default("PENDING")
+  dueAt              DateTime
+  abandonAt          DateTime
+  evaluatedAt        DateTime?
+  insightId          String?
+  createdAt          DateTime  @default(now())
+
+  store        Store         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([storeId, status, dueAt])
+  @@index([conversationId])
+}
+
+// V3.1 — Phase 3 Autonomous Reasoning Loop. The output of the offline
+// evaluator. One row per evaluated followup, plus rows distilled from
+// patterns in 4.4 (lessons), memory hygiene anomalies (6.4), and themes
+// (5.4). Surfaced into the next conversation's CEO Observations slot,
+// rate-limited to 2 per day per store.
+//
+// `category` is String for extensibility:
+// "outcome_postmortem" | "lesson" | "anomaly" | "pattern" | "theme".
+// `verdict` is String for the post-mortem taxonomy:
+// "improved" | "worsened" | "inconclusive" | "insufficient_data".
+// Default verdict is `inconclusive` (the math, not the LLM, decides
+// when to flip — see app/lib/agent/evaluator.server.ts).
+//
+// `confidence` is the evaluator's confidence in the verdict (0–1).
+// `significanceP` is the p-value if a significance test ran (null for
+// non-postmortem categories like lessons or themes).
+//
+// `surfacedAt` populated when the Insight is woven into a conversation
+// opening; daily rate limit reads this to enforce ≤2 unique surfaces per
+// (storeId, day). `dismissedAt` populated when the merchant explicitly
+// dismisses from the settings UI; dismissed Insights never surface again.
+model Insight {
+  id            String    @id @default(cuid())
+  storeId       String
+  followupId    String?   @unique
+  category      String
+  title         String
+  body          String
+  verdict       String
+  confidence    Float
+  significanceP Float?
+  surfacedAt    DateTime?
+  dismissedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, surfacedAt])
+  @@index([storeId, createdAt])
 }
