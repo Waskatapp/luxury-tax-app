@@ -189,6 +189,27 @@ export function MessageBubble({
   const showRunningPill =
     !isUser && message.status === "streaming" && runningTool !== null;
 
+  // V3.3 — Hide tool-only assistant turns that have nothing merchant-facing
+  // to render. Many turns in the agent loop emit only internal plumbing —
+  // a `read_products` lookup, a `propose_artifact` whose canvas already
+  // opened in the side panel, a `propose_followup` queued for the offline
+  // evaluator. Without text, an approval card, a plan, or a clarification
+  // to show, the bubble would render as an empty "Copilot" header card
+  // that looks like a broken response. While the turn is still streaming
+  // the running pill / "…" indicator covers the gap; once it completes
+  // with no renderable body, we skip rendering entirely.
+  const hasRenderableContent =
+    text.length > 0 ||
+    toolUses.length > 0 ||
+    plans.length > 0 ||
+    clarifications.length > 0 ||
+    message.status === "error" ||
+    showRunningPill ||
+    message.status === "streaming";
+  if (!isUser && !hasRenderableContent) {
+    return null;
+  }
+
   return (
     <InlineStack align={isUser ? "end" : "start"} blockAlign="start">
       <BubbleWrapper>
