@@ -27,6 +27,10 @@ import {
   listMemoryForPrompt,
 } from "../lib/memory/store-memory.server";
 import { extractAndStoreMemory } from "../lib/memory/memory-extractor.server";
+import {
+  formatInsightsAsMarkdown,
+  pickInsightsToSurface,
+} from "../lib/agent/insights.server";
 import { generateTitle } from "../lib/agent/title-generator.server";
 import {
   classifyTurnOutcome,
@@ -289,13 +293,39 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     typeof text === "string" && parseSlashCommand(text) !== null;
   const memoryMarkdown = formatMemoryAsMarkdown(memoryEntries);
   const guardrailsMarkdown = formatGuardrailsAsMarkdown(guardrailEntries);
+
+  // V3.3 — Phase 3.3 proactive insight surfacing. The offline evaluator
+  // (.github/workflows/followup-evaluator.yml) writes Insight rows; here
+  // we pick 0–2 to weave into the CEO Observations slot of the prompt
+  // when the merchant opens a NEW conversation. Strict gates:
+  //   - Only on the merchant's FIRST user message (`historyRows.length === 0`
+  //     plus a defined `text`). Continuation turns and mid-conversation
+  //     turns never re-surface — once an insight is shown it's claimed
+  //     for the day.
+  //   - Daily rate limit at the (storeId, day) level (≤ 2 unique surfaces
+  //     per UTC day across all conversations) — pickInsightsToSurface
+  //     enforces this transactionally.
+  const isFirstUserMessage =
+    historyRows.length === 0 && typeof text === "string";
+  const surfacedInsights = isFirstUserMessage
+    ? await pickInsightsToSurface(store.id).catch((err) => {
+        log.warn("insights: surfacing failed (non-fatal)", {
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return [];
+      })
+    : [];
+  const observationsMarkdown =
+    surfacedInsights.length > 0
+      ? formatInsightsAsMarkdown(surfacedInsights)
+      : null;
+
   const systemInstruction = buildCeoSystemInstruction({
     shopDomain: store.shopDomain,
     memoryMarkdown: memoryMarkdown.length > 0 ? memoryMarkdown : null,
     guardrailsMarkdown:
       guardrailsMarkdown.length > 0 ? guardrailsMarkdown : null,
-    // Phase 2.6 (Reflection) populates this. Null until that ships.
-    observationsMarkdown: null,
+    observationsMarkdown,
     workflowIndex: loadWorkflowIndex(),
   });
 
