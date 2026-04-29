@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 
+import { recordOutcomeOnDecision } from "../app/lib/agent/decisions.server";
 import { evaluateFollowup } from "../app/lib/agent/evaluator.server";
 import {
   listDueFollowupsAcrossStores,
@@ -89,6 +90,22 @@ async function processFollowup(opts: {
         insightId: insight.id,
       },
     });
+
+    // V4.1 — fill in the linked Decision's actualOutcome so retrieval
+    // surfaces "we tried X, here's what happened" instead of just
+    // "we tried X." Best-effort: failures here don't block the
+    // evaluator run since the Insight is the user-visible thing.
+    try {
+      await recordOutcomeOnDecision({
+        followupId: followup.id,
+        actualOutcome: `${outcome.insight.verdict}: ${outcome.insight.title}. ${outcome.insight.body}`,
+      });
+    } catch (err) {
+      console.warn(
+        `[evaluator] ${followup.id} decision update failed (non-fatal)`,
+        err,
+      );
+    }
 
     console.log(
       `[evaluator] ${followup.id} → ${outcome.kind} (${outcome.insight.verdict}, conf ${outcome.insight.confidence.toFixed(2)})`,

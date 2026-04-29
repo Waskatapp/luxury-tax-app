@@ -3,6 +3,11 @@ import { z } from "zod";
 
 import prisma from "../../db.server";
 import { log } from "../log.server";
+import {
+  safeCreateDecision,
+  synthesizeExpectedOutcome,
+  type DecisionCategory,
+} from "./decisions.server";
 
 // V3.1 — Phase 3 Autonomous Reasoning Loop. Schema, types, and CRUD for the
 // ActionFollowup model. One row per "I'll check this later" commitment the
@@ -175,6 +180,27 @@ export async function createFollowup(opts: {
       createdAt,
     },
   });
+
+  // V4.1 — Every followup gets a Decision twin. Best-effort: if the
+  // Decision write fails the followup still stands (the journal is
+  // valuable but not load-bearing for the user-facing flow). The
+  // evaluator (3.2) will fill in actualOutcome on this Decision when
+  // the followup matures via the @unique followupId link.
+  await safeCreateDecision({
+    storeId: opts.storeId,
+    followupId: row.id,
+    auditLogId: opts.input.auditLogId ?? null,
+    conversationId: opts.conversationId ?? null,
+    productId: opts.input.productId ?? null,
+    category: opts.input.metric as DecisionCategory,
+    hypothesis: opts.input.hypothesis,
+    expectedOutcome: synthesizeExpectedOutcome({
+      expectedDirection: opts.input.expectedDirection,
+      expectedEffectPct: opts.input.expectedEffectPct ?? null,
+      metric: opts.input.metric,
+    }),
+  });
+
   return toRow(row);
 }
 

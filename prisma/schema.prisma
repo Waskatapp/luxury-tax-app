@@ -84,6 +84,7 @@ model Store {
   artifacts        Artifact[]
   actionFollowups  ActionFollowup[]
   insights         Insight[]
+  decisions        Decision[]
 }
 
 // ---- Chat thread per store+user ----
@@ -356,6 +357,56 @@ model ActionFollowup {
   @@index([storeId])
   @@index([storeId, status, dueAt])
   @@index([conversationId])
+}
+
+// V4.1 — Phase 4 Decision Memory & Retrieval. The decision journal.
+// One row per outcome-bearing commitment the CEO makes — created
+// alongside an ActionFollowup (every followup has a Decision twin)
+// and later filled in with `actualOutcome` + `lesson` when the
+// offline evaluator marks the followup EVALUATED.
+//
+// Decisions are NOT created from every AuditLog row. They're created
+// when the CEO commits to evaluating an outcome — propose_followup
+// today, propose_plan in Phase 5. This gates Decision creation behind
+// explicit CEO intent so the journal stays meaningful.
+//
+// `embedding` stores a Float[] of dim 768 (Gemini text-embedding-004).
+// We use a Postgres double-precision array rather than pgvector
+// because Railway's stock Postgres doesn't include the extension.
+// At ~1000 decisions per store, brute-force cosine in Node (~60ms
+// per retrieval) is well within budget. Swap to pgvector with a
+// single migration if/when scale demands it.
+//
+// `embeddingPending` lets the api.chat.tsx post-stream tick batch
+// 1-2 pending rows per request without blocking the merchant's
+// response.
+//
+// `category` is String for extensibility — pricing | description |
+// discount | status | strategic. `actualOutcome` and `lesson` are
+// populated post-evaluation and remain null until then.
+model Decision {
+  id               String   @id @default(cuid())
+  storeId          String
+  auditLogId       String?
+  planId           String?
+  followupId       String?  @unique
+  conversationId   String?
+  productId        String?
+  category         String
+  hypothesis       String
+  expectedOutcome  String
+  actualOutcome    String?
+  lesson           String?
+  embedding        Float[]
+  embeddingPending Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@index([storeId, category, createdAt])
+  @@index([storeId, embeddingPending])
 }
 
 // V3.1 — Phase 3 Autonomous Reasoning Loop. The output of the offline
