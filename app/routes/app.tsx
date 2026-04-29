@@ -38,6 +38,7 @@ export default function App() {
           <Link to="/app/dashboard">Dashboard</Link>
           <Link to="/app/settings/memory">Memory</Link>
           <Link to="/app/settings/insights">Insights</Link>
+          <Link to="/app/settings/decisions">Decisions</Link>
           <Link to="/app/settings/audit">Audit log</Link>
           <Link to="/app/settings/turn-signals">Turn signals</Link>
         </NavMenu>
