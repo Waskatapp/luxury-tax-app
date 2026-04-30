@@ -6,6 +6,11 @@ import {
   listDueFollowupsAcrossStores,
   type FollowupRow,
 } from "../app/lib/agent/followups.server";
+import {
+  findMemoryConflicts,
+  formatConflictAsInsightBody,
+  shouldSurfaceAnomaly,
+} from "../app/lib/agent/memory-hygiene.server";
 import { decrypt } from "../app/lib/security/encrypt.server";
 import type { ShopifyAdmin } from "../app/lib/shopify/graphql-client.server";
 
@@ -117,12 +122,100 @@ async function processFollowup(opts: {
   }
 }
 
+// V6.4 — Phase 6 Memory Hygiene. Per-store scan that detects contradictions
+// in StoreMemory and surfaces them as anomaly Insights for merchant
+// review. Runs after the followup loop so we can use the same Prisma
+// connection. Spam-guarded: skip the scan if an anomaly Insight was
+// already created for this store in the last 7 days.
+async function runMemoryHygieneForStore(opts: {
+  storeId: string;
+  now: Date;
+}): Promise<{ scanned: boolean; conflictsFound: number; insightsWritten: number }> {
+  const { storeId, now } = opts;
+
+  const shouldScan = await shouldSurfaceAnomaly(storeId, now);
+  if (!shouldScan) {
+    return { scanned: false, conflictsFound: 0, insightsWritten: 0 };
+  }
+
+  const entries = await prisma.storeMemory.findMany({
+    where: { storeId },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (entries.length < 5) {
+    return { scanned: false, conflictsFound: 0, insightsWritten: 0 };
+  }
+
+  const conflicts = await findMemoryConflicts(entries);
+  if (conflicts.length === 0) {
+    return { scanned: true, conflictsFound: 0, insightsWritten: 0 };
+  }
+
+  // Write one Insight per conflict. Confidence is fixed at 0.6 — the
+  // conflict-detection LLM call is conservative but not deterministic;
+  // the merchant should treat these as nudges, not absolute facts.
+  let written = 0;
+  for (const conflict of conflicts) {
+    const { title, body } = formatConflictAsInsightBody(conflict);
+    try {
+      await prisma.insight.create({
+        data: {
+          storeId,
+          category: "anomaly",
+          title,
+          body,
+          verdict: "inconclusive",
+          confidence: 0.6,
+        },
+      });
+      written += 1;
+    } catch (err) {
+      console.warn(
+        `[evaluator] memory-hygiene insight write failed for ${storeId}`,
+        err,
+      );
+    }
+  }
+  return { scanned: true, conflictsFound: conflicts.length, insightsWritten: written };
+}
+
 async function main(): Promise<void> {
   const now = new Date();
   console.log(`[evaluator] starting run at ${now.toISOString()}`);
 
   const followups = await listDueFollowupsAcrossStores(now, 500);
   console.log(`[evaluator] ${followups.length} due followup(s) to consider`);
+
+  // V6.4 — Memory hygiene scan runs even when there are no followups,
+  // because memory contradictions can accumulate in stores that have no
+  // active followups. Pull all installed stores; scan each (cheap, the
+  // 7-day spam guard prevents wasteful re-scans).
+  const allStores = await prisma.store.findMany({
+    where: { uninstalledAt: null },
+    select: { id: true },
+  });
+  console.log(
+    `[evaluator] memory-hygiene: ${allStores.length} active store(s) to consider`,
+  );
+
+  const hygieneCounts = { stores_scanned: 0, conflicts_found: 0, insights_written: 0 };
+  for (const s of allStores) {
+    try {
+      const result = await runMemoryHygieneForStore({
+        storeId: s.id,
+        now,
+      });
+      if (result.scanned) hygieneCounts.stores_scanned += 1;
+      hygieneCounts.conflicts_found += result.conflictsFound;
+      hygieneCounts.insights_written += result.insightsWritten;
+    } catch (err) {
+      console.error(`[evaluator] memory-hygiene fatal for ${s.id}`, err);
+    }
+  }
+  console.log(
+    `[evaluator] memory-hygiene done — scanned:${hygieneCounts.stores_scanned} conflicts:${hygieneCounts.conflicts_found} insights:${hygieneCounts.insights_written}`,
+  );
+
   if (followups.length === 0) return;
 
   // Group by store so we build one admin client per store.
