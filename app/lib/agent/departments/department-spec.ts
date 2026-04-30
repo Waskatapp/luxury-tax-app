@@ -85,7 +85,11 @@ export type DepartmentSpec = {
 // union so the CEO orchestration layer can branch cleanly:
 //   - completed: sub-agent finished its work using only reads + reasoning,
 //     summary string is the human-readable result the CEO weaves into its
-//     reply.
+//     reply. readsExecuted carries the FULL data of each tool call so
+//     api.chat.tsx can synthesize tool_use+tool_result blocks into the
+//     merchant's message — preserving UI rendering (e.g., AnalyticsCard
+//     for get_analytics calls). Without this, the merchant would see
+//     just the CEO's text summary instead of the rich card UI.
 //   - proposed_writes: sub-agent wants to mutate state. Each ProposedWrite
 //     becomes a PendingAction in the merchant's main conversation,
 //     rendered as a normal ApprovalCard. The merchant approves/rejects
@@ -100,7 +104,7 @@ export type SubAgentResult =
   | {
       kind: "completed";
       summary: string;
-      readsExecuted: number; // telemetry only — count of read tool calls
+      readsExecuted: SubAgentReadCall[];
     }
   | {
       kind: "proposed_writes";
@@ -115,6 +119,19 @@ export type SubAgentResult =
       kind: "error";
       reason: string;
     };
+
+// One read tool call the sub-agent executed during its turn. Bubbled up
+// to api.chat.tsx so synthetic tool_use+tool_result blocks can be added
+// to the merchant's messages, preserving UI rendering for tools that
+// have specialized cards (AnalyticsCard, etc.). The sub-agent's internal
+// tool calls are an implementation detail; from the merchant's
+// perspective, it should look like the CEO ran the tool directly.
+export type SubAgentReadCall = {
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  toolResult: unknown; // the `data` field of ToolResult on success, or `{ error: string }` on failure
+  isError: boolean;
+};
 
 // A write the sub-agent wants the merchant to approve. The toolName must
 // belong to the same department that produced this — the dispatcher

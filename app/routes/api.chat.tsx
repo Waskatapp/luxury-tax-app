@@ -58,6 +58,7 @@ import {
   compactAppliedArtifacts,
   compactOldToolResults,
   extractSearchText,
+  mintToolUseId,
   toGeminiContent,
   toGeminiContents,
   type ContentBlock,
@@ -65,6 +66,7 @@ import {
   type ToolResultBlock,
   type ToolUseBlock,
 } from "../lib/agent/translate.server";
+import type { SubAgentResult } from "../lib/agent/departments/department-spec";
 
 // `text` is optional: when absent, the request is a "continuation" triggered
 // by the client after an approve/reject roundtrip. The server then streams
@@ -708,6 +710,77 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                   content: input.content ?? "",
                 });
                 proposedArtifact = true;
+              }
+              // V-Sub-2 hotfix — surface sub-agent's internal read tool
+              // calls as synthetic tool_use + tool_result blocks at the
+              // CEO level. Without this, get_analytics calls dispatched
+              // through delegate_to_department don't render their
+              // AnalyticsCard (MessageBubble renders cards from
+              // persisted tool_result blocks whose tool_use_id starts
+              // with "<toolname>::"). The merchant sees the rich card UX
+              // exactly like before the migration, even though the call
+              // happened inside a sub-agent.
+              //
+              // Gemini history coherence: we append matching synthetic
+              // tool_use blocks to assistantContent (the sub-agent's
+              // internal calls become the CEO's apparent calls from
+              // history's POV). Doesn't confuse the model — the next
+              // turn just sees a coherent assistant(tool_uses) → user(tool_results)
+              // pair, exactly like a direct call.
+              if (tu.name === "delegate_to_department" && result.ok) {
+                const data = result.data as {
+                  department: string;
+                  result: SubAgentResult;
+                };
+                if (
+                  data.result.kind === "completed" &&
+                  data.result.readsExecuted.length > 0
+                ) {
+                  for (const read of data.result.readsExecuted) {
+                    const syntheticId = mintToolUseId(read.toolName);
+                    const syntheticToolUse: ToolUseBlock = {
+                      type: "tool_use",
+                      id: syntheticId,
+                      name: read.toolName,
+                      input: read.toolInput,
+                    };
+                    const syntheticResultContent = JSON.stringify(
+                      read.toolResult,
+                    );
+                    const syntheticToolResult: ToolResultBlock = {
+                      type: "tool_result",
+                      tool_use_id: syntheticId,
+                      content: syntheticResultContent,
+                      is_error: read.isError,
+                    };
+                    assistantContent.push(syntheticToolUse);
+                    toolResults.push(syntheticToolResult);
+                    // Feed grounding for the post-stream hallucination
+                    // check, same as we do for direct read tool results.
+                    groundingTexts.push(syntheticResultContent);
+                  }
+                  // The assistant message was persisted at line ~528
+                  // BEFORE this dispatch ran, with the original
+                  // assistantContent (which lacked the synthetic blocks).
+                  // Update the persisted row so reload-time UI rendering
+                  // sees the synthetic tool_uses too.
+                  await prisma.message.update({
+                    where: { id: assistantRow.id },
+                    data: {
+                      content: assistantContent as unknown as object,
+                    },
+                  });
+                  // The contents array (Gemini history for next-iteration
+                  // calls) was also pushed BEFORE this dispatch. Replace
+                  // the last entry so subsequent generateContent calls
+                  // see the synthetic tool_uses paired with their results
+                  // (Gemini's function-calling API requires every
+                  // functionResponse to have a matching functionCall).
+                  contents[contents.length - 1] = toGeminiContent({
+                    role: "assistant",
+                    content: assistantContent,
+                  });
+                }
               }
               continue;
             }

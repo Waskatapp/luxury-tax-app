@@ -7,6 +7,7 @@ import { getDepartmentSpec } from "./departments/registry.server";
 import type {
   HandlerContext,
   ProposedWrite,
+  SubAgentReadCall,
   SubAgentResult,
 } from "./departments/department-spec";
 import type { DepartmentId } from "./departments";
@@ -69,7 +70,10 @@ export async function runSubAgent(
     { role: "user", parts: [{ text: userMessage }] },
   ];
 
-  let readsExecuted = 0;
+  // V-Sub-2 — track full read tool call data (not just count) so
+  // api.chat.tsx can synthesize tool_use+tool_result blocks for the
+  // merchant's UI. Without this the AnalyticsCard etc. don't render.
+  const readsExecuted: SubAgentReadCall[] = [];
   const proposedWrites: ProposedWrite[] = [];
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -223,7 +227,19 @@ export async function runSubAgent(
         };
       }
 
-      if (!isInlineWrite) readsExecuted++;
+      // Track every executed read with full data so the orchestrator can
+      // surface synthetic tool_use+tool_result blocks back to the
+      // merchant. Inline writes (rare) also get tracked but the consumer
+      // currently doesn't differentiate — both are just "things the
+      // sub-agent did internally."
+      if (!isInlineWrite) {
+        readsExecuted.push({
+          toolName,
+          toolInput: (call.args ?? {}) as Record<string, unknown>,
+          toolResult: result.ok ? result.data : { error: result.error },
+          isError: !result.ok,
+        });
+      }
 
       functionResponseParts.push({
         functionResponse: {
