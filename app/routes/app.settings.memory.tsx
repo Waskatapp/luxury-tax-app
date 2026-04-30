@@ -72,7 +72,9 @@ const ActionInput = z.discriminatedUnion("intent", [
       .string()
       .min(1)
       .max(80)
-      .regex(/^[a-z0-9_]+$/, "key must be snake_case (a-z, 0-9, underscore)"),
+      // V5.1 — colon allowed for the goal: prefix convention
+      // (e.g. goal:active:revenue_q2_2026). Backwards-compatible.
+      .regex(/^[a-z0-9_:]+$/, "key must use a-z, 0-9, underscore, or colon (for goal: prefix)"),
     value: z.string().min(1).max(500),
   }),
   z.object({
@@ -162,8 +164,10 @@ export default function MemorySettingsPage() {
   };
 
   const handleSubmit = () => {
-    if (!/^[a-z0-9_]+$/.test(keyText)) {
-      setKeyError("Key must be snake_case (a-z, 0-9, underscore).");
+    if (!/^[a-z0-9_:]+$/.test(keyText)) {
+      setKeyError(
+        "Key must use a-z, 0-9, underscore, or colon (for the goal: prefix).",
+      );
       return;
     }
     fetcher.submit(
@@ -338,7 +342,7 @@ export default function MemorySettingsPage() {
               }}
               autoComplete="off"
               error={keyError ?? undefined}
-              helpText="snake_case identifier — same key overwrites existing value (e.g. brand_voice)"
+              helpText="snake_case identifier (e.g. brand_voice). For strategic goals under STRATEGIC_GUARDRAILS, use the goal:active:NAME convention (e.g. goal:active:revenue_q2_2026)."
               disabled={editing !== null}
             />
             <TextField

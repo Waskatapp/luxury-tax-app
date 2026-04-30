@@ -150,9 +150,12 @@ describe("buildCeoSystemInstruction", () => {
 
   // V2.5a — the realistic-scale test now uses an INDEX (one line per workflow)
   // instead of full bodies. Realistic merchant scale = ~30 memory lines + ~5
-  // guardrails + ~10 workflows in the index. The base prompt should now stay
-  // well under 30k chars (was previously bumping toward 60k).
-  it("stays well under Gemini Flash's 32k context budget at realistic merchant scale", () => {
+  // guardrails + ~10 workflows in the index. The base prompt should stay under
+  // 32k chars — that's Gemini's prompt-caching minimum, NOT a hard limit
+  // (Flash's actual context is 1M tokens). Once memory + decisions + goals
+  // grow past 32k, prompt caching kicks in and we get 50-70% input-token
+  // discounts on the static prefix. So 32k is the real threshold to watch.
+  it("stays under Gemini's 32k prompt-caching threshold at realistic merchant scale", () => {
     const fakeMemory = Array.from({ length: 30 }, (_, i) => `- key_${i}: value ${i}`).join("\n");
     const fakeGuardrails = Array.from({ length: 5 }, (_, i) => `- rule_${i}: a strategic guardrail with some prose attached`).join("\n");
     const fakeIndex: WorkflowIndexEntry[] = Array.from({ length: 10 }, (_, i) => ({
@@ -168,8 +171,11 @@ describe("buildCeoSystemInstruction", () => {
         workflowIndex: fakeIndex,
       }),
     );
-    // V2.5a target: lazy injection should keep base prompt well under 30k chars.
-    expect(out.length).toBeLessThan(30_000);
+    // V2.5a target: lazy injection should keep base prompt well under
+    // 32k chars (Gemini's prompt-caching threshold). Once memory + decisions
+    // + goals grow past this, prompt caching unlocks and we get 50-70%
+    // input-token discounts on the static prefix.
+    expect(out.length).toBeLessThan(32_000);
   });
 });
 

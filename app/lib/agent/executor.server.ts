@@ -53,7 +53,11 @@ const UpdateStoreMemoryInput = z.object({
     .string()
     .min(1)
     .max(80)
-    .regex(/^[a-z0-9_]+$/, "key must be snake_case"),
+    // V5.1 — accept `:` as a key separator so the CEO can use the
+    // `goal:active:revenue_q2_2026` convention for strategic objectives
+    // stored under STRATEGIC_GUARDRAILS. Backwards-compatible: every
+    // existing snake_case key still validates.
+    .regex(/^[a-z0-9_:]+$/, "key must be snake_case (a-z, 0-9, underscore, colon for goal: prefix)"),
   value: z.string().min(1).max(500),
 });
 
