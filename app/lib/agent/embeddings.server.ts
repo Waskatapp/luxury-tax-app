@@ -1,23 +1,39 @@
 import { getGeminiClient } from "./gemini.server";
 import { log } from "../log.server";
 
-// V4.2 — Gemini text-embedding-004 wrapper. Used by Phase 4.3's
+// V4.2 / V8 — Gemini embedding wrapper. Used by Phase 4.3's
 // retrieval-at-conversation-start (embed the merchant's first user
 // message; cosine-compare against the Decision journal) and by the
 // post-stream lazy tick in api.chat.tsx (embed pending Decision rows
 // 1-2 per request to avoid blocking response latency).
 //
-// 768-dim float vectors. Free tier on the Gemini API; the rate limit
-// is generous enough that we don't need batching for our scale —
-// per-request lazy ticks distribute the load naturally across merchant
+// V8 — switched from `text-embedding-004` to `gemini-embedding-001`.
+// The older model is still listed in some Google docs but has been
+// silently failing in production (6 decisions stuck on
+// embeddingPending: true after 100+ chat turns that should have fired
+// the lazy tick). gemini-embedding-001 is the current generation;
+// returns 3072 dims natively, but we use outputDimensionality:768
+// to match the existing Decision.embedding column shape — same cosine
+// geometry as before, no schema migration needed.
+//
+// Free tier rate limit on embeddings is generous (1500 RPM); per-
+// request lazy ticks distribute the load naturally across merchant
 // activity.
 
-export const EMBEDDING_MODEL = "text-embedding-004";
+export const EMBEDDING_MODEL = "gemini-embedding-001";
 export const EMBEDDING_DIM = 768;
 
 // Embed a single string. Returns the 768-dim float vector, or null on
-// any failure (network, schema, rate limit). Callers MUST handle null —
-// embeddings are best-effort and chat experience never blocks on them.
+// any failure (network, schema, rate limit, model deprecation). Callers
+// MUST handle null — embeddings are best-effort and chat experience
+// never blocks on them.
+//
+// Logs at WARN level on failure with model name, error class, error
+// message, and a short text preview. The class info is the diagnostic
+// that catches model-deprecation regressions early (which is what
+// silently broke v4.2 embedding under text-embedding-004 — the SDK
+// was throwing an Error subclass without a useful `.message`, so the
+// old log was effectively "embedText failed: " with no detail).
 export async function embedText(text: string): Promise<number[] | null> {
   if (!text || text.trim().length === 0) return null;
 
@@ -26,16 +42,21 @@ export async function embedText(text: string): Promise<number[] | null> {
     const result = await ai.models.embedContent({
       model: EMBEDDING_MODEL,
       contents: text,
+      config: {
+        outputDimensionality: EMBEDDING_DIM,
+      },
     });
     const values = result.embeddings?.[0]?.values;
     if (!values || values.length === 0) {
       log.warn("embedText returned empty vector", {
+        model: EMBEDDING_MODEL,
         textPreview: text.slice(0, 60),
       });
       return null;
     }
     if (values.length !== EMBEDDING_DIM) {
       log.warn("embedText returned unexpected dim", {
+        model: EMBEDDING_MODEL,
         expected: EMBEDDING_DIM,
         got: values.length,
       });
@@ -46,7 +67,9 @@ export async function embedText(text: string): Promise<number[] | null> {
     return values;
   } catch (err) {
     log.warn("embedText failed", {
-      err: err instanceof Error ? err.message : String(err),
+      model: EMBEDDING_MODEL,
+      errorClass: err?.constructor?.name ?? "Unknown",
+      errorMessage: err instanceof Error ? err.message : String(err),
       textPreview: text.slice(0, 60),
     });
     return null;
