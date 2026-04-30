@@ -440,4 +440,41 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["title", "percentOff", "startsAt"],
     },
   },
+  {
+    // V-Sub-1 — Phase Sub-Agents. Meta-tool that hands a focused task to
+    // a department manager (sub-agent). The manager has its own tools
+    // and SOPs you don't see in your prompt — call this when the task
+    // fits a specific domain. Returns a summary + any proposed writes
+    // the manager wants the merchant to approve. This is the ONLY way
+    // to invoke domain tools that have been migrated to a department
+    // module — they no longer appear in your direct tool list.
+    //
+    // For phase Sub-1 only the `_pilot` department exists (smoke test).
+    // Real departments (insights, products, pricing-promotions) come in
+    // subsequent phases.
+    name: "delegate_to_department",
+    description:
+      "Hand a focused task to a department manager (sub-agent). Use this when the merchant's request fits a specific domain — the manager has tools and SOPs you don't see directly. The manager runs as a separate focused turn, returns either a completed summary (for read-only work) or proposed writes (which appear as ApprovalCards in the merchant's main conversation, exactly like direct tool calls). Available departments depend on the migration phase; check the Departments section of your prompt for the current list. NEVER fabricate a department name — pass exactly the id shown there.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        department: {
+          type: "string",
+          description:
+            "The department manager id. Must match an id listed in the Departments section of your prompt.",
+        },
+        task: {
+          type: "string",
+          description:
+            "Plain-English task description, including any constraints from the merchant (e.g., 'Lower Cat Food price to $19.99 — merchant said keep margin above 30%'). Be specific; the manager doesn't see the merchant's full message.",
+        },
+        conversationContext: {
+          type: "string",
+          description:
+            "Optional. A brief 1-2 sentence summary of relevant context from the merchant's main conversation (e.g., 'Merchant just rewrote the Cat Food description and wants to follow with a price cut'). Helps the manager interpret the task. Skip if unnecessary.",
+        },
+      },
+      required: ["department", "task"],
+    },
+  },
 ];

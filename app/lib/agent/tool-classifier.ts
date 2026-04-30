@@ -46,12 +46,22 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
 // and writes Insights when criteria are met. No Shopify mutation; inline.
 // Unlike propose_plan / propose_artifact, this tool does NOT pause the
 // agent loop — the CEO queues a followup and continues responding.
+// V-Sub-1 — delegate_to_department is the CEO's meta-tool for invoking
+// a department sub-agent (see app/lib/agent/sub-agent.server.ts). It's
+// classified as INLINE_WRITE because the CALL itself doesn't mutate
+// Shopify — it dispatches to a sub-agent which either returns a summary
+// (no mutation) OR proposes writes that get queued as PendingActions
+// for merchant approval. The proposed-writes integration in
+// api.chat.tsx handles the queueing path; the inline classification
+// here just makes sure the tool result flows back to the CEO without
+// triggering an approval card.
 export const INLINE_WRITE_TOOLS = new Set<string>([
   "update_store_memory",
   "ask_clarifying_question",
   "propose_plan",
   "propose_artifact",
   "propose_followup",
+  "delegate_to_department",
 ]);
 
 export function isReadTool(name: string): boolean {

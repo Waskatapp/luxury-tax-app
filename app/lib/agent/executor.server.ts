@@ -31,6 +31,7 @@ import {
   followupSummary,
 } from "./followups.server";
 import { loadWorkflowBodyByName } from "./workflow-loader.server";
+import { runSubAgent } from "./sub-agent.server";
 import {
   CACHEABLE_READ_TOOLS,
   readCacheGet,
@@ -72,6 +73,19 @@ const AskClarifyingQuestionInput = z.object({
     .max(8)
     .optional()
     .transform((arr) => (arr ? arr.slice(0, 4) : [])),
+});
+
+// V-Sub-1 — delegate_to_department. The CEO names a department + task.
+// The dispatcher (sub-agent.server.ts) validates the department id
+// against the registry — no need to enum it here, and listing valid ids
+// would create a maintenance hotspot every time a new department lands.
+// Task length capped to keep the sub-agent's user message focused; the
+// CEO should be summarizing intent, not forwarding the merchant's full
+// message.
+const DelegateToDepartmentInput = z.object({
+  department: z.string().min(1).max(80),
+  task: z.string().min(1).max(2000),
+  conversationContext: z.string().max(2000).optional(),
 });
 
 export type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
@@ -374,6 +388,41 @@ export async function executeTool(
           ok: false,
           error: `${name} must route through the approval flow. executeTool should not be called for write tools.`,
         };
+
+      case "delegate_to_department": {
+        // V-Sub-1 — Phase Sub-Agents. Dispatch a focused sub-agent turn
+        // for a department. The sub-agent returns either a summary
+        // (kind=completed) or proposed writes (kind=proposed_writes).
+        // For Sub-1 only the `_pilot` department is registered; real
+        // departments (insights, products, pricing-promotions) come in
+        // subsequent phases and the merchant-facing PendingAction
+        // integration for proposed writes is wired in Sub-3 when
+        // Products migrates.
+        const parsed = DelegateToDepartmentInput.safeParse(input);
+        if (!parsed.success) {
+          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+        }
+        const result = await runSubAgent({
+          departmentId: parsed.data.department,
+          task: parsed.data.task,
+          conversationContext: parsed.data.conversationContext,
+          context: {
+            storeId: ctx.storeId,
+            admin: ctx.admin,
+            conversationId: ctx.conversationId,
+          },
+        });
+        // Convert SubAgentResult into a tool_result the CEO can read.
+        // Different result kinds get different shapes; the CEO's prompt
+        // explains how to interpret them.
+        return {
+          ok: true,
+          data: {
+            department: parsed.data.department,
+            result,
+          },
+        };
+      }
 
       default:
         return { ok: false, error: `unknown tool: ${name}` };
