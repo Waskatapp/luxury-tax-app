@@ -11,6 +11,7 @@ import {
   formatConflictAsInsightBody,
   shouldSurfaceAnomaly,
 } from "../app/lib/agent/memory-hygiene.server";
+import { runSystemHealthScansForStore } from "../app/lib/agent/system-health.server";
 import { decrypt } from "../app/lib/security/encrypt.server";
 import type { ShopifyAdmin } from "../app/lib/shopify/graphql-client.server";
 
@@ -214,6 +215,38 @@ async function main(): Promise<void> {
   }
   console.log(
     `[evaluator] memory-hygiene done — scanned:${hygieneCounts.stores_scanned} conflicts:${hygieneCounts.conflicts_found} insights:${hygieneCounts.insights_written}`,
+  );
+
+  // V6.6 — IT diagnostic pass. Per-store, after memory hygiene, before
+  // followup batch. Read-only on operational tables (Decision, AuditLog,
+  // TurnSignal, Conversation, Insight, PendingAction); writes only to
+  // SystemHealthFinding. Findings are operator-only — visible at
+  // /app/settings/system-health, never surfaced to the merchant chat.
+  // Per-scan errors caught inside the orchestrator; per-store catch here
+  // ensures one bad store can't poison the rest of the run.
+  const ithCounts = {
+    stores_scanned: 0,
+    findings_filed: 0,
+    skipped: 0,
+    errors: 0,
+  };
+  for (const s of allStores) {
+    try {
+      const result = await runSystemHealthScansForStore({
+        storeId: s.id,
+        now,
+      });
+      ithCounts.stores_scanned += 1;
+      ithCounts.findings_filed += result.findingsFiled;
+      ithCounts.skipped += result.skippedSpamGuard;
+      ithCounts.errors += result.errors;
+    } catch (err) {
+      console.error(`[evaluator] system-health fatal for ${s.id}`, err);
+      ithCounts.errors += 1;
+    }
+  }
+  console.log(
+    `[evaluator] system-health done — scanned:${ithCounts.stores_scanned} filed:${ithCounts.findings_filed} skipped:${ithCounts.skipped} errors:${ithCounts.errors}`,
   );
 
   if (followups.length === 0) return;

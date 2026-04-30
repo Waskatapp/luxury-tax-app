@@ -74,17 +74,18 @@ model Store {
   uninstalledAt DateTime?
   updatedAt     DateTime  @updatedAt
 
-  conversations    Conversation[]
-  pendingActions   PendingAction[]
-  storeMemories    StoreMemory[]
-  auditLogs        AuditLog[]
-  suggestionEvents SuggestionEvent[]
-  turnSignals      TurnSignal[]
-  plans            Plan[]
-  artifacts        Artifact[]
-  actionFollowups  ActionFollowup[]
-  insights         Insight[]
-  decisions        Decision[]
+  conversations        Conversation[]
+  pendingActions       PendingAction[]
+  storeMemories        StoreMemory[]
+  auditLogs            AuditLog[]
+  suggestionEvents     SuggestionEvent[]
+  turnSignals          TurnSignal[]
+  plans                Plan[]
+  artifacts            Artifact[]
+  actionFollowups      ActionFollowup[]
+  insights             Insight[]
+  decisions            Decision[]
+  systemHealthFindings SystemHealthFinding[]
 }
 
 // ---- Chat thread per store+user ----
@@ -462,4 +463,40 @@ model Insight {
 
   @@index([storeId, surfacedAt])
   @@index([storeId, createdAt])
+}
+
+// V6.6 — Phase 6.6 IT Diagnostic. Operator-only system-health findings
+// written by the daily cron's diagnostic pass (scripts/run-evaluator.ts
+// → app/lib/agent/system-health.server.ts). NEVER surfaced to the
+// merchant. NEVER read by the CEO prompt. Visible only at
+// /app/settings/system-health.
+//
+// Lifecycle: open → acknowledged | snoozed. No "verdict" / "confidence" /
+// "significanceP" — these are deterministic operational findings, not
+// post-mortems with probabilistic narrative. No "surfacedAt" — they are
+// never injected into a merchant conversation.
+//
+// Spam guard: per (storeId, component), 7-day window. See
+// shouldFileSystemHealthFinding() in system-health.server.ts. snoozedUntil
+// expiry counts as "no recent finding" so a snoozed-then-expired component
+// can re-fire.
+model SystemHealthFinding {
+  id             String    @id @default(cuid())
+  storeId        String
+  component      String
+  severity       String
+  scanName       String
+  message        String
+  recommendation String
+  evidence       Json
+  acknowledgedAt DateTime?
+  acknowledgedBy String?
+  snoozedUntil   DateTime?
+  createdAt      DateTime  @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, createdAt])
+  @@index([storeId, component, createdAt])
+  @@index([storeId, acknowledgedAt])
 }
