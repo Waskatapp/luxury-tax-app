@@ -31,6 +31,7 @@ import {
   formatInsightsAsMarkdown,
   pickInsightsToSurface,
 } from "../lib/agent/insights.server";
+import { findHallucinations } from "../lib/agent/hallucination-detector.server";
 import {
   findSimilarDecisions,
   formatDecisionsAsMarkdown,
@@ -441,6 +442,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // done are still PENDING; tool-approve/reject promote later).
       const writeToolCallIds: string[] = [];
 
+      // V6.5 — Phase 6 Hallucination Guard. Collects every grounding
+      // string available to verify the CEO's price claims against this
+      // request: the merchant's user text + every tool_result content
+      // produced during the agent loop. Used in the post-stream block
+      // by findHallucinations to flag any $-prefixed price in the
+      // assistant response that doesn't appear in the grounding set.
+      // V1 logs only — once we observe false-positive rate in
+      // production, we can promote to a hard TurnSignal signal.
+      const groundingTexts: string[] = [];
+      if (typeof text === "string" && text.length > 0) {
+        groundingTexts.push(text);
+      }
+
       try {
         const ai = getGeminiClient();
         // V2.5a — compact old tool_results before sending history to
@@ -605,14 +619,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 conversationId,
                 toolCallId: tu.id,
               });
+              const trContent = JSON.stringify(
+                result.ok ? result.data : { error: result.error },
+              );
               toolResults.push({
                 type: "tool_result",
                 tool_use_id: tu.id,
-                content: JSON.stringify(
-                  result.ok ? result.data : { error: result.error },
-                ),
+                content: trContent,
                 is_error: !result.ok,
               });
+              // V6.5 — feed grounding for the post-stream hallucination
+              // check. Push regardless of error status — error payloads
+              // sometimes contain prices the CEO might quote ("we tried
+              // to set $19.99 but Shopify rejected it").
+              groundingTexts.push(trContent);
 
               // V2.2 — clarification: emit the inline-prompt SSE event so
               // the client can render the question with option buttons.
@@ -857,6 +877,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             log.warn("decision embedding tick failed (non-fatal)", {
               err: err instanceof Error ? err.message : String(err),
             });
+          }
+
+          // V6.5 — Hallucination guard. Scan the assistant text for
+          // price-shaped numbers and check each one against the
+          // grounding set (user text + every tool_result this request).
+          // Anything that doesn't match the grounding is logged for
+          // visibility — v1 is observation-only so we can measure
+          // false-positive rate before promoting to a hard signal.
+          if (assistantTextBuffer.trim().length > 0) {
+            const finding = findHallucinations({
+              responseText: assistantTextBuffer,
+              groundingTexts,
+            });
+            if (finding.unverifiedPrices.length > 0) {
+              log.warn("hallucination guard: unverified prices in response", {
+                conversationId,
+                messageId: lastAssistantMessageId,
+                unverified: finding.unverifiedPrices,
+                groundingSourceCount: groundingTexts.length,
+              });
+            }
           }
 
           // 3. First-turn title generation — V5.3 hotfix. Fires when the
