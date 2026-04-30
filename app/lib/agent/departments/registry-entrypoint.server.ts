@@ -14,6 +14,6 @@
 // department automatically.
 
 import "./_pilot/index";
-// Sub-2: import "./insights/index";
+import "./insights/index";
 // Sub-3: import "./products/index";
 // Sub-4: import "./pricing-promotions/index";

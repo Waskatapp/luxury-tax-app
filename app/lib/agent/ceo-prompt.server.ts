@@ -2,8 +2,20 @@ import IDENTITY_MD from "./ceo-prompt/identity.md?raw";
 import DECISION_RULES_MD from "./ceo-prompt/decision-rules.md?raw";
 import OUTPUT_FORMAT_MD from "./ceo-prompt/output-format.md?raw";
 
-import { DEPARTMENTS } from "./departments";
+import { DEPARTMENTS, type DepartmentId } from "./departments";
+// V-Sub-2 — registry-entrypoint side-effect import populates the
+// in-process department registry; isDepartmentMigrated() then tells us
+// whether a given department's tools have moved into the sub-agent
+// architecture (so the CEO should delegate) or still live in the
+// central tool list (call directly). Phase Sub-5 retires the
+// non-migrated branch entirely.
+import "./departments/registry-entrypoint.server";
+import { getDepartmentSpec } from "./departments/registry.server";
 import type { WorkflowIndexEntry } from "./workflow-loader.server";
+
+function isDepartmentMigrated(id: DepartmentId): boolean {
+  return getDepartmentSpec(id) !== null;
+}
 
 // V2.1 CEO Brain — replaces V1's monolithic buildSystemInstruction with a
 // modular assembler. Each prompt block lives in its own .md file so a
@@ -192,7 +204,19 @@ export function buildDepartmentsSection(
   for (const dept of DEPARTMENTS) {
     lines.push(`### ${dept.label}`);
     lines.push(dept.description);
-    lines.push(`**Tools owned:** ${dept.toolNames.map((t) => `\`${t}\``).join(", ")}`);
+    // V-Sub-2 — if the department has been migrated to the new sub-agent
+    // architecture (registered in the registry), tell the CEO to use
+    // delegate_to_department; otherwise list tools as before. As phases
+    // Sub-3 / Sub-4 ship, more departments switch to the delegate path
+    // automatically. Final state (Sub-5): every department uses delegate.
+    const isMigrated = isDepartmentMigrated(dept.id);
+    if (isMigrated) {
+      lines.push(
+        `**Tools owned:** ${dept.toolNames.map((t) => `\`${t}\``).join(", ")} — these tools live INSIDE the manager's scope, not yours. To use them, call \`delegate_to_department(department="${dept.id}", task="...")\`. The manager will call the right tool and return a summary or a proposed write for the merchant to approve.`,
+      );
+    } else {
+      lines.push(`**Tools owned:** ${dept.toolNames.map((t) => `\`${t}\``).join(", ")}`);
+    }
     const entries = byDept.get(dept.id) ?? [];
     if (entries.length > 0) {
       lines.push("**Operating procedures available** (call `read_workflow` for the full SOP):");

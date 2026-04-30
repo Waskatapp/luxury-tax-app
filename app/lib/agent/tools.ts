@@ -41,33 +41,10 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       },
     },
   },
-  {
-    name: "get_analytics",
-    description:
-      "Sales and inventory analytics. Three metrics: `top_products` returns the top 5 best-selling products by units sold across orders in the last `days` days — use this when the merchant asks for 'top sellers', 'best sellers', 'top N products', or 'most sold' (NOT for plain 'list my products' — that's read_products); `revenue` sums order totals over the last `days` days (default 30, max 365); `inventory_at_risk` returns variants with inventory below `threshold` (default 5). Read-only — no approval card.",
-    parametersJsonSchema: {
-      type: "object",
-      properties: {
-        metric: {
-          type: "string",
-          enum: ["top_products", "revenue", "inventory_at_risk"],
-        },
-        days: {
-          type: "integer",
-          minimum: 1,
-          maximum: 365,
-          description: "Lookback window in days. Defaults to 30. Used by `revenue`; ignored by `inventory_at_risk`.",
-        },
-        threshold: {
-          type: "integer",
-          minimum: 0,
-          maximum: 1000,
-          description: "Inventory threshold for `inventory_at_risk`. Variants with quantity below this are flagged. Defaults to 5.",
-        },
-      },
-      required: ["metric"],
-    },
-  },
+  // V-Sub-2 — get_analytics MIGRATED to the Insights department
+  // (app/lib/agent/departments/insights/). To invoke it, the CEO calls
+  // delegate_to_department(department="insights", task="..."). The
+  // declaration lives in the department module now.
   {
     name: "read_workflow",
     description:

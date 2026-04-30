@@ -12,7 +12,10 @@ import {
 } from "../shopify/pricing.server";
 import { createDiscount } from "../shopify/discounts.server";
 import { readCollections } from "../shopify/collections.server";
-import { getAnalytics } from "../shopify/analytics.server";
+// V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
+// Insights department (app/lib/agent/departments/insights/). The
+// underlying app/lib/shopify/analytics.server.ts module is unchanged;
+// only the central executor no longer routes to it directly.
 import type { ShopifyAdmin } from "../shopify/graphql-client.server";
 import { upsertMemory } from "../memory/store-memory.server";
 import {
@@ -140,13 +143,10 @@ export async function executeTool(
         return result;
       }
 
-      case "get_analytics": {
-        const result = await getAnalytics(ctx.admin, input);
-        if (result.ok && ctx.conversationId) {
-          readCacheSet(ctx.conversationId, name, input, result.data);
-        }
-        return result;
-      }
+      // V-Sub-2 — get_analytics MIGRATED to the Insights department.
+      // Direct invocation no longer routed here; the CEO calls
+      // delegate_to_department which dispatches to
+      // app/lib/agent/departments/insights/handlers.ts.
 
       case "read_workflow": {
         // V2.5a — fetch one workflow's body on demand. The CEO sees only

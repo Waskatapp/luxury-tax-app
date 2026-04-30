@@ -2,10 +2,13 @@
 // client code (MessageBubble) can distinguish "internal plumbing" read tools
 // from write tools that need an approval card.
 
+// V-Sub-2 — get_analytics MIGRATED to the Insights department. It's no
+// longer in the CEO's central tool list and so doesn't need to be
+// classified here. Department-owned tools are classified in their
+// department module's `classification` field.
 export const READ_TOOLS = new Set<string>([
   "read_products",
   "read_collections",
-  "get_analytics",
   // V2.5a — read_workflow fetches the full body of a workflow SOP on
   // demand. The system prompt only carries an index; this tool is how
   // the CEO opens a specific runbook when it actually needs one.
