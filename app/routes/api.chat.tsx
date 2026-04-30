@@ -813,14 +813,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         // Flash-Lite call per slash invocation). The extractor itself
         // never throws, so a slow/failed Flash-Lite call won't leak
         // into the catch block.
-        if (typeof text === "string" && assistantTextBuffer.trim().length > 0) {
-          // V2.4 — skip memory extraction on slash commands. They're
-          // templated text, so the Flash-Lite extractor will never find
-          // new merchant-asserted facts in them. Saves one extra LLM
-          // call per slash invocation. Title generation still runs
-          // because new conversations always need a title regardless
-          // of how they started.
-          if (!isSlashCommand) {
+        // Post-stream housekeeping. Three independent passes — each gated
+        // on the smallest condition that makes it useful, so abandoned
+        // tool-only turns (propose_plan / propose_artifact /
+        // ask_clarifying_question with no surrounding text) still get
+        // titled and surfaced in the sidebar.
+        if (typeof text === "string") {
+          // 1. Memory extraction — needs assistant TEXT to learn from.
+          //    Tool-only turns produce no prose for the extractor to mine,
+          //    so skip. Also skip slash commands (templated, nothing new
+          //    in them — saves one Flash-Lite call per invocation).
+          if (assistantTextBuffer.trim().length > 0 && !isSlashCommand) {
             const saved = await extractAndStoreMemory({
               storeId: store.id,
               userText: text,
@@ -831,14 +834,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             }
           }
 
-          // V4.2 — Lazy embedding tick. Process up to 2 Decision rows
-          // that haven't been embedded yet. Bounded so chat latency
-          // doesn't grow with the size of the embedding backlog. Each
-          // turn fires after the SSE stream is closed, so we're not
-          // stealing user-visible time. Failure is silent (logged in
-          // embedText / setDecisionEmbedding) — the next turn's tick
-          // retries. Wrapped in try/catch so a transient embedding
-          // outage never bubbles up to the merchant.
+          // 2. Lazy embedding tick (V4.2) — processes up to 2 unembedded
+          //    Decision rows. Runs on every turn regardless of whether
+          //    this turn produced text; pending decisions don't care
+          //    about this turn's content. Wrapped in try/catch so a
+          //    transient embedding outage never leaks.
           try {
             const pending = await listDecisionsNeedingEmbedding(store.id, 2);
             for (const d of pending) {
@@ -859,13 +859,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             });
           }
 
-          // First-turn title generation. Only fires when the conversation
-          // was untitled at request entry AND this turn produced assistant
-          // text. updateMany with `title: null` prevents two concurrent
-          // requests from both setting (and both emitting) — only the
-          // first writer wins. Failure is non-fatal; generateTitle never
-          // throws and returns a safe fallback.
-          if (conversation.title === null) {
+          // 3. First-turn title generation — V5.3 hotfix. Fires when the
+          //    conversation is still untitled AND any assistant Message
+          //    saved this request (text OR tool-only turn). Previously
+          //    this was gated on `assistantTextBuffer > 0`, which meant
+          //    propose_plan / propose_artifact / ask_clarifying_question
+          //    turns (often pure tool_use, no prose) left the conversation
+          //    `title: null` — and api.conversations.tsx filters those out
+          //    of the sidebar, so abandoning the merchant before approving
+          //    made the conversation invisible.
+          //
+          //    generateTitle gracefully handles assistantText="" by
+          //    falling back to a userText-only synthesis, so this works
+          //    even when the CEO emitted no narration.
+          //
+          //    updateMany with `title: null` prevents two concurrent
+          //    requests from both setting (and both emitting) — only
+          //    the first writer wins.
+          if (conversation.title === null && lastAssistantMessageId !== null) {
             const title = await generateTitle(text, assistantTextBuffer);
             const result = await prisma.conversation.updateMany({
               where: { id: conversationId, title: null },
