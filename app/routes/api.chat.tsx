@@ -360,20 +360,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // — chat experience never blocks on retrieval.
   let pastDecisionsMarkdown: string | null = null;
   if (isFirstUserMessage && typeof text === "string") {
+    // V5.3 hotfix — skip embedText when there are no embedded decisions
+    // for this store yet. embedText is ~500ms-1s on Gemini's API; on a
+    // fresh-ish store with zero or pending-only decisions the cosine
+    // search would return [] anyway, so the embed call is pure latency
+    // with no payoff. Combined with multi-turn agent loops on action
+    // requests, that latency was pushing first-message turns past the
+    // SSE proxy timeout (yellow "wasn't answered" banner).
+    //
+    // Count is a single indexed query (~5ms). Once the journal has
+    // entries with completed embeddings, the embed call kicks in
+    // and retrieval lights up.
     try {
-      const queryEmbedding = await embedText(text);
-      if (queryEmbedding !== null) {
-        const similar = await findSimilarDecisions({
-          storeId: store.id,
-          queryEmbedding,
-          topN: 3,
-          minSimilarity: 0.85,
-        });
-        if (similar.length > 0) {
-          pastDecisionsMarkdown = formatDecisionsAsMarkdown(
-            similar,
-            similar.length,
-          );
+      const embeddedDecisionCount = await prisma.decision.count({
+        where: { storeId: store.id, embeddingPending: false },
+      });
+      if (embeddedDecisionCount > 0) {
+        const queryEmbedding = await embedText(text);
+        if (queryEmbedding !== null) {
+          const similar = await findSimilarDecisions({
+            storeId: store.id,
+            queryEmbedding,
+            topN: 3,
+            minSimilarity: 0.85,
+          });
+          if (similar.length > 0) {
+            pastDecisionsMarkdown = formatDecisionsAsMarkdown(
+              similar,
+              similar.length,
+            );
+          }
         }
       }
     } catch (err) {
