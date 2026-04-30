@@ -1,17 +1,16 @@
+// V-Sub-3 — most product helpers migrated to the Products department
+// module. We still import the snapshot helpers (used by snapshotBefore
+// for AuditLog pre-state) and the price/discount writers (still in the
+// central executor switch until Sub-4 / Sub-5).
 import {
-  createProductDraft,
   fetchProductDescription,
   fetchProductStatus,
-  readProducts,
-  updateProductDescription,
-  updateProductStatus,
 } from "../shopify/products.server";
 import {
   fetchVariantPrice,
   updateProductPrice,
 } from "../shopify/pricing.server";
 import { createDiscount } from "../shopify/discounts.server";
-import { readCollections } from "../shopify/collections.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
 // Insights department (app/lib/agent/departments/insights/). The
 // underlying app/lib/shopify/analytics.server.ts module is unchanged;
@@ -35,6 +34,15 @@ import {
 } from "./followups.server";
 import { loadWorkflowBodyByName } from "./workflow-loader.server";
 import { runSubAgent } from "./sub-agent.server";
+// V-Sub-3 — registry-driven dispatch for executeApprovedWrite. Migrated
+// tools route through their department's handler instead of the central
+// switch. Side-effect import of the entrypoint populates the registry
+// at module load time.
+import "./departments/registry-entrypoint.server";
+import {
+  departmentForTool,
+  getDepartmentSpec,
+} from "./departments/registry.server";
 import {
   CACHEABLE_READ_TOOLS,
   readCacheGet,
@@ -127,26 +135,11 @@ export async function executeTool(
     }
 
     switch (name) {
-      case "read_products": {
-        const result = await readProducts(ctx.admin, input);
-        if (result.ok && ctx.conversationId) {
-          readCacheSet(ctx.conversationId, name, input, result.data);
-        }
-        return result;
-      }
-
-      case "read_collections": {
-        const result = await readCollections(ctx.admin, input);
-        if (result.ok && ctx.conversationId) {
-          readCacheSet(ctx.conversationId, name, input, result.data);
-        }
-        return result;
-      }
-
+      // V-Sub-3 — read_products, read_collections MIGRATED to the
+      // Products department (handlers wrap the same Shopify functions).
       // V-Sub-2 — get_analytics MIGRATED to the Insights department.
-      // Direct invocation no longer routed here; the CEO calls
-      // delegate_to_department which dispatches to
-      // app/lib/agent/departments/insights/handlers.ts.
+      // The CEO no longer invokes any of these directly; it calls
+      // delegate_to_department which dispatches into the owning module.
 
       case "read_workflow": {
         // V2.5a — fetch one workflow's body on demand. The CEO sees only
@@ -380,14 +373,15 @@ export async function executeTool(
       }
 
       case "update_product_price":
-      case "update_product_description":
-      case "update_product_status":
-      case "create_product_draft":
       case "create_discount":
         return {
           ok: false,
           error: `${name} must route through the approval flow. executeTool should not be called for write tools.`,
         };
+      // V-Sub-3 — update_product_description, update_product_status,
+      // create_product_draft MIGRATED to the Products department.
+      // Approval-time execution routes via the registry-driven dispatch
+      // in executeApprovedWrite below.
 
       case "delegate_to_department": {
         // V-Sub-1 — Phase Sub-Agents. Dispatch a focused sub-agent turn
@@ -479,24 +473,38 @@ export async function executeApprovedWrite(
 ): Promise<ToolResult> {
   try {
     let result: ToolResult;
-    switch (name) {
-      case "update_product_price":
-        result = await updateProductPrice(ctx.admin, input);
-        break;
-      case "update_product_description":
-        result = await updateProductDescription(ctx.admin, input);
-        break;
-      case "update_product_status":
-        result = await updateProductStatus(ctx.admin, input);
-        break;
-      case "create_product_draft":
-        result = await createProductDraft(ctx.admin, input);
-        break;
-      case "create_discount":
-        result = await createDiscount(ctx.admin, input);
-        break;
-      default:
-        return { ok: false, error: `unknown write tool: ${name}` };
+
+    // V-Sub-3 — registry-driven dispatch. If the tool has been migrated
+    // to a department module (registry knows its owner), route through
+    // the department's handler. Falls through to the legacy switch for
+    // unmigrated tools. The legacy switch shrinks each migration phase;
+    // Sub-5 retires it entirely once all writes are migrated.
+    const ownerDepartmentId = departmentForTool(name);
+    if (ownerDepartmentId) {
+      const spec = getDepartmentSpec(ownerDepartmentId);
+      const handler = spec?.handlers.get(name);
+      if (!spec || !handler) {
+        return {
+          ok: false,
+          error: `Tool '${name}' is owned by department '${ownerDepartmentId}' but no handler is registered. Registry inconsistency.`,
+        };
+      }
+      result = await handler(input, ctx);
+    } else {
+      switch (name) {
+        // V-Sub-3 — update_product_description, update_product_status,
+        // create_product_draft MIGRATED to Products department; routed
+        // via the registry path above. Same for any future write that
+        // gets migrated.
+        case "update_product_price":
+          result = await updateProductPrice(ctx.admin, input);
+          break;
+        case "create_discount":
+          result = await createDiscount(ctx.admin, input);
+          break;
+        default:
+          return { ok: false, error: `unknown write tool: ${name}` };
+      }
     }
 
     // V2.4 — invalidate the read cache after any successful write so

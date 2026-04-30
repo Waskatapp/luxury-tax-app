@@ -7,40 +7,10 @@ import type { FunctionDeclaration } from "@google/genai";
 // Write tools self-describe as "REQUIRES HUMAN APPROVAL" so Gemini explains
 // the flow correctly to the merchant.
 export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
-  {
-    name: "read_products",
-    description:
-      "Search and list products. Returns rich data per product: id, title, handle, status, product type, vendor, tags, a description preview (~400 chars), SEO title and SEO description, total inventory, price range, AND a `variants` array (up to 10 per product) where each variant has its own id, title, price, sku, and inventoryQuantity. Use this data to match the merchant's intent — they may misspell, abbreviate, describe a product by what it does, or use a partial/old name. The merchant doesn't know Shopify product IDs; they think in product titles, descriptions, and categories.\n\nThe `query` parameter is a Shopify search string; passing bare keywords (no `field:` prefix) does a multi-field search across title, description, vendor, tags, and product type — that's the right default for matching by name or topic. Use `field:value` only when you specifically want to narrow to one field (e.g. `vendor:Hydrogen`, `status:active`). Combine with spaces (AND): `snowboard status:active`.\n\nIntelligent matching: if a search returns nothing, try alternatives — fewer or different keywords, the singular form, a category word from the merchant's phrasing. Inspect the description and tags of results to confirm it's the right product before acting; titles alone can be ambiguous in stores with many similar products. Without `query` you only get the first 20 alphabetical products, which will miss most matches.\n\n**For write tools that need a variant ID (update_product_price): use the `variants[].id` from this response. NEVER fabricate variant IDs — if a product's `variants` array is empty, that means it has none in the first 10 (rare) and you should tell the merchant rather than guess.**",
-    parametersJsonSchema: {
-      type: "object",
-      properties: {
-        first: { type: "integer", minimum: 1, maximum: 50 },
-        after: { type: "string" },
-        query: {
-          type: "string",
-          description:
-            "Shopify search query. Bare keywords (no prefix) search across title, description, vendor, tags, and product type — use this for general lookup. Examples: `snowboard liquid`, `cat food`, `winter gear`. Field-prefixed forms narrow the search: `title:Liquid`, `vendor:Hydrogen`, `status:active`, `tag:limited`. If a search returns nothing, retry with a broader or different keyword from the merchant's phrasing before giving up.",
-        },
-      },
-    },
-  },
-  {
-    name: "read_collections",
-    description:
-      "Search and list collections (product groupings). Returns rich data per collection: id, title, handle, products count, updatedAt, a description preview (~300 chars), sortOrder, SEO title and description, AND `rules` for smart collections (the conditions like 'tag is winter' or 'price > 50' that automatically include products). Manual (hand-curated) collections have `rules: null`.\n\nAs with read_products: pass `query` with bare keywords to do multi-field search across title, description, and metadata — that's the agentic default. Field-prefixed forms narrow: `title:winter`, `collection_type:smart`, `updated_at:>2026-01-01`. If a search returns nothing, retry with broader keywords from the merchant's phrasing before giving up. The merchant doesn't know collection IDs; they think in titles, themes, or descriptions of what's in them.\n\nUse the `rules` field to explain to the merchant WHY a product is or isn't in a smart collection (e.g. 'New Arrivals' might be `tag is new` — products without that tag won't appear).",
-    parametersJsonSchema: {
-      type: "object",
-      properties: {
-        first: { type: "integer", minimum: 1, maximum: 50 },
-        after: { type: "string" },
-        query: {
-          type: "string",
-          description:
-            "Shopify search query. Bare keywords search across title, description, and tags — use for general lookup. Examples: `winter`, `sale`, `new arrivals`. Field forms: `title:winter`, `collection_type:smart`, `collection_type:custom`. If nothing matches, retry with a different keyword.",
-        },
-      },
-    },
-  },
+  // V-Sub-3 — read_products and read_collections MIGRATED to the
+  // Products department (app/lib/agent/departments/products/). The CEO
+  // calls delegate_to_department(department="products", task="...")
+  // to invoke them.
   // V-Sub-2 — get_analytics MIGRATED to the Insights department
   // (app/lib/agent/departments/insights/). To invoke it, the CEO calls
   // delegate_to_department(department="insights", task="..."). The
@@ -84,53 +54,11 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["productId", "variantId", "newPrice"],
     },
   },
-  {
-    name: "update_product_description",
-    description:
-      "Update a product's description HTML. REQUIRES HUMAN APPROVAL — you only request the change.",
-    parametersJsonSchema: {
-      type: "object",
-      properties: {
-        productId: { type: "string" },
-        descriptionHtml: { type: "string" },
-      },
-      required: ["productId", "descriptionHtml"],
-    },
-  },
-  {
-    name: "update_product_status",
-    description:
-      "Change a product's lifecycle status. Use ACTIVE to publish a draft so shoppers can buy it; DRAFT to unpublish; ARCHIVED to retire an old product. When the merchant says \"publish it\", \"make it active\", \"make it live\", or \"archive this\", call this tool. REQUIRES HUMAN APPROVAL — moving a product to ACTIVE makes it visible on the storefront.",
-    parametersJsonSchema: {
-      type: "object",
-      properties: {
-        productId: {
-          type: "string",
-          description: "Product GID, e.g. gid://shopify/Product/12345",
-        },
-        status: {
-          type: "string",
-          enum: ["DRAFT", "ACTIVE", "ARCHIVED"],
-        },
-      },
-      required: ["productId", "status"],
-    },
-  },
-  {
-    name: "create_product_draft",
-    description:
-      "Create a new product in DRAFT status so the merchant can review before publishing. REQUIRES HUMAN APPROVAL.",
-    parametersJsonSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        descriptionHtml: { type: "string" },
-        vendor: { type: "string" },
-        productType: { type: "string" },
-      },
-      required: ["title"],
-    },
-  },
+  // V-Sub-3 — update_product_description, update_product_status, and
+  // create_product_draft MIGRATED to the Products department. The CEO
+  // delegates via delegate_to_department(department="products", ...);
+  // the manager proposes the write; an ApprovalCard renders for the
+  // merchant exactly like before.
   {
     name: "update_store_memory",
     description:

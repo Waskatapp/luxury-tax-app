@@ -2,19 +2,27 @@
 // client code (MessageBubble) can distinguish "internal plumbing" read tools
 // from write tools that need an approval card.
 
-// V-Sub-2 — get_analytics MIGRATED to the Insights department. It's no
-// longer in the CEO's central tool list and so doesn't need to be
-// classified here. Department-owned tools are classified in their
-// department module's `classification` field.
+// V-Sub-2 — get_analytics MIGRATED to the Insights department.
+// V-Sub-3 — read_products, read_collections MIGRATED to the Products
+// department. Migrated tools are classified inside their department
+// module's `classification` field; central sets cover only tools the
+// CEO still calls directly.
 export const READ_TOOLS = new Set<string>([
-  "read_products",
-  "read_collections",
   // V2.5a — read_workflow fetches the full body of a workflow SOP on
   // demand. The system prompt only carries an index; this tool is how
   // the CEO opens a specific runbook when it actually needs one.
   "read_workflow",
 ]);
 
+// V-Sub-3 — IMPORTANT: even after department migration, we keep ALL
+// write tool names in this set. Reason: this set is consumed by client-
+// side MessageBubble (`isApprovalRequiredWrite`) to decide which tool_use
+// blocks render as ApprovalCards. Sub-agent's PROPOSED writes are
+// surfaced as synthetic tool_use blocks at the CEO level (see api.chat.tsx
+// proposed-writes wiring); for the merchant's UI to render an ApprovalCard,
+// the tool name must pass this filter regardless of whether it lives in
+// the central executor switch or a department handler. The DISPATCH side
+// (executeApprovedWrite) is registry-driven; the UI side stays flat.
 export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   "update_product_price",
   "update_product_description",

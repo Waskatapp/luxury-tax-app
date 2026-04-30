@@ -732,6 +732,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                   department: string;
                   result: SubAgentResult;
                 };
+                let appendedSyntheticBlocks = false;
+
+                // Sub-agent returned cleanly with reads only — surface
+                // each read as a synthetic tool_use+tool_result pair so
+                // the merchant's UI cards (AnalyticsCard etc.) render
+                // exactly like before the migration.
                 if (
                   data.result.kind === "completed" &&
                   data.result.readsExecuted.length > 0
@@ -759,6 +765,40 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                     // check, same as we do for direct read tool results.
                     groundingTexts.push(syntheticResultContent);
                   }
+                  appendedSyntheticBlocks = true;
+                }
+
+                // V-Sub-3 — Sub-agent wants to mutate state. Lift each
+                // proposed write to a synthetic tool_use that the existing
+                // pendingWrites flow processes (creates PendingAction,
+                // emits tool_use_start SSE, halts agent loop for merchant
+                // approval). From the merchant's UI perspective, an
+                // ApprovalCard renders identically to a direct write
+                // tool call. The synthetic tool_use also carries reads
+                // executed by the sub-agent before it proposed the
+                // write, surfaced as completed-state synthetic blocks
+                // (same path as the "completed" branch above).
+                if (
+                  data.result.kind === "proposed_writes" &&
+                  data.result.writes.length > 0
+                ) {
+                  for (const write of data.result.writes) {
+                    const syntheticId = mintToolUseId(write.toolName);
+                    const syntheticToolUse: ToolUseBlock = {
+                      type: "tool_use",
+                      id: syntheticId,
+                      name: write.toolName,
+                      input: write.toolInput,
+                    };
+                    assistantContent.push(syntheticToolUse);
+                    pendingWrites.push(syntheticToolUse);
+                    hadWriteTool = true;
+                    writeToolCallIds.push(syntheticId);
+                  }
+                  appendedSyntheticBlocks = true;
+                }
+
+                if (appendedSyntheticBlocks) {
                   // The assistant message was persisted at line ~528
                   // BEFORE this dispatch ran, with the original
                   // assistantContent (which lacked the synthetic blocks).
