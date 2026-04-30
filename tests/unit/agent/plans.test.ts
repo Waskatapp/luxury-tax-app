@@ -104,6 +104,51 @@ describe("ProposePlanInputSchema", () => {
     });
     expect(r.success).toBe(false);
   });
+
+  // V5.3 — replan: parentPlanId is optional. When present, it's a non-empty
+  // short string (cuid shape). Schema doesn't validate that the parent
+  // exists in the DB; that's the executor's job (findPlanById in this
+  // store before persisting).
+  it("accepts a replan with a valid parentPlanId", () => {
+    const r = ProposePlanInputSchema.safeParse({
+      summary: "Revised — Cat Food was already at $19.99 by step 2 time",
+      steps: [
+        { description: "skip step 2 and proceed to step 3", departmentId: "products" },
+        { description: "verify final state", departmentId: "products" },
+      ],
+      parentPlanId: "ckxabc123def456",
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.parentPlanId).toBe("ckxabc123def456");
+    }
+  });
+
+  it("accepts a fresh plan without parentPlanId", () => {
+    const r = ProposePlanInputSchema.safeParse({
+      summary: "Audit catalog and trim outliers",
+      steps: [
+        { description: "scan products", departmentId: "products" },
+        { description: "trim outliers", departmentId: "pricing-promotions" },
+      ],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.parentPlanId).toBeUndefined();
+    }
+  });
+
+  it("rejects an empty parentPlanId string", () => {
+    const r = ProposePlanInputSchema.safeParse({
+      summary: "Revised plan",
+      steps: [
+        { description: "a", departmentId: "products" },
+        { description: "b", departmentId: "products" },
+      ],
+      parentPlanId: "",
+    });
+    expect(r.success).toBe(false);
+  });
 });
 
 describe("hasProposePlanCall", () => {
@@ -150,6 +195,7 @@ describe("planAuditPayload", () => {
       storeId: "store_1",
       conversationId: "conv_1",
       toolCallId: "propose_plan::abc",
+      parentPlanId: null,
       summary: "Audit catalog",
       steps: [
         { description: "step 1", departmentId: "products" },

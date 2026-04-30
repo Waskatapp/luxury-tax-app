@@ -17,6 +17,7 @@ import type { ShopifyAdmin } from "../shopify/graphql-client.server";
 import { upsertMemory } from "../memory/store-memory.server";
 import {
   ProposePlanInputSchema,
+  findPlanById,
   safeCreatePlan,
 } from "./plans.server";
 import {
@@ -183,12 +184,34 @@ export async function executeTool(
         if (!parsed.success) {
           return { ok: false, error: `invalid input: ${parsed.error.message}` };
         }
+        // V5.3 — when parentPlanId is set, this is a replan. Verify the
+        // claimed parent exists in THIS store BEFORE persisting; otherwise
+        // a malformed id from a confused CEO turn would either FK-error at
+        // insert time (ugly) or silently link to a different tenant's plan
+        // (not possible due to the FK + storeId scope, but defensive). On
+        // a bad parent id we return a clear tool-result error so the CEO
+        // can correct on the next turn — likely it just hallucinated the id.
+        let parentPlanId: string | null = null;
+        if (parsed.data.parentPlanId) {
+          const parent = await findPlanById(
+            ctx.storeId,
+            parsed.data.parentPlanId,
+          );
+          if (!parent) {
+            return {
+              ok: false,
+              error: `parentPlanId '${parsed.data.parentPlanId}' not found in this store. If you're replanning, double-check the original plan's id from the prior tool_result. Otherwise, omit parentPlanId for a fresh plan.`,
+            };
+          }
+          parentPlanId = parent.id;
+        }
         const plan = await safeCreatePlan({
           storeId: ctx.storeId,
           conversationId: ctx.conversationId,
           toolCallId: ctx.toolCallId,
           summary: parsed.data.summary,
           steps: parsed.data.steps,
+          parentPlanId,
         });
         if (!plan) {
           return {
@@ -206,10 +229,13 @@ export async function executeTool(
           ok: true,
           data: {
             planId: plan.id,
+            parentPlanId: plan.parentPlanId,
             summary: plan.summary,
             steps: plan.steps,
             status: plan.status,
-            note: "Plan persisted. Wait for the merchant's approval before executing any of these steps. Each WRITE step will still get its own approval card when you call its tool.",
+            note: plan.parentPlanId
+              ? "Replan persisted with link to the original plan. Wait for the merchant's approval before executing any of these new steps."
+              : "Plan persisted. Wait for the merchant's approval before executing any of these steps. Each WRITE step will still get its own approval card when you call its tool.",
           },
         };
       }

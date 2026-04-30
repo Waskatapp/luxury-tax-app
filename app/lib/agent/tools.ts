@@ -251,6 +251,11 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
             required: ["description", "departmentId"],
           },
         },
+        parentPlanId: {
+          type: "string",
+          description:
+            "Optional. Set this to the id of a previously-APPROVED plan when you're proposing a REPLAN — i.e. you started executing the original plan, re-read state before a write step (per decision rule 15), and reality diverged from your draft-time assumptions (price already changed, inventory dropped, item archived, etc.). The replan summary should explain the divergence concretely: \"Revised — Cat Food was already at $19.99 by the time we executed step 2; original plan assumed $24.99\". DO NOT set this for fresh plans on a new request — only when continuing/correcting an in-flight plan.",
+        },
       },
       required: ["summary", "steps"],
     },

@@ -221,11 +221,22 @@ model AuditLog {
 // EXECUTING / COMPLETED / FAILED states are reserved for if/when we ever
 // auto-execute the steps after approval (today the CEO drives execution
 // manually via the agent loop after seeing the synthesized tool_result).
+// V5.3 — `parentPlanId` links a replan to the plan it superseded. When the
+// CEO is mid-execution of an APPROVED plan and finds reality has diverged
+// from the assumptions captured at draft time (price already changed, item
+// out of stock, etc.), it proposes a NEW Plan with parentPlanId set,
+// summarizing the divergence in plan.summary. The merchant approves the
+// replan as if it were a fresh plan; original Plan stays in APPROVED state
+// as the historical "what we WOULD have done" record.
+//
+// Self-relation. The named `PlanReplan` relation distinguishes this from
+// the regular store/conversation relations Prisma would otherwise auto-name.
 model Plan {
   id             String   @id @default(cuid())
   storeId        String
   conversationId String
   toolCallId     String   @unique
+  parentPlanId   String?
   summary        String
   steps          Json // PlanStep[] — see app/lib/agent/plans.server.ts
   status         String   @default("PENDING")
@@ -234,10 +245,13 @@ model Plan {
 
   store        Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  parent       Plan?        @relation("PlanReplan", fields: [parentPlanId], references: [id], onDelete: SetNull)
+  replans      Plan[]       @relation("PlanReplan")
 
   @@index([storeId])
   @@index([conversationId])
   @@index([storeId, status])
+  @@index([parentPlanId])
 }
 
 // V2.2 — Learning Foundation. One row per assistant turn that completes

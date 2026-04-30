@@ -42,6 +42,13 @@ export const PlanStepSchema = z.object({
 export const ProposePlanInputSchema = z.object({
   summary: z.string().min(1).max(280),
   steps: z.array(PlanStepSchema).min(2).max(8),
+  // V5.3 — when the CEO is replanning mid-execution because reality
+  // diverged from the original plan's assumptions, it sets parentPlanId
+  // to the original Plan's id. The replan is then a fresh row with its
+  // own approval flow; the parent stays APPROVED as the historical
+  // "what we WOULD have done" record. cuid is the same shape as the
+  // existing Plan.id, so we just check it's a non-empty short string.
+  parentPlanId: z.string().min(1).max(120).optional(),
 });
 
 export type PlanStep = z.infer<typeof PlanStepSchema>;
@@ -61,6 +68,7 @@ export type PlanRow = {
   storeId: string;
   conversationId: string;
   toolCallId: string;
+  parentPlanId: string | null;
   summary: string;
   steps: StoredPlanStep[];
   status: PlanStatus;
@@ -74,6 +82,7 @@ function toRow(p: Plan): PlanRow {
     storeId: p.storeId,
     conversationId: p.conversationId,
     toolCallId: p.toolCallId,
+    parentPlanId: p.parentPlanId,
     summary: p.summary,
     steps: (p.steps as unknown as StoredPlanStep[]) ?? [],
     status: p.status as PlanStatus,
@@ -85,12 +94,18 @@ function toRow(p: Plan): PlanRow {
 // Idempotent create — re-running the propose_plan tool with the same
 // `toolCallId` (unique) is a no-op rather than a 500. This matches the
 // PendingAction.upsert pattern from Phase 5.
+//
+// V5.3 — when `parentPlanId` is set, this row is a replan. The caller
+// (executor case arm) should validate the parent exists in the same
+// store before passing it through, but we don't enforce here — the
+// FK constraint on the Plan table catches truly bad ids.
 export async function createPlan(opts: {
   storeId: string;
   conversationId: string;
   toolCallId: string;
   summary: string;
   steps: PlanStep[];
+  parentPlanId?: string | null;
 }): Promise<PlanRow> {
   const row = await prisma.plan.upsert({
     where: { toolCallId: opts.toolCallId },
@@ -98,6 +113,7 @@ export async function createPlan(opts: {
       storeId: opts.storeId,
       conversationId: opts.conversationId,
       toolCallId: opts.toolCallId,
+      parentPlanId: opts.parentPlanId ?? null,
       summary: opts.summary,
       steps: opts.steps as unknown as object,
       status: "PENDING",
@@ -234,6 +250,7 @@ export async function safeCreatePlan(opts: {
   toolCallId: string;
   summary: string;
   steps: PlanStep[];
+  parentPlanId?: string | null;
 }): Promise<PlanRow | null> {
   try {
     return await createPlan(opts);
@@ -241,4 +258,17 @@ export async function safeCreatePlan(opts: {
     log.error("safeCreatePlan failed", { err, toolCallId: opts.toolCallId });
     return null;
   }
+}
+
+// V5.3 — tenant-scoped fetch by id. Used by the executor to verify a
+// claimed parentPlanId exists in this store before persisting a replan.
+// Cheap and bounded: a single indexed lookup on the primary key + storeId.
+export async function findPlanById(
+  storeId: string,
+  id: string,
+): Promise<PlanRow | null> {
+  const row = await prisma.plan.findFirst({
+    where: { id, storeId },
+  });
+  return row ? toRow(row) : null;
 }
