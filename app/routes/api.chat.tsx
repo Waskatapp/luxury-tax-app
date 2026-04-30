@@ -356,9 +356,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // re-injecting precedent fresh each turn (which would be confusing
   // if the topic shifts mid-thread).
   //
-  // findSimilarDecisions enforces minSimilarity=0.85 and topN=3. If the
-  // embed call fails (rate limit, network) we silently skip the section
-  // — chat experience never blocks on retrieval.
+  // findSimilarDecisions enforces minSimilarity=0.90 (V6.7 — bumped from
+  // 0.85 after the gemini-embedding-001 model switch; new geometry was
+  // matching "hello" against domain-specific decisions at 0.85+) and
+  // topN=3. If the embed call fails (rate limit, network) we silently
+  // skip the section — chat experience never blocks on retrieval.
   let pastDecisionsMarkdown: string | null = null;
   if (isFirstUserMessage && typeof text === "string") {
     // V5.3 hotfix — skip embedText when there are no embedded decisions
@@ -383,7 +385,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             storeId: store.id,
             queryEmbedding,
             topN: 3,
-            minSimilarity: 0.85,
+            minSimilarity: 0.9,
           });
           if (similar.length > 0) {
             pastDecisionsMarkdown = formatDecisionsAsMarkdown(

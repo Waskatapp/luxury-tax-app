@@ -229,7 +229,14 @@ export async function findSimilarDecisions(opts: {
   minSimilarity?: number;
 }): Promise<SimilarDecision[]> {
   const topN = opts.topN ?? 3;
-  const minSim = opts.minSimilarity ?? 0.85;
+  // V6.7 — bumped from 0.85 to 0.90 after switching the embedding model
+  // from text-embedding-004 to gemini-embedding-001. The new model's
+  // similarity geometry runs hotter — generic queries like "hello" were
+  // matching domain-specific decisions at 0.85+, surfacing irrelevant
+  // past-decision blocks the CEO then fabricated narratives around.
+  // 0.90 is the new safer floor; tune downward only after measuring real
+  // similarity scores in production.
+  const minSim = opts.minSimilarity ?? 0.9;
 
   if (opts.queryEmbedding.length === 0) return [];
 
