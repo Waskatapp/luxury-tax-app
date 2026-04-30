@@ -34,18 +34,77 @@ export type CeoPromptOptions = {
   pastDecisionsMarkdown: string | null;
   workflowIndex: WorkflowIndexEntry[];
   now?: Date;
+  // V6.8 — IANA timezone string from Shopify (e.g., "America/Los_Angeles").
+  // Defaults to "UTC" if null/undefined. Used to format the time block in
+  // identity.md so the CEO sees the merchant's LOCAL clock, not UTC.
+  timezone?: string | null;
 };
 
+// V6.8 — Build the rich time block that gets injected as ${nowHuman},
+// ${timezone}, ${today}, and ${nowIso} placeholders in identity.md.
+// Day-of-week + minute-level precision in the merchant's local TZ; ISO
+// date and ISO timestamp for tool inputs (which require UTC ISO format).
+//
+// Pure function — exported for tests.
+export function buildTimeBlock(now: Date, timezone: string): {
+  today: string;        // "2026-04-30" (ISO date, UTC)
+  nowHuman: string;     // "Thursday, April 30, 2026 at 2:23 PM"
+  timezone: string;     // "America/Los_Angeles" or "UTC"
+  nowIso: string;       // "2026-04-30T21:23:15.000Z"
+} {
+  const tz = timezone || "UTC";
+  // ISO date/time stay in UTC for tool input safety. Tool calls expect
+  // ISO-8601 with Z suffix; converting to local would break them.
+  const todayIso = now.toISOString().slice(0, 10);
+  const nowIso = now.toISOString();
+
+  // Human format uses the merchant's local timezone — that's the part
+  // that matters for "9am tomorrow" / "end of this week" reasoning.
+  let nowHuman: string;
+  try {
+    nowHuman = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(now);
+  } catch {
+    // Invalid timezone string (shouldn't happen with Shopify's IANA, but
+    // defensive). Fall back to UTC.
+    nowHuman = new Intl.DateTimeFormat("en-US", {
+      timeZone: "UTC",
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(now);
+  }
+
+  return { today: todayIso, nowHuman, timezone: tz, nowIso };
+}
+
 export function buildCeoSystemInstruction(opts: CeoPromptOptions): string {
-  const today = (opts.now ?? new Date()).toISOString().slice(0, 10);
+  const time = buildTimeBlock(opts.now ?? new Date(), opts.timezone ?? "UTC");
 
   const sections: string[] = [];
 
-  // 1. Identity — interpolate ${shopDomain} and ${today} placeholders.
+  // 1. Identity — interpolate ${shopDomain} and the V6.8 time placeholders
+  //    so the CEO knows day-of-week + minute-level local time, not just
+  //    a UTC date.
   sections.push(
     IDENTITY_MD
       .replaceAll("${shopDomain}", opts.shopDomain)
-      .replaceAll("${today}", today),
+      .replaceAll("${nowHuman}", time.nowHuman)
+      .replaceAll("${timezone}", time.timezone)
+      .replaceAll("${nowIso}", time.nowIso)
+      .replaceAll("${today}", time.today),
   );
 
   // 2. Departments + their workflow index (auto-generated, never a static

@@ -70,6 +70,7 @@ model Store {
   accessToken   String
   scopes        String?
   ownerEmail    String?
+  ianaTimezone  String?   // V6.8 — populated lazily from Shopify on first detection so the CEO can format dates/times in the merchant's local timezone. Null until first chat turn populates it.
   installedAt   DateTime  @default(now())
   uninstalledAt DateTime?
   updatedAt     DateTime  @updatedAt

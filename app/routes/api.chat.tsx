@@ -10,6 +10,7 @@ import {
 import { sanitizeUserInput } from "../lib/security/sanitize.server";
 import { GEMINI_CHAT_MODEL, getGeminiClient } from "../lib/agent/gemini.server";
 import { buildCeoSystemInstruction } from "../lib/agent/ceo-prompt.server";
+import { getOrPopulateTimezone } from "../lib/agent/shop-timezone.server";
 import { loadWorkflowIndex } from "../lib/agent/workflow-loader.server";
 import { TOOL_DECLARATIONS } from "../lib/agent/tools";
 import {
@@ -402,6 +403,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
+  // V6.8 — resolve the merchant's IANA timezone for the prompt's time
+  // block. First chat turn after install does one Shopify GraphQL call
+  // (~100-200ms); every subsequent turn reads the cached value off the
+  // Store row at zero cost. Falls back to "UTC" on any failure — tool
+  // inputs (which use ISO timestamps) remain valid either way.
+  const timezone = await getOrPopulateTimezone({
+    storeId: store.id,
+    currentTimezone: store.ianaTimezone,
+    admin,
+  });
+
   const systemInstruction = buildCeoSystemInstruction({
     shopDomain: store.shopDomain,
     memoryMarkdown: memoryMarkdown.length > 0 ? memoryMarkdown : null,
@@ -410,6 +422,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     observationsMarkdown,
     pastDecisionsMarkdown,
     workflowIndex: loadWorkflowIndex(),
+    timezone,
   });
 
   const stream = new ReadableStream<Uint8Array>({

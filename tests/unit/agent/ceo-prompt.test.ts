@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCeoSystemInstruction,
   buildDepartmentsSection,
+  buildTimeBlock,
   type CeoPromptOptions,
 } from "../../../app/lib/agent/ceo-prompt.server";
 import type { WorkflowIndexEntry } from "../../../app/lib/agent/workflow-loader.server";
@@ -32,13 +33,87 @@ function entry(over: Partial<WorkflowIndexEntry> = {}): WorkflowIndexEntry {
   };
 }
 
+describe("buildTimeBlock", () => {
+  // Fixed test moment: 2026-04-30 21:23:15 UTC.
+  // Local in America/Los_Angeles is 14:23 (2:23 PM) — 7 hours behind in PDT.
+  const NOW = new Date("2026-04-30T21:23:15Z");
+
+  it("returns ISO date in UTC regardless of timezone", () => {
+    const utc = buildTimeBlock(NOW, "UTC");
+    expect(utc.today).toBe("2026-04-30");
+    const la = buildTimeBlock(NOW, "America/Los_Angeles");
+    expect(la.today).toBe("2026-04-30");
+  });
+
+  it("returns full ISO timestamp in UTC", () => {
+    const out = buildTimeBlock(NOW, "America/Los_Angeles");
+    expect(out.nowIso).toBe("2026-04-30T21:23:15.000Z");
+  });
+
+  it("includes day-of-week in the human format", () => {
+    const out = buildTimeBlock(NOW, "UTC");
+    // 2026-04-30 was a Thursday.
+    expect(out.nowHuman).toMatch(/Thursday/);
+  });
+
+  it("formats time in the merchant's local timezone (LA = 7h behind UTC in April)", () => {
+    const out = buildTimeBlock(NOW, "America/Los_Angeles");
+    // 21:23 UTC → 14:23 LA → 2:23 PM
+    expect(out.nowHuman).toMatch(/2:23/);
+    expect(out.nowHuman).toMatch(/PM/);
+  });
+
+  it("uses UTC time when timezone is UTC", () => {
+    const out = buildTimeBlock(NOW, "UTC");
+    // 21:23 UTC = 9:23 PM
+    expect(out.nowHuman).toMatch(/9:23/);
+    expect(out.nowHuman).toMatch(/PM/);
+  });
+
+  it("falls back to UTC for invalid timezone strings (defensive)", () => {
+    const out = buildTimeBlock(NOW, "Not/A_Real_Timezone");
+    // Should still produce a valid time string even for bogus tz input.
+    expect(out.nowHuman).toMatch(/Thursday/);
+    expect(out.nowHuman).toMatch(/9:23/); // UTC fallback
+    expect(out.timezone).toBe("Not/A_Real_Timezone"); // we still report what was passed
+  });
+
+  it("treats empty timezone string as UTC (safety net)", () => {
+    const out = buildTimeBlock(NOW, "");
+    expect(out.timezone).toBe("UTC");
+    expect(out.nowHuman).toMatch(/Thursday/);
+  });
+});
+
 describe("buildCeoSystemInstruction", () => {
-  it("interpolates ${shopDomain} and ${today} in the identity block", () => {
+  it("interpolates ${shopDomain} and time placeholders in the identity block", () => {
     const out = buildCeoSystemInstruction(baseOpts());
     expect(out).toContain("test-store.myshopify.com");
-    expect(out).toContain("2026-04-27");
+    expect(out).toContain("2026-04-27"); // ${today} substituted
     expect(out).not.toContain("${shopDomain}");
     expect(out).not.toContain("${today}");
+    expect(out).not.toContain("${nowHuman}");
+    expect(out).not.toContain("${timezone}");
+    expect(out).not.toContain("${nowIso}");
+  });
+
+  it("uses the provided timezone in the human time block", () => {
+    const out = buildCeoSystemInstruction(
+      baseOpts({
+        now: new Date("2026-04-30T21:23:15Z"),
+        timezone: "America/Los_Angeles",
+      }),
+    );
+    // FIXED_DATE in baseOpts is overridden; this is 21:23 UTC = 14:23 LA = 2:23 PM
+    expect(out).toMatch(/2:23/);
+    expect(out).toContain("America/Los_Angeles");
+  });
+
+  it("falls back to UTC when timezone is null/omitted", () => {
+    const out = buildCeoSystemInstruction(
+      baseOpts({ now: new Date("2026-04-30T21:23:15Z") }),
+    );
+    expect(out).toContain("UTC");
   });
 
   it("includes all four mandatory section blocks (identity / departments / decision-rules / output-format)", () => {
