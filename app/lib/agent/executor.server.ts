@@ -597,6 +597,13 @@ export async function executeApprovedWrite(
         // update_compare_at_price) also bust read_products which
         // surfaces variant prices.
         "read_discounts",
+        // V-IN-A — Insights deepening. Product / inventory writes
+        // can affect per-product performance numbers (price changes
+        // shift revenue per order; status changes affect what's
+        // visible in top performers). Bust the new caches too so
+        // the next analytics question gets fresh state.
+        "get_product_performance",
+        "compare_periods",
       ]);
     }
     return result;

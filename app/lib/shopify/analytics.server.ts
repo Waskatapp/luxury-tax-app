@@ -10,6 +10,8 @@ import type {
   AnalyticsResult,
   AnalyticsRevenueResult,
   AnalyticsTopProductsResult,
+  ComparePeriodsResult,
+  ProductPerformanceResult,
 } from "./analytics.types";
 
 export type {
@@ -17,6 +19,8 @@ export type {
   AnalyticsResult,
   AnalyticsRevenueResult,
   AnalyticsTopProductsResult,
+  ComparePeriodsResult,
+  ProductPerformanceResult,
 };
 
 export type ToolModuleResult<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -488,6 +492,174 @@ export async function getProductWindowAnalytics(
       revenue: (totalCents / 100).toFixed(2),
       currencyCode,
       cappedAtPageLimit,
+    },
+  };
+}
+
+// ============================================================================
+// V-IN-A — get_product_performance + compare_periods (merchant-facing tools)
+//
+// Both wrap getProductWindowAnalytics. The hard work (order pagination,
+// line-item filtering, currency-precise summing) already happens there;
+// these wrappers are mostly Zod input shaping, days→date math, and
+// merchant-friendly result decoration.
+// ============================================================================
+
+const GetProductPerformanceInput = z.object({
+  productId: z.string().min(1),
+  days: z.number().int().min(1).max(365).default(30),
+  // Optional — the CEO passes the title in the task description after
+  // a Products read. The handler echoes it back so the result is self-
+  // describing. Don't fetch separately; that would double the Shopify
+  // call cost on every delegation.
+  productTitle: z.string().min(1).max(255).optional(),
+});
+
+export async function getProductPerformance(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<ProductPerformanceResult>> {
+  const parsed = GetProductPerformanceInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+  const { productId, days, productTitle } = parsed.data;
+
+  const endsAt = new Date();
+  const startsAt = new Date(endsAt.getTime() - days * 24 * 60 * 60 * 1000);
+
+  const window = await getProductWindowAnalytics(admin, {
+    productId,
+    startsAt,
+    endsAt,
+  });
+  if (!window.ok) return window;
+
+  const note = window.data.cappedAtPageLimit
+    ? `Order scan capped at ${PRODUCT_WINDOW_PAGE_SIZE * PRODUCT_WINDOW_MAX_PAGES} orders. Numbers may be incomplete; suggest a shorter window.`
+    : window.data.unitsSold === 0
+      ? `No sales of this product in the last ${days} days.`
+      : `Computed across all orders in the last ${days} days. Revenue is line-item revenue (unit price × quantity), not full order totals.`;
+
+  return {
+    ok: true,
+    data: {
+      productId,
+      productTitle: productTitle ?? null,
+      rangeDays: days,
+      startsAt: window.data.startsAt,
+      endsAt: window.data.endsAt,
+      unitsSold: window.data.unitsSold,
+      orderCount: window.data.orderCount,
+      revenue: window.data.revenue,
+      currencyCode: window.data.currencyCode,
+      cappedAtPageLimit: window.data.cappedAtPageLimit,
+      note,
+    },
+  };
+}
+
+const ComparePeriodsInput = z.object({
+  productId: z.string().min(1).optional(),
+  days: z.number().int().min(1).max(365).default(30),
+  productTitle: z.string().min(1).max(255).optional(),
+});
+
+// Compute percentage delta as (current - prior) / prior * 100, but
+// return null when prior is 0 — avoids Infinity / NaN bleeding into
+// the merchant-facing summary. The note will explain when this happens.
+function pctDelta(current: number, prior: number): number | null {
+  if (prior === 0) return null;
+  return Math.round(((current - prior) / prior) * 1000) / 10;
+}
+
+export async function comparePeriods(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<ComparePeriodsResult>> {
+  const parsed = ComparePeriodsInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+  const { productId, days, productTitle } = parsed.data;
+
+  const now = new Date();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const currentEnd = now;
+  const currentStart = new Date(now.getTime() - days * dayMs);
+  // Same-length prior window, ending where the current window starts.
+  const priorEnd = currentStart;
+  const priorStart = new Date(currentStart.getTime() - days * dayMs);
+
+  // Sequential — keeps within rate-limiter budget. The two windows are
+  // independent so parallel would also work, but sequential is simpler
+  // and analytics queries aren't latency-critical.
+  const currentResult = await getProductWindowAnalytics(admin, {
+    productId: productId ?? null,
+    startsAt: currentStart,
+    endsAt: currentEnd,
+  });
+  if (!currentResult.ok) return currentResult;
+
+  const priorResult = await getProductWindowAnalytics(admin, {
+    productId: productId ?? null,
+    startsAt: priorStart,
+    endsAt: priorEnd,
+  });
+  if (!priorResult.ok) return priorResult;
+
+  const c = currentResult.data;
+  const p = priorResult.data;
+
+  // Revenue delta in cents to avoid float drift, then formatted.
+  const cCents = Math.round(parseFloat(c.revenue) * 100);
+  const pCents = Math.round(parseFloat(p.revenue) * 100);
+  const revenueDeltaCents = cCents - pCents;
+  const revenueDelta = (revenueDeltaCents / 100).toFixed(2);
+
+  const cappedAtPageLimit = c.cappedAtPageLimit || p.cappedAtPageLimit;
+
+  const note = cappedAtPageLimit
+    ? `One or both windows hit the order-scan cap (${PRODUCT_WINDOW_PAGE_SIZE * PRODUCT_WINDOW_MAX_PAGES} orders). Deltas may be incomplete; consider a shorter window.`
+    : p.orderCount === 0 && c.orderCount === 0
+      ? `No orders in either window for this scope.`
+      : p.orderCount === 0
+        ? `Prior window had no orders — percentage change can't be computed (would be infinite).`
+        : `Compared ${days}-day window ending now vs the prior ${days} days.`;
+
+  return {
+    ok: true,
+    data: {
+      productId: productId ?? null,
+      productTitle: productTitle ?? null,
+      rangeDays: days,
+      current: {
+        startsAt: c.startsAt,
+        endsAt: c.endsAt,
+        unitsSold: c.unitsSold,
+        orderCount: c.orderCount,
+        revenue: c.revenue,
+        currencyCode: c.currencyCode,
+        cappedAtPageLimit: c.cappedAtPageLimit,
+      },
+      prior: {
+        startsAt: p.startsAt,
+        endsAt: p.endsAt,
+        unitsSold: p.unitsSold,
+        orderCount: p.orderCount,
+        revenue: p.revenue,
+        currencyCode: p.currencyCode,
+        cappedAtPageLimit: p.cappedAtPageLimit,
+      },
+      delta: {
+        unitsSold: c.unitsSold - p.unitsSold,
+        orderCount: c.orderCount - p.orderCount,
+        revenue: revenueDelta,
+        unitsSoldPct: pctDelta(c.unitsSold, p.unitsSold),
+        revenuePct: pctDelta(cCents, pCents),
+      },
+      cappedAtPageLimit,
+      note,
     },
   };
 }

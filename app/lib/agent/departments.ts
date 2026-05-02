@@ -88,9 +88,14 @@ export const DEPARTMENTS: Department[] = [
     label: "Insights",
     managerTitle: "Insights manager",
     description:
-      "Owns reading the store's pulse: revenue, top products, " +
-      "inventory at risk. Read-only.",
-    toolNames: ["get_analytics"],
+      "Owns reading the store's pulse: revenue, top sellers / " +
+      "underperformers, inventory at risk, per-product performance, " +
+      "and period-over-period comparisons. Read-only.",
+    toolNames: [
+      "get_analytics",
+      "get_product_performance",
+      "compare_periods",
+    ],
   },
 ];
 

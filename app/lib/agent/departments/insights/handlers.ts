@@ -1,4 +1,8 @@
-import { getAnalytics } from "../../../shopify/analytics.server";
+import {
+  comparePeriods,
+  getAnalytics,
+  getProductPerformance,
+} from "../../../shopify/analytics.server";
 import { readCacheGet, readCacheSet } from "../../read-cache.server";
 import type {
   HandlerContext,
@@ -35,6 +39,55 @@ export const getAnalyticsHandler: ToolHandler = async (
   const result = await getAnalytics(ctx.admin, input);
   if (result.ok && ctx.conversationId) {
     readCacheSet(ctx.conversationId, "get_analytics", input, result.data);
+  }
+  return result;
+};
+
+// V-IN-A — get_product_performance handler. Read-cache friendly so
+// "How is Cat Food doing?" → "Show me Cat Food's last 30 days again"
+// returns instantly within a 5-min window.
+export const getProductPerformanceHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  if (ctx.conversationId) {
+    const cached = readCacheGet(
+      ctx.conversationId,
+      "get_product_performance",
+      input,
+    );
+    if (cached !== undefined) {
+      return { ok: true, data: cached };
+    }
+  }
+  const result = await getProductPerformance(ctx.admin, input);
+  if (result.ok && ctx.conversationId) {
+    readCacheSet(
+      ctx.conversationId,
+      "get_product_performance",
+      input,
+      result.data,
+    );
+  }
+  return result;
+};
+
+// V-IN-A — compare_periods handler. Issues TWO Shopify reads under the
+// hood (current + prior window), so the cache hit is doubly valuable
+// when the merchant drills into a comparison repeatedly.
+export const comparePeriodsHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  if (ctx.conversationId) {
+    const cached = readCacheGet(ctx.conversationId, "compare_periods", input);
+    if (cached !== undefined) {
+      return { ok: true, data: cached };
+    }
+  }
+  const result = await comparePeriods(ctx.admin, input);
+  if (result.ok && ctx.conversationId) {
+    readCacheSet(ctx.conversationId, "compare_periods", input, result.data);
   }
   return result;
 };

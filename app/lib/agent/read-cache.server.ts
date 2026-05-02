@@ -34,6 +34,12 @@ export const CACHEABLE_READ_TOOLS = new Set<string>([
   // when the CEO chains read_discounts → update_discount in the same
   // conversation. Invalidated on any discount-write (Round PP-B+).
   "read_discounts",
+  // V-IN-A — Insights deepening. Both wrap getProductWindowAnalytics
+  // (which scans up to 1000 orders); caching dramatically helps the
+  // common "drill in" pattern where the merchant asks the same
+  // product/period question multiple ways within a conversation.
+  "get_product_performance",
+  "compare_periods",
 ]);
 
 type CachedResult = {
