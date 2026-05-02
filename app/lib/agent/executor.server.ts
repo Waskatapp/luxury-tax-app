@@ -6,11 +6,13 @@
 // snapshot logic centralized avoids duplicating it across departments.
 import {
   fetchProductDescription,
+  fetchProductForDuplicate,
   fetchProductStatus,
   fetchProductTags,
   fetchProductTitle,
   fetchProductType,
   fetchProductVendor,
+  fetchVariantDetails,
 } from "../shopify/products.server";
 import { fetchVariantPrice } from "../shopify/pricing.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
@@ -477,6 +479,18 @@ export async function snapshotBefore(
         const productId = String(toolInput.productId ?? "");
         if (!productId) return null;
         const r = await fetchProductType(ctx.admin, productId);
+        return r.ok ? r.data : null;
+      }
+      case "update_variant": {
+        const variantId = String(toolInput.variantId ?? "");
+        if (!variantId) return null;
+        const r = await fetchVariantDetails(ctx.admin, variantId);
+        return r.ok ? r.data : null;
+      }
+      case "duplicate_product": {
+        const productId = String(toolInput.productId ?? "");
+        if (!productId) return null;
+        const r = await fetchProductForDuplicate(ctx.admin, productId);
         return r.ok ? r.data : null;
       }
       default:

@@ -1025,3 +1025,399 @@ export async function updateProductType(
     },
   };
 }
+
+// ----------------------------------------------------------------------------
+// update_variant (write — runs from approval route, never inline)
+//
+// Unified variant editor. Accepts variantId + any combination of optional
+// fields (sku, barcode, weight, weightUnit, inventoryPolicy,
+// requiresShipping, taxable). Price and compareAtPrice live in the
+// Pricing & Promotions department — intentionally not here.
+//
+// Shopify 2026-04: the variant-side fields (barcode, inventoryPolicy,
+// taxable) live on ProductVariantsBulkInput directly; the inventory-item
+// fields (sku, weight, requiresShipping) live nested under
+// `inventoryItem`. The handler shape is merchant-friendly and flat;
+// this function maps it to Shopify's nested shape internally.
+//
+// The Zod refinements enforce: (a) at least one optional field is set
+// (no-op updates rejected), (b) weight and weightUnit are mutually
+// required (Shopify rejects `weight` without `unit`).
+// ----------------------------------------------------------------------------
+
+const UpdateVariantInput = z
+  .object({
+    productId: z.string().min(1),
+    variantId: z.string().min(1),
+    sku: z.string().max(255).optional(),
+    barcode: z.string().max(255).optional(),
+    weight: z.number().nonnegative().optional(),
+    weightUnit: z.enum(["GRAMS", "KILOGRAMS", "OUNCES", "POUNDS"]).optional(),
+    inventoryPolicy: z.enum(["DENY", "CONTINUE"]).optional(),
+    requiresShipping: z.boolean().optional(),
+    taxable: z.boolean().optional(),
+  })
+  .refine(
+    (v) =>
+      v.sku !== undefined ||
+      v.barcode !== undefined ||
+      v.weight !== undefined ||
+      v.weightUnit !== undefined ||
+      v.inventoryPolicy !== undefined ||
+      v.requiresShipping !== undefined ||
+      v.taxable !== undefined,
+    {
+      message:
+        "at least one of sku/barcode/weight/weightUnit/inventoryPolicy/requiresShipping/taxable must be set",
+    },
+  )
+  .refine(
+    (v) => (v.weight === undefined) === (v.weightUnit === undefined),
+    { message: "weight and weightUnit must be set together" },
+  );
+
+const FETCH_VARIANT_DETAILS_QUERY = `#graphql
+  query FetchVariantDetails($id: ID!) {
+    productVariant(id: $id) {
+      id
+      title
+      barcode
+      inventoryPolicy
+      taxable
+      product { id title }
+      inventoryItem {
+        id
+        sku
+        requiresShipping
+        measurement { weight { value unit } }
+      }
+    }
+  }
+`;
+
+const VARIANT_DETAILS_BULK_UPDATE_MUTATION = `#graphql
+  mutation VariantDetailsUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+    productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+      product { id title }
+      productVariants {
+        id
+        title
+        barcode
+        inventoryPolicy
+        taxable
+        inventoryItem {
+          id
+          sku
+          requiresShipping
+          measurement { weight { value unit } }
+        }
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type RawVariantDetails = {
+  id: string;
+  title: string;
+  barcode: string | null;
+  inventoryPolicy: string;
+  taxable: boolean;
+  product?: { id: string; title: string } | null;
+  inventoryItem: {
+    id: string;
+    sku: string | null;
+    requiresShipping: boolean;
+    measurement: {
+      weight: { value: number; unit: string } | null;
+    } | null;
+  } | null;
+};
+
+type FetchVariantDetailsResponse = {
+  productVariant:
+    | (RawVariantDetails & { product: { id: string; title: string } | null })
+    | null;
+};
+
+type VariantDetailsBulkUpdateResponse = {
+  productVariantsBulkUpdate: {
+    product: { id: string; title: string } | null;
+    productVariants: Array<RawVariantDetails> | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type VariantDetailsSnapshot = {
+  variantId: string;
+  variantTitle: string;
+  productId: string;
+  productTitle: string;
+  sku: string | null;
+  barcode: string | null;
+  weight: number | null;
+  weightUnit: string | null;
+  inventoryPolicy: string;
+  requiresShipping: boolean;
+  taxable: boolean;
+};
+
+function shapeVariantDetails(
+  v: RawVariantDetails,
+  fallbackProductId: string,
+  fallbackProductTitle: string,
+): VariantDetailsSnapshot {
+  const weight = v.inventoryItem?.measurement?.weight ?? null;
+  return {
+    variantId: v.id,
+    variantTitle: v.title,
+    productId: v.product?.id ?? fallbackProductId,
+    productTitle: v.product?.title ?? fallbackProductTitle,
+    sku: v.inventoryItem?.sku ?? null,
+    barcode: v.barcode,
+    weight: weight?.value ?? null,
+    weightUnit: weight?.unit ?? null,
+    inventoryPolicy: v.inventoryPolicy,
+    requiresShipping: v.inventoryItem?.requiresShipping ?? false,
+    taxable: v.taxable,
+  };
+}
+
+export async function fetchVariantDetails(
+  admin: ShopifyAdmin,
+  variantId: string,
+): Promise<ToolModuleResult<VariantDetailsSnapshot>> {
+  const result = await graphqlRequest<FetchVariantDetailsResponse>(
+    admin,
+    FETCH_VARIANT_DETAILS_QUERY,
+    { id: variantId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  const v = result.data.productVariant;
+  if (!v) return { ok: false, error: `variant not found: ${variantId}` };
+  return { ok: true, data: shapeVariantDetails(v, "", "") };
+}
+
+export async function updateVariant(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<VariantDetailsSnapshot>> {
+  const parsed = UpdateVariantInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  // Map merchant-friendly flat input → Shopify's nested ProductVariantsBulkInput.
+  const inventoryItem: Record<string, unknown> = {};
+  if (parsed.data.sku !== undefined) inventoryItem.sku = parsed.data.sku;
+  if (parsed.data.requiresShipping !== undefined) {
+    inventoryItem.requiresShipping = parsed.data.requiresShipping;
+  }
+  if (parsed.data.weight !== undefined && parsed.data.weightUnit !== undefined) {
+    inventoryItem.measurement = {
+      weight: { value: parsed.data.weight, unit: parsed.data.weightUnit },
+    };
+  }
+
+  const variantInput: Record<string, unknown> = { id: parsed.data.variantId };
+  if (parsed.data.barcode !== undefined) variantInput.barcode = parsed.data.barcode;
+  if (parsed.data.inventoryPolicy !== undefined) {
+    variantInput.inventoryPolicy = parsed.data.inventoryPolicy;
+  }
+  if (parsed.data.taxable !== undefined) variantInput.taxable = parsed.data.taxable;
+  if (Object.keys(inventoryItem).length > 0) {
+    variantInput.inventoryItem = inventoryItem;
+  }
+
+  const result = await graphqlRequest<VariantDetailsBulkUpdateResponse>(
+    admin,
+    VARIANT_DETAILS_BULK_UPDATE_MUTATION,
+    {
+      productId: parsed.data.productId,
+      variants: [variantInput],
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const payload = result.data.productVariantsBulkUpdate;
+  if (payload.userErrors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${payload.userErrors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const variant = payload.productVariants?.[0];
+  if (!variant) {
+    return { ok: false, error: "productVariantsBulkUpdate returned no variant" };
+  }
+
+  return {
+    ok: true,
+    data: shapeVariantDetails(
+      variant,
+      payload.product?.id ?? parsed.data.productId,
+      payload.product?.title ?? "",
+    ),
+  };
+}
+
+// ----------------------------------------------------------------------------
+// duplicate_product (write — runs from approval route, never inline)
+//
+// Uses Shopify's productDuplicate mutation. Returns the NEW product's
+// gid + title + status so the CEO can surface it to the merchant in
+// the next turn ("Duplicated to gid://… — want me to make any changes?").
+//
+// Snapshot represents the SOURCE product (what the duplicate came from)
+// — `before` in the AuditLog reads as "duplicated FROM this product",
+// `after` reads as "into this new product".
+// ----------------------------------------------------------------------------
+
+const DuplicateProductInput = z.object({
+  productId: z.string().min(1),
+  newTitle: z.string().min(1).max(255),
+  newStatus: z.enum(["DRAFT", "ACTIVE", "ARCHIVED"]).optional(),
+  includeImages: z.boolean().optional(),
+});
+
+const FETCH_PRODUCT_FOR_DUPLICATE_QUERY = `#graphql
+  query FetchProductForDuplicate($id: ID!) {
+    product(id: $id) {
+      id
+      title
+      status
+      handle
+    }
+  }
+`;
+
+const PRODUCT_DUPLICATE_MUTATION = `#graphql
+  mutation ProductDuplicate(
+    $productId: ID!,
+    $newTitle: String!,
+    $newStatus: ProductStatus,
+    $includeImages: Boolean
+  ) {
+    productDuplicate(
+      productId: $productId,
+      newTitle: $newTitle,
+      newStatus: $newStatus,
+      includeImages: $includeImages
+    ) {
+      newProduct {
+        id
+        title
+        status
+        handle
+        createdAt
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type FetchProductForDuplicateResponse = {
+  product: {
+    id: string;
+    title: string;
+    status: string;
+    handle: string;
+  } | null;
+};
+
+type ProductDuplicateResponse = {
+  productDuplicate: {
+    newProduct: {
+      id: string;
+      title: string;
+      status: string;
+      handle: string;
+      createdAt: string;
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type ProductDuplicateSourceSnapshot = {
+  sourceProductId: string;
+  sourceTitle: string;
+  sourceStatus: string;
+  sourceHandle: string;
+};
+
+export type ProductDuplicateResult = {
+  sourceProductId: string;
+  newProductId: string;
+  newTitle: string;
+  newStatus: string;
+  newHandle: string;
+};
+
+export async function fetchProductForDuplicate(
+  admin: ShopifyAdmin,
+  productId: string,
+): Promise<ToolModuleResult<ProductDuplicateSourceSnapshot>> {
+  const result = await graphqlRequest<FetchProductForDuplicateResponse>(
+    admin,
+    FETCH_PRODUCT_FOR_DUPLICATE_QUERY,
+    { id: productId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.data.product) {
+    return { ok: false, error: `product not found: ${productId}` };
+  }
+  return {
+    ok: true,
+    data: {
+      sourceProductId: result.data.product.id,
+      sourceTitle: result.data.product.title,
+      sourceStatus: result.data.product.status,
+      sourceHandle: result.data.product.handle,
+    },
+  };
+}
+
+export async function duplicateProduct(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<ProductDuplicateResult>> {
+  const parsed = DuplicateProductInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<ProductDuplicateResponse>(
+    admin,
+    PRODUCT_DUPLICATE_MUTATION,
+    {
+      productId: parsed.data.productId,
+      newTitle: parsed.data.newTitle,
+      newStatus: parsed.data.newStatus ?? "DRAFT",
+      includeImages: parsed.data.includeImages ?? true,
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const payload = result.data.productDuplicate;
+  if (payload.userErrors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${payload.userErrors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const created = payload.newProduct;
+  if (!created) {
+    return { ok: false, error: "productDuplicate returned no newProduct" };
+  }
+
+  return {
+    ok: true,
+    data: {
+      sourceProductId: parsed.data.productId,
+      newProductId: created.id,
+      newTitle: created.title,
+      newStatus: created.status,
+      newHandle: created.handle,
+    },
+  };
+}

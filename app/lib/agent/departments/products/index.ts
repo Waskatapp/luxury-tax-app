@@ -8,6 +8,7 @@ import type {
 
 import {
   createProductDraftHandler,
+  duplicateProductHandler,
   readCollectionsHandler,
   readProductsHandler,
   updateProductDescriptionHandler,
@@ -16,6 +17,7 @@ import {
   updateProductTitleHandler,
   updateProductTypeHandler,
   updateProductVendorHandler,
+  updateVariantHandler,
 } from "./handlers";
 import PRODUCTS_PROMPT from "./prompt.md?raw";
 
@@ -199,6 +201,82 @@ const updateProductTypeDeclaration: FunctionDeclaration = {
   },
 };
 
+const updateVariantDeclaration: FunctionDeclaration = {
+  name: "update_variant",
+  description:
+    "Update inventory and shipping fields on a single product variant: SKU, barcode, weight (with unit), inventory policy (DENY = stop selling at zero, CONTINUE = oversell), requiresShipping, and taxable. Pass at least one of the optional fields. Price and compareAtPrice are NOT here — those live in the Pricing & Promotions department. REQUIRES HUMAN APPROVAL. Always call read_products first to find the variant and confirm the current values before proposing changes.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      productId: {
+        type: "string",
+        description: "Product GID. Required by Shopify's productVariantsBulkUpdate.",
+      },
+      variantId: {
+        type: "string",
+        description: "Variant GID, e.g. gid://shopify/ProductVariant/12345",
+      },
+      sku: { type: "string", description: "New SKU (1-255 chars)." },
+      barcode: { type: "string", description: "New barcode (UPC/EAN/ISBN)." },
+      weight: {
+        type: "number",
+        description: "New weight value (must be paired with weightUnit).",
+      },
+      weightUnit: {
+        type: "string",
+        enum: ["GRAMS", "KILOGRAMS", "OUNCES", "POUNDS"],
+        description: "Weight unit (must be paired with weight).",
+      },
+      inventoryPolicy: {
+        type: "string",
+        enum: ["DENY", "CONTINUE"],
+        description:
+          "DENY = stop selling when inventory hits 0 (default for most stores). CONTINUE = allow overselling (useful for made-to-order or pre-order).",
+      },
+      requiresShipping: {
+        type: "boolean",
+        description:
+          "Whether this variant ships physically. Set false for digital goods, services, gift cards, etc.",
+      },
+      taxable: {
+        type: "boolean",
+        description: "Whether this variant is subject to tax.",
+      },
+    },
+    required: ["productId", "variantId"],
+  },
+};
+
+const duplicateProductDeclaration: FunctionDeclaration = {
+  name: "duplicate_product",
+  description:
+    "Duplicate an existing product into a new product. The new product gets a new title (you provide it) and a new status (DRAFT by default). Images can be optionally copied (default: yes). Variants are always copied. Use this when the merchant wants to create a similar product without typing every field again — e.g. 'duplicate Cat Food as Cat Food XL'. REQUIRES HUMAN APPROVAL. The duplicate appears in DRAFT status by default so the merchant can tweak it before publishing.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      productId: {
+        type: "string",
+        description: "GID of the SOURCE product (the one being duplicated).",
+      },
+      newTitle: {
+        type: "string",
+        description: "Title for the new product. 1-255 chars.",
+      },
+      newStatus: {
+        type: "string",
+        enum: ["DRAFT", "ACTIVE", "ARCHIVED"],
+        description:
+          "Status for the new product. Default DRAFT. Use ACTIVE only if the merchant explicitly wants the duplicate live immediately — usually they want to review first, so DRAFT is the safe default.",
+      },
+      includeImages: {
+        type: "boolean",
+        description: "Copy the source product's images. Default: true.",
+      },
+    },
+    required: ["productId", "newTitle"],
+  },
+};
+
 const PRODUCTS_SPEC: DepartmentSpec = {
   id: "products",
   label: "Products",
@@ -216,6 +294,8 @@ const PRODUCTS_SPEC: DepartmentSpec = {
     updateProductTagsDeclaration,
     updateProductVendorDeclaration,
     updateProductTypeDeclaration,
+    updateVariantDeclaration,
+    duplicateProductDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["read_products", readProductsHandler],
@@ -227,6 +307,8 @@ const PRODUCTS_SPEC: DepartmentSpec = {
     ["update_product_tags", updateProductTagsHandler],
     ["update_product_vendor", updateProductVendorHandler],
     ["update_product_type", updateProductTypeHandler],
+    ["update_variant", updateVariantHandler],
+    ["duplicate_product", duplicateProductHandler],
   ]),
   classification: {
     read: new Set(["read_products", "read_collections"]),
@@ -238,6 +320,8 @@ const PRODUCTS_SPEC: DepartmentSpec = {
       "update_product_tags",
       "update_product_vendor",
       "update_product_type",
+      "update_variant",
+      "duplicate_product",
     ]),
     inlineWrite: new Set(),
   },

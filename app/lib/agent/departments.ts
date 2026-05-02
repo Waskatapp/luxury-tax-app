@@ -35,8 +35,9 @@ export const DEPARTMENTS: Department[] = [
     description:
       "Owns the product catalog: searching products and collections, " +
       "rewriting descriptions, renaming products, managing tags / vendor / " +
-      "product type, changing status (DRAFT/ACTIVE/ARCHIVED), and creating " +
-      "new draft products.",
+      "product type, editing variant details (SKU/barcode/weight/inventory " +
+      "policy/shipping/tax), duplicating products, changing status " +
+      "(DRAFT/ACTIVE/ARCHIVED), and creating new draft products.",
     toolNames: [
       "read_products",
       "read_collections",
@@ -47,6 +48,8 @@ export const DEPARTMENTS: Department[] = [
       "update_product_tags",
       "update_product_vendor",
       "update_product_type",
+      "update_variant",
+      "duplicate_product",
     ],
   },
   {
