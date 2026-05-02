@@ -7,11 +7,14 @@ import type {
 } from "../department-spec";
 
 import {
+  addProductImageHandler,
   createCollectionHandler,
   createProductDraftHandler,
   duplicateProductHandler,
   readCollectionsHandler,
   readProductsHandler,
+  removeProductImageHandler,
+  reorderProductImagesHandler,
   updateCollectionHandler,
   updateProductDescriptionHandler,
   updateProductStatusHandler,
@@ -350,6 +353,74 @@ const updateCollectionDeclaration: FunctionDeclaration = {
   },
 };
 
+const addProductImageDeclaration: FunctionDeclaration = {
+  name: "add_product_image",
+  description:
+    "Add an image to a product from a public HTTPS URL. The image is uploaded asynchronously: the tool returns a media GID immediately, but Shopify takes a second or two to transcode and publish to the storefront (the response includes `status: PROCESSING` or `READY`). REQUIRES HUMAN APPROVAL. The URL must be HTTPS (Shopify rejects http://) and reachable by Shopify's servers (not localhost, not behind auth).",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      productId: {
+        type: "string",
+        description: "Product GID, e.g. gid://shopify/Product/12345",
+      },
+      imageUrl: {
+        type: "string",
+        description:
+          "Public HTTPS URL to the image (JPEG, PNG, GIF, or WEBP). Must be reachable by Shopify's servers.",
+      },
+      altText: {
+        type: "string",
+        description:
+          "Optional alt text for accessibility / SEO. Up to 512 chars. Strongly encouraged.",
+      },
+    },
+    required: ["productId", "imageUrl"],
+  },
+};
+
+const removeProductImageDeclaration: FunctionDeclaration = {
+  name: "remove_product_image",
+  description:
+    "Remove a single image from a product. The image is gone immediately from the storefront. REQUIRES HUMAN APPROVAL. Always call read_products first to find the right mediaId — never guess one. The merchant says 'remove the second image' or 'delete the duplicate image'; you must match that to a specific media GID.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      productId: {
+        type: "string",
+        description: "Product GID that owns the image.",
+      },
+      mediaId: {
+        type: "string",
+        description: "Media GID of the specific image to remove, e.g. gid://shopify/MediaImage/12345",
+      },
+    },
+    required: ["productId", "mediaId"],
+  },
+};
+
+const reorderProductImagesDeclaration: FunctionDeclaration = {
+  name: "reorder_product_images",
+  description:
+    "Reorder ALL images on a product. Pass the desired final order as `orderedMediaIds` — a complete array of every image's media GID, in the order you want them to appear. Shopify processes the reorder asynchronously (returns a Job ID); the new order shows on the storefront within a second or two. REQUIRES HUMAN APPROVAL. Always call read_products first to get the current image list — never guess media GIDs.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      productId: {
+        type: "string",
+        description: "Product GID whose images are being reordered.",
+      },
+      orderedMediaIds: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Complete array of media GIDs in the desired final order. Must include every image on the product (no partial reorderings). 1-100 items.",
+      },
+    },
+    required: ["productId", "orderedMediaIds"],
+  },
+};
+
 const PRODUCTS_SPEC: DepartmentSpec = {
   id: "products",
   label: "Products",
@@ -371,6 +442,9 @@ const PRODUCTS_SPEC: DepartmentSpec = {
     duplicateProductDeclaration,
     createCollectionDeclaration,
     updateCollectionDeclaration,
+    addProductImageDeclaration,
+    removeProductImageDeclaration,
+    reorderProductImagesDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["read_products", readProductsHandler],
@@ -386,6 +460,9 @@ const PRODUCTS_SPEC: DepartmentSpec = {
     ["duplicate_product", duplicateProductHandler],
     ["create_collection", createCollectionHandler],
     ["update_collection", updateCollectionHandler],
+    ["add_product_image", addProductImageHandler],
+    ["remove_product_image", removeProductImageHandler],
+    ["reorder_product_images", reorderProductImagesHandler],
   ]),
   classification: {
     read: new Set(["read_products", "read_collections"]),
@@ -401,6 +478,9 @@ const PRODUCTS_SPEC: DepartmentSpec = {
       "duplicate_product",
       "create_collection",
       "update_collection",
+      "add_product_image",
+      "remove_product_image",
+      "reorder_product_images",
     ]),
     inlineWrite: new Set(),
   },

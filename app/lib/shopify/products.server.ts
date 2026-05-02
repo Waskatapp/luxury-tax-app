@@ -1421,3 +1421,378 @@ export async function duplicateProduct(
     },
   };
 }
+
+// ----------------------------------------------------------------------------
+// Image / media management (add / remove / reorder)
+//
+// Shopify's media API is **eventually consistent**: productCreateMedia
+// returns immediately with `status: PROCESSING` (image transcoding runs
+// async; READY is reached within seconds). productReorderMedia returns
+// a Job that runs asynchronously. We accept this and surface the state
+// in the tool result so the CEO can tell the merchant "Done — image
+// processing in the background, will appear on the storefront shortly."
+// Polling for READY is out of scope for v1.
+//
+// Note: Shopify's media mutations return `mediaUserErrors`, NOT the
+// usual `userErrors`. They share the same shape but a different field
+// name. Watch for that when copying patterns.
+// ----------------------------------------------------------------------------
+
+const FETCH_PRODUCT_MEDIA_QUERY = `#graphql
+  query FetchProductMedia($id: ID!) {
+    product(id: $id) {
+      id
+      title
+      media(first: 100) {
+        edges {
+          node {
+            id
+            alt
+            mediaContentType
+            status
+            preview { image { url } }
+          }
+        }
+      }
+    }
+  }
+`;
+
+type FetchProductMediaResponse = {
+  product: {
+    id: string;
+    title: string;
+    media: {
+      edges: Array<{
+        node: {
+          id: string;
+          alt: string | null;
+          mediaContentType: string;
+          status: string;
+          preview: { image: { url: string } | null } | null;
+        };
+      }>;
+    };
+  } | null;
+};
+
+export type ProductMediaItem = {
+  mediaId: string;
+  alt: string | null;
+  mediaContentType: string;
+  status: string;
+  previewUrl: string | null;
+};
+
+export type ProductMediaSnapshot = {
+  productId: string;
+  productTitle: string;
+  media: ProductMediaItem[];
+};
+
+type MediaEdge = {
+  node: {
+    id: string;
+    alt: string | null;
+    mediaContentType: string;
+    status: string;
+    preview: { image: { url: string } | null } | null;
+  };
+};
+
+function shapeMedia(edges: MediaEdge[]): ProductMediaItem[] {
+  return edges.map((edge) => ({
+    mediaId: edge.node.id,
+    alt: edge.node.alt,
+    mediaContentType: edge.node.mediaContentType,
+    status: edge.node.status,
+    previewUrl: edge.node.preview?.image?.url ?? null,
+  }));
+}
+
+export async function fetchProductMedia(
+  admin: ShopifyAdmin,
+  productId: string,
+): Promise<ToolModuleResult<ProductMediaSnapshot>> {
+  const result = await graphqlRequest<FetchProductMediaResponse>(
+    admin,
+    FETCH_PRODUCT_MEDIA_QUERY,
+    { id: productId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.data.product) {
+    return { ok: false, error: `product not found: ${productId}` };
+  }
+  return {
+    ok: true,
+    data: {
+      productId: result.data.product.id,
+      productTitle: result.data.product.title,
+      media: shapeMedia(result.data.product.media.edges),
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// add_product_image (write — runs from approval route, never inline)
+// ----------------------------------------------------------------------------
+
+const AddProductImageInput = z.object({
+  productId: z.string().min(1),
+  imageUrl: z
+    .string()
+    .min(1)
+    .regex(
+      /^https:\/\/\S+$/,
+      "imageUrl must be a valid HTTPS URL — Shopify rejects http:// URLs",
+    ),
+  altText: z.string().max(512).optional(),
+});
+
+const PRODUCT_CREATE_MEDIA_MUTATION = `#graphql
+  mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+    productCreateMedia(productId: $productId, media: $media) {
+      media {
+        ... on MediaImage {
+          id
+          alt
+          mediaContentType
+          status
+          preview { image { url } }
+        }
+      }
+      mediaUserErrors { field message }
+    }
+  }
+`;
+
+type ProductCreateMediaResponse = {
+  productCreateMedia: {
+    media: Array<{
+      id: string;
+      alt: string | null;
+      mediaContentType: string;
+      status: string;
+      preview: { image: { url: string } | null } | null;
+    } | null> | null;
+    mediaUserErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type AddedProductImage = {
+  productId: string;
+  mediaId: string;
+  alt: string | null;
+  status: string;
+  previewUrl: string | null;
+};
+
+export async function addProductImage(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<AddedProductImage>> {
+  const parsed = AddProductImageInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<ProductCreateMediaResponse>(
+    admin,
+    PRODUCT_CREATE_MEDIA_MUTATION,
+    {
+      productId: parsed.data.productId,
+      media: [
+        {
+          originalSource: parsed.data.imageUrl,
+          mediaContentType: "IMAGE",
+          ...(parsed.data.altText ? { alt: parsed.data.altText } : {}),
+        },
+      ],
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.productCreateMedia.mediaUserErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify mediaUserErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const created = result.data.productCreateMedia.media?.[0];
+  if (!created) {
+    return { ok: false, error: "productCreateMedia returned no media" };
+  }
+
+  return {
+    ok: true,
+    data: {
+      productId: parsed.data.productId,
+      mediaId: created.id,
+      alt: created.alt,
+      status: created.status,
+      previewUrl: created.preview?.image?.url ?? null,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// remove_product_image (write — runs from approval route, never inline)
+// ----------------------------------------------------------------------------
+
+const RemoveProductImageInput = z.object({
+  productId: z.string().min(1),
+  mediaId: z.string().min(1),
+});
+
+const PRODUCT_DELETE_MEDIA_MUTATION = `#graphql
+  mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
+    productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
+      deletedMediaIds
+      mediaUserErrors { field message }
+    }
+  }
+`;
+
+type ProductDeleteMediaResponse = {
+  productDeleteMedia: {
+    deletedMediaIds: string[] | null;
+    mediaUserErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type RemovedProductImage = {
+  productId: string;
+  removedMediaId: string;
+};
+
+export async function removeProductImage(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<RemovedProductImage>> {
+  const parsed = RemoveProductImageInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<ProductDeleteMediaResponse>(
+    admin,
+    PRODUCT_DELETE_MEDIA_MUTATION,
+    {
+      productId: parsed.data.productId,
+      mediaIds: [parsed.data.mediaId],
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.productDeleteMedia.mediaUserErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify mediaUserErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const deleted = result.data.productDeleteMedia.deletedMediaIds ?? [];
+  if (deleted.length === 0) {
+    return {
+      ok: false,
+      error: `productDeleteMedia returned no deletedMediaIds — media ${parsed.data.mediaId} may not belong to product ${parsed.data.productId}`,
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      productId: parsed.data.productId,
+      removedMediaId: deleted[0],
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// reorder_product_images (write — runs from approval route, never inline)
+//
+// productReorderMedia is asynchronous — it returns a Job, not the
+// final media state. Callers receive the jobId; merchants will see
+// the new order on the storefront within a second or two. Polling
+// the job to "READY" is out of scope for v1.
+//
+// Input is the desired FINAL order. The handler converts to Shopify's
+// move list (each id paired with its target index).
+// ----------------------------------------------------------------------------
+
+const ReorderProductImagesInput = z.object({
+  productId: z.string().min(1),
+  orderedMediaIds: z.array(z.string().min(1)).min(1).max(100),
+});
+
+const PRODUCT_REORDER_MEDIA_MUTATION = `#graphql
+  mutation ProductReorderMedia($id: ID!, $moves: [MoveInput!]!) {
+    productReorderMedia(id: $id, moves: $moves) {
+      job { id done }
+      mediaUserErrors { field message }
+    }
+  }
+`;
+
+type ProductReorderMediaResponse = {
+  productReorderMedia: {
+    job: { id: string; done: boolean } | null;
+    mediaUserErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type ReorderedProductImages = {
+  productId: string;
+  jobId: string | null;
+  done: boolean;
+  newOrder: string[];
+};
+
+export async function reorderProductImages(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<ReorderedProductImages>> {
+  const parsed = ReorderProductImagesInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  // Convert the desired final order → Shopify's move list. Each
+  // move's newPosition is the target index as a string. Shopify
+  // applies moves in array order with positions interpreted in the
+  // final state, so this maps cleanly even when items shift.
+  const moves = parsed.data.orderedMediaIds.map((id, idx) => ({
+    id,
+    newPosition: String(idx),
+  }));
+
+  const result = await graphqlRequest<ProductReorderMediaResponse>(
+    admin,
+    PRODUCT_REORDER_MEDIA_MUTATION,
+    {
+      id: parsed.data.productId,
+      moves,
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.productReorderMedia.mediaUserErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify mediaUserErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+
+  const job = result.data.productReorderMedia.job;
+  return {
+    ok: true,
+    data: {
+      productId: parsed.data.productId,
+      jobId: job?.id ?? null,
+      done: job?.done ?? false,
+      newOrder: parsed.data.orderedMediaIds,
+    },
+  };
+}

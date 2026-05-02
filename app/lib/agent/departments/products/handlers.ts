@@ -1,7 +1,10 @@
 import {
+  addProductImage,
   createProductDraft,
   duplicateProduct,
   readProducts,
+  removeProductImage,
+  reorderProductImages,
   updateProductDescription,
   updateProductStatus,
   updateProductTags,
@@ -156,4 +159,25 @@ export const updateCollectionHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return updateCollection(ctx.admin, input);
+};
+
+export const addProductImageHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return addProductImage(ctx.admin, input);
+};
+
+export const removeProductImageHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return removeProductImage(ctx.admin, input);
+};
+
+export const reorderProductImagesHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return reorderProductImages(ctx.admin, input);
 };

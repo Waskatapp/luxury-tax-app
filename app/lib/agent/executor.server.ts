@@ -7,6 +7,7 @@
 import {
   fetchProductDescription,
   fetchProductForDuplicate,
+  fetchProductMedia,
   fetchProductStatus,
   fetchProductTags,
   fetchProductTitle,
@@ -498,6 +499,16 @@ export async function snapshotBefore(
         const collectionId = String(toolInput.collectionId ?? "");
         if (!collectionId) return null;
         const r = await fetchCollectionDetails(ctx.admin, collectionId);
+        return r.ok ? r.data : null;
+      }
+      case "remove_product_image":
+      case "reorder_product_images": {
+        // Both: AuditLog before-state is the current media listing for
+        // the product. For remove, the diff shows which media id is
+        // gone after; for reorder, it shows the before-and-after order.
+        const productId = String(toolInput.productId ?? "");
+        if (!productId) return null;
+        const r = await fetchProductMedia(ctx.admin, productId);
         return r.ok ? r.data : null;
       }
       default:
