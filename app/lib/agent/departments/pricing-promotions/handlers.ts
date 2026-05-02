@@ -5,7 +5,10 @@ import {
 } from "../../../shopify/pricing.server";
 import {
   createDiscount,
+  deleteDiscount,
   readDiscounts,
+  setDiscountStatus,
+  updateDiscount,
 } from "../../../shopify/discounts.server";
 import { readCacheGet, readCacheSet } from "../../read-cache.server";
 import type {
@@ -71,4 +74,25 @@ export const createDiscountHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return createDiscount(ctx.admin, input);
+};
+
+export const updateDiscountHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return updateDiscount(ctx.admin, input);
+};
+
+export const setDiscountStatusHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return setDiscountStatus(ctx.admin, input);
+};
+
+export const deleteDiscountHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return deleteDiscount(ctx.admin, input);
 };

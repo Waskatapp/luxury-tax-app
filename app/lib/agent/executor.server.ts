@@ -17,6 +17,7 @@ import {
 } from "../shopify/products.server";
 import { fetchCollectionDetails } from "../shopify/collections.server";
 import { fetchVariantPrice } from "../shopify/pricing.server";
+import { fetchDiscount } from "../shopify/discounts.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
 // Insights department (app/lib/agent/departments/insights/). The
 // underlying app/lib/shopify/analytics.server.ts module is unchanged;
@@ -456,6 +457,18 @@ export async function snapshotBefore(
       // AuditLog's `after` field carries the full diff. Re-resolving
       // 50+ variants for a separate snapshot would double the read cost
       // for no extra value.
+      case "update_discount":
+      case "set_discount_status":
+      case "delete_discount": {
+        // V-PP-B — all three share fetchDiscount. AuditLog before-state
+        // shows what existed pre-mutation; useful for reconstructing
+        // a deleted or paused discount if the merchant changes their
+        // mind.
+        const discountId = String(toolInput.discountId ?? "");
+        if (!discountId) return null;
+        const r = await fetchDiscount(ctx.admin, discountId);
+        return r.ok ? r.data : null;
+      }
       case "update_product_description": {
         const productId = String(toolInput.productId ?? "");
         if (!productId) return null;

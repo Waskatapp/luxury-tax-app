@@ -9,8 +9,11 @@ import type {
 import {
   bulkUpdatePricesHandler,
   createDiscountHandler,
+  deleteDiscountHandler,
   readDiscountsHandler,
+  setDiscountStatusHandler,
   updateCompareAtPriceHandler,
+  updateDiscountHandler,
   updateProductPriceHandler,
 } from "./handlers";
 import PRICING_PROMPT from "./prompt.md?raw";
@@ -150,6 +153,78 @@ const readDiscountsDeclaration: FunctionDeclaration = {
   },
 };
 
+const updateDiscountDeclaration: FunctionDeclaration = {
+  name: "update_discount",
+  description:
+    "Update an existing automatic BASIC discount's title, dates, and/or percent off. Pass at least one optional field. Bundle (Bxgy) discounts CANNOT be updated by this tool — to change a bundle, delete it and recreate via create_bundle_discount. To CLEAR an existing endsAt (run indefinitely), pass `endsAt: null` explicitly. Always call read_discounts first to find the discount's id. REQUIRES HUMAN APPROVAL.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      discountId: {
+        type: "string",
+        description: "Discount node GID, e.g. gid://shopify/DiscountAutomaticNode/12345. Get this from read_discounts.",
+      },
+      title: { type: "string", description: "New title (1-255 chars)." },
+      percentOff: {
+        type: "integer",
+        minimum: 1,
+        maximum: 100,
+        description: "New percent off (1-100).",
+      },
+      startsAt: {
+        type: "string",
+        format: "date-time",
+        description: "New start datetime (ISO-8601).",
+      },
+      endsAt: {
+        type: "string",
+        format: "date-time",
+        description:
+          "New end datetime (ISO-8601). Pass null to clear (run indefinitely).",
+      },
+    },
+    required: ["discountId"],
+  },
+};
+
+const setDiscountStatusDeclaration: FunctionDeclaration = {
+  name: "set_discount_status",
+  description:
+    "Pause or resume an existing automatic discount. Works for both basic and bundle (Bxgy) discounts. PAUSED keeps the discount in the list but stops it from running on the storefront — fully reversible by calling this tool again with status=ACTIVE. Use this instead of delete_discount when the merchant might want to resume the offer later. Always call read_discounts first to find the discount's id. REQUIRES HUMAN APPROVAL.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      discountId: {
+        type: "string",
+        description: "Discount node GID. Get this from read_discounts.",
+      },
+      status: {
+        type: "string",
+        enum: ["ACTIVE", "PAUSED"],
+        description:
+          "ACTIVE = resume / make live. PAUSED = stop running but keep in the list.",
+      },
+    },
+    required: ["discountId", "status"],
+  },
+};
+
+const deleteDiscountDeclaration: FunctionDeclaration = {
+  name: "delete_discount",
+  description:
+    "PERMANENTLY remove an automatic discount from the store. Distinct from set_discount_status PAUSED — that keeps the discount in the list (just not running); delete_discount removes it entirely and the action cannot be undone (the merchant would have to recreate from scratch). PREFER set_discount_status PAUSED when the merchant might want to resume the offer later. REQUIRES HUMAN APPROVAL. Always call read_discounts first to find the discount's id.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      discountId: {
+        type: "string",
+        description: "Discount node GID. Get this from read_discounts.",
+      },
+    },
+    required: ["discountId"],
+  },
+};
+
 const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
   id: "pricing-promotions",
   label: "Pricing & Promotions",
@@ -163,6 +238,9 @@ const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
     updateCompareAtPriceDeclaration,
     bulkUpdatePricesDeclaration,
     readDiscountsDeclaration,
+    updateDiscountDeclaration,
+    setDiscountStatusDeclaration,
+    deleteDiscountDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["update_product_price", updateProductPriceHandler],
@@ -170,6 +248,9 @@ const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
     ["update_compare_at_price", updateCompareAtPriceHandler],
     ["bulk_update_prices", bulkUpdatePricesHandler],
     ["read_discounts", readDiscountsHandler],
+    ["update_discount", updateDiscountHandler],
+    ["set_discount_status", setDiscountStatusHandler],
+    ["delete_discount", deleteDiscountHandler],
   ]),
   classification: {
     read: new Set(["read_discounts"]),
@@ -178,6 +259,9 @@ const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
       "create_discount",
       "update_compare_at_price",
       "bulk_update_prices",
+      "update_discount",
+      "set_discount_status",
+      "delete_discount",
     ]),
     inlineWrite: new Set(),
   },

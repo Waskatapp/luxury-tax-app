@@ -43,6 +43,9 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   "create_discount",
   "update_compare_at_price",
   "bulk_update_prices",
+  "update_discount",
+  "set_discount_status",
+  "delete_discount",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)

@@ -331,3 +331,518 @@ export async function readDiscounts(
     },
   };
 }
+
+// ----------------------------------------------------------------------------
+// fetchDiscount + lifecycle (Round PP-B)
+//
+// One snapshot helper shared by update / set_status / delete. Returns
+// the discount's identifying info + type so callers can distinguish
+// basic from Bxgy. Round PP-B only touches BASIC discounts via these
+// lifecycle tools — Bxgy updates require a different mutation
+// (discountAutomaticBxgyUpdate) and a much larger input shape; deferred.
+// Bxgy discounts CAN still be paused / activated / deleted via the
+// shared automatic lifecycle mutations — those are type-agnostic.
+// ----------------------------------------------------------------------------
+
+const FETCH_DISCOUNT_QUERY = `#graphql
+  query FetchDiscount($id: ID!) {
+    automaticDiscountNode(id: $id) {
+      id
+      automaticDiscount {
+        __typename
+        ... on DiscountAutomaticBasic {
+          title
+          status
+          startsAt
+          endsAt
+          summary
+          customerGets {
+            value {
+              ... on DiscountPercentage { percentage }
+            }
+          }
+        }
+        ... on DiscountAutomaticBxgy {
+          title
+          status
+          startsAt
+          endsAt
+          summary
+        }
+        ... on DiscountAutomaticFreeShipping {
+          title
+          status
+          startsAt
+          endsAt
+          summary
+        }
+      }
+    }
+  }
+`;
+
+type FetchDiscountResponse = {
+  automaticDiscountNode: {
+    id: string;
+    automaticDiscount: {
+      __typename?: string;
+      title?: string;
+      status?: string;
+      startsAt?: string;
+      endsAt?: string | null;
+      summary?: string;
+      customerGets?: { value?: { percentage?: number } };
+    };
+  } | null;
+};
+
+export type DiscountSnapshot = {
+  id: string;
+  title: string;
+  type:
+    | "automaticBasic"
+    | "automaticBxgy"
+    | "automaticFreeShipping"
+    | "unknown";
+  status: string;
+  startsAt: string;
+  endsAt: string | null;
+  summary: string;
+  // Only present for automaticBasic — null for other types.
+  percentOff: number | null;
+};
+
+function mapAutomaticDiscountTypename(
+  typename: string | undefined,
+): DiscountSnapshot["type"] {
+  switch (typename) {
+    case "DiscountAutomaticBasic":
+      return "automaticBasic";
+    case "DiscountAutomaticBxgy":
+      return "automaticBxgy";
+    case "DiscountAutomaticFreeShipping":
+      return "automaticFreeShipping";
+    default:
+      return "unknown";
+  }
+}
+
+export async function fetchDiscount(
+  admin: ShopifyAdmin,
+  discountId: string,
+): Promise<ToolModuleResult<DiscountSnapshot>> {
+  const result = await graphqlRequest<FetchDiscountResponse>(
+    admin,
+    FETCH_DISCOUNT_QUERY,
+    { id: discountId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  const node = result.data.automaticDiscountNode;
+  if (!node) {
+    return { ok: false, error: `discount not found: ${discountId}` };
+  }
+  const inner = node.automaticDiscount ?? {};
+  const type = mapAutomaticDiscountTypename(inner.__typename);
+  const apiPercentage = inner.customerGets?.value?.percentage;
+  return {
+    ok: true,
+    data: {
+      id: node.id,
+      title: inner.title ?? "(untitled)",
+      type,
+      status: inner.status ?? "UNKNOWN",
+      startsAt: inner.startsAt ?? "",
+      endsAt: inner.endsAt ?? null,
+      summary: inner.summary ?? "",
+      percentOff:
+        type === "automaticBasic" && typeof apiPercentage === "number"
+          ? Math.round(apiPercentage * 100)
+          : null,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// update_discount (write — runs from approval route, never inline)
+//
+// Updates an existing automatic BASIC discount's title, dates, and/or
+// percent off. Bxgy update is intentionally NOT exposed in v1 — different
+// mutation, much larger input schema. The handler fetches the discount
+// first and rejects if it's not basic; the merchant should delete and
+// recreate via create_bundle_discount instead.
+//
+// endsAt has explicit-null semantics: passing `null` (not `undefined`)
+// CLEARS an existing endsAt (makes the discount run indefinitely).
+// Zod's `.nullable().optional()` distinguishes: missing key = no change;
+// explicit null = clear.
+// ----------------------------------------------------------------------------
+
+const UpdateDiscountInput = z
+  .object({
+    discountId: z.string().min(1),
+    title: z.string().min(1).max(255).optional(),
+    percentOff: z.number().int().min(1).max(100).optional(),
+    startsAt: z.string().min(10).optional(),
+    endsAt: z.string().min(10).nullable().optional(),
+  })
+  .refine(
+    (v) =>
+      v.title !== undefined ||
+      v.percentOff !== undefined ||
+      v.startsAt !== undefined ||
+      v.endsAt !== undefined,
+    {
+      message:
+        "at least one of title/percentOff/startsAt/endsAt must be set",
+    },
+  );
+
+const DISCOUNT_AUTOMATIC_BASIC_UPDATE_MUTATION = `#graphql
+  mutation DiscountAutomaticBasicUpdate(
+    $id: ID!
+    $automaticBasicDiscount: DiscountAutomaticBasicInput!
+  ) {
+    discountAutomaticBasicUpdate(
+      id: $id
+      automaticBasicDiscount: $automaticBasicDiscount
+    ) {
+      automaticDiscountNode {
+        id
+        automaticDiscount {
+          ... on DiscountAutomaticBasic {
+            title
+            status
+            startsAt
+            endsAt
+            summary
+            customerGets {
+              value {
+                ... on DiscountPercentage { percentage }
+              }
+            }
+          }
+        }
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type DiscountUpdateResponse = {
+  discountAutomaticBasicUpdate: {
+    automaticDiscountNode: {
+      id: string;
+      automaticDiscount: {
+        title?: string;
+        status?: string;
+        startsAt?: string;
+        endsAt?: string | null;
+        summary?: string;
+        customerGets?: { value?: { percentage?: number } };
+      };
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type UpdatedDiscountSummary = {
+  id: string;
+  title: string;
+  percentOff: number;
+  startsAt: string;
+  endsAt: string | null;
+  status: string;
+  summary: string;
+};
+
+export async function updateDiscount(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<UpdatedDiscountSummary>> {
+  const parsed = UpdateDiscountInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  // Fetch first to verify the discount is basic. Bxgy updates require
+  // a different mutation; reject with a clear message so the CEO can
+  // route the merchant to delete + recreate.
+  const snapshot = await fetchDiscount(admin, parsed.data.discountId);
+  if (!snapshot.ok) return { ok: false, error: snapshot.error };
+  if (snapshot.data.type !== "automaticBasic") {
+    return {
+      ok: false,
+      error: `cannot update discount of type '${snapshot.data.type}' — update_discount only supports automaticBasic. To change a bundle (Bxgy) discount, delete it and create a new one via create_bundle_discount.`,
+    };
+  }
+
+  // Build the input payload. Only include fields the merchant actually
+  // changed — omitting a field tells Shopify to keep the existing value.
+  // For endsAt, distinguish "didn't change" (omit) from "wants to clear"
+  // (explicit null in payload). Zod's `.nullable().optional()` keeps
+  // these two states separate via `parsed.data.endsAt === null`.
+  const automaticBasicDiscount: Record<string, unknown> = {};
+  if (parsed.data.title !== undefined) {
+    automaticBasicDiscount.title = parsed.data.title;
+  }
+  if (parsed.data.percentOff !== undefined) {
+    automaticBasicDiscount.customerGets = {
+      value: { percentage: parsed.data.percentOff / 100 },
+      items: { all: true },
+    };
+  }
+  if (parsed.data.startsAt !== undefined) {
+    automaticBasicDiscount.startsAt = parsed.data.startsAt;
+  }
+  if (parsed.data.endsAt !== undefined) {
+    automaticBasicDiscount.endsAt = parsed.data.endsAt; // could be string or null
+  }
+
+  const result = await graphqlRequest<DiscountUpdateResponse>(
+    admin,
+    DISCOUNT_AUTOMATIC_BASIC_UPDATE_MUTATION,
+    {
+      id: parsed.data.discountId,
+      automaticBasicDiscount,
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const payload = result.data.discountAutomaticBasicUpdate;
+  if (payload.userErrors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${payload.userErrors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const node = payload.automaticDiscountNode;
+  if (!node) {
+    return {
+      ok: false,
+      error: "discountAutomaticBasicUpdate returned no automaticDiscountNode",
+    };
+  }
+  const inner = node.automaticDiscount ?? {};
+  const apiPercentage = inner.customerGets?.value?.percentage ?? null;
+  return {
+    ok: true,
+    data: {
+      id: node.id,
+      title: inner.title ?? snapshot.data.title,
+      percentOff:
+        apiPercentage !== null
+          ? Math.round(apiPercentage * 100)
+          : (snapshot.data.percentOff ?? 0),
+      startsAt: inner.startsAt ?? snapshot.data.startsAt,
+      endsAt: inner.endsAt ?? null,
+      status: inner.status ?? snapshot.data.status,
+      summary: inner.summary ?? snapshot.data.summary,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// set_discount_status (write — runs from approval route, never inline)
+//
+// One tool, two underlying mutations. status="ACTIVE" → activate;
+// status="PAUSED" → deactivate. Works for both basic and Bxgy
+// automatic discounts (the underlying Shopify mutations are
+// type-agnostic at this level).
+// ----------------------------------------------------------------------------
+
+const SetDiscountStatusInput = z.object({
+  discountId: z.string().min(1),
+  status: z.enum(["ACTIVE", "PAUSED"]),
+});
+
+const DISCOUNT_AUTOMATIC_ACTIVATE_MUTATION = `#graphql
+  mutation DiscountAutomaticActivate($id: ID!) {
+    discountAutomaticActivate(id: $id) {
+      automaticDiscountNode {
+        id
+        automaticDiscount {
+          ... on DiscountAutomaticBasic { title status }
+          ... on DiscountAutomaticBxgy { title status }
+          ... on DiscountAutomaticFreeShipping { title status }
+        }
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+const DISCOUNT_AUTOMATIC_DEACTIVATE_MUTATION = `#graphql
+  mutation DiscountAutomaticDeactivate($id: ID!) {
+    discountAutomaticDeactivate(id: $id) {
+      automaticDiscountNode {
+        id
+        automaticDiscount {
+          ... on DiscountAutomaticBasic { title status }
+          ... on DiscountAutomaticBxgy { title status }
+          ... on DiscountAutomaticFreeShipping { title status }
+        }
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type DiscountActivateResponse = {
+  discountAutomaticActivate: {
+    automaticDiscountNode: {
+      id: string;
+      automaticDiscount: { title?: string; status?: string };
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+type DiscountDeactivateResponse = {
+  discountAutomaticDeactivate: {
+    automaticDiscountNode: {
+      id: string;
+      automaticDiscount: { title?: string; status?: string };
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type DiscountStatusChangeResult = {
+  id: string;
+  title: string;
+  newStatus: string;
+};
+
+export async function setDiscountStatus(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<DiscountStatusChangeResult>> {
+  const parsed = SetDiscountStatusInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  if (parsed.data.status === "ACTIVE") {
+    const result = await graphqlRequest<DiscountActivateResponse>(
+      admin,
+      DISCOUNT_AUTOMATIC_ACTIVATE_MUTATION,
+      { id: parsed.data.discountId },
+    );
+    if (!result.ok) return { ok: false, error: result.error };
+    const payload = result.data.discountAutomaticActivate;
+    if (payload.userErrors.length > 0) {
+      return {
+        ok: false,
+        error: `shopify userErrors: ${payload.userErrors.map((e) => e.message).join("; ")}`,
+      };
+    }
+    const node = payload.automaticDiscountNode;
+    if (!node) {
+      return { ok: false, error: "discountAutomaticActivate returned no node" };
+    }
+    return {
+      ok: true,
+      data: {
+        id: node.id,
+        title: node.automaticDiscount?.title ?? "(untitled)",
+        newStatus: node.automaticDiscount?.status ?? "ACTIVE",
+      },
+    };
+  }
+
+  // PAUSED path
+  const result = await graphqlRequest<DiscountDeactivateResponse>(
+    admin,
+    DISCOUNT_AUTOMATIC_DEACTIVATE_MUTATION,
+    { id: parsed.data.discountId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  const payload = result.data.discountAutomaticDeactivate;
+  if (payload.userErrors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${payload.userErrors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const node = payload.automaticDiscountNode;
+  if (!node) {
+    return { ok: false, error: "discountAutomaticDeactivate returned no node" };
+  }
+  return {
+    ok: true,
+    data: {
+      id: node.id,
+      title: node.automaticDiscount?.title ?? "(untitled)",
+      newStatus: node.automaticDiscount?.status ?? "EXPIRED",
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// delete_discount (write — runs from approval route, never inline)
+//
+// Permanent removal. Distinct from set_discount_status PAUSED — that
+// keeps the discount in the list (just not running); delete_discount
+// removes it entirely. The CEO should default to suggesting pause for
+// reversibility unless the merchant explicitly says "delete".
+// ----------------------------------------------------------------------------
+
+const DeleteDiscountInput = z.object({
+  discountId: z.string().min(1),
+});
+
+const DISCOUNT_AUTOMATIC_DELETE_MUTATION = `#graphql
+  mutation DiscountAutomaticDelete($id: ID!) {
+    discountAutomaticDelete(id: $id) {
+      deletedAutomaticDiscountId
+      userErrors { field message }
+    }
+  }
+`;
+
+type DiscountDeleteResponse = {
+  discountAutomaticDelete: {
+    deletedAutomaticDiscountId: string | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type DeletedDiscountResult = {
+  deletedDiscountId: string;
+};
+
+export async function deleteDiscount(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<DeletedDiscountResult>> {
+  const parsed = DeleteDiscountInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<DiscountDeleteResponse>(
+    admin,
+    DISCOUNT_AUTOMATIC_DELETE_MUTATION,
+    { id: parsed.data.discountId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const payload = result.data.discountAutomaticDelete;
+  if (payload.userErrors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${payload.userErrors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const deletedId = payload.deletedAutomaticDiscountId;
+  if (!deletedId) {
+    return {
+      ok: false,
+      error: "discountAutomaticDelete returned no deletedAutomaticDiscountId",
+    };
+  }
+  return {
+    ok: true,
+    data: { deletedDiscountId: deletedId },
+  };
+}
