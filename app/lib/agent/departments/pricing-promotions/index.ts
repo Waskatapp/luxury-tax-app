@@ -9,6 +9,7 @@ import type {
 import {
   bulkUpdatePricesHandler,
   createBundleDiscountHandler,
+  createDiscountCodeHandler,
   createDiscountHandler,
   deleteDiscountHandler,
   readDiscountsHandler,
@@ -226,6 +227,56 @@ const deleteDiscountDeclaration: FunctionDeclaration = {
   },
 };
 
+const createDiscountCodeDeclaration: FunctionDeclaration = {
+  name: "create_discount_code",
+  description:
+    "Create a percentage-off discount that customers redeem with a CODE at checkout (vs an automatic discount that applies without a code). Same shape as create_discount but with a `code` field — useful for influencer / partner / email-list flows where each campaign gets a unique redemption code.\n\nDefault scope: store-wide (every product). To restrict to specific products or collections, use create_discount (automatic) or wait — code-scoped discounts to specific products/collections aren't supported yet by this tool. Common patterns: usageLimit (total redemptions) for limited campaigns; appliesOncePerCustomer for first-purchase incentives.\n\nThe code is what customers TYPE at checkout (e.g. SUMMER20). The title is what the merchant sees in their discount list (often the same as the code, or a longer name like 'Summer Sale 2026'). REQUIRES HUMAN APPROVAL.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      code: {
+        type: "string",
+        description:
+          "The redemption code customers type at checkout (e.g. \"SUMMER20\", \"VIP10\"). 1-255 chars. Treated as case-insensitive at redemption.",
+      },
+      title: {
+        type: "string",
+        description:
+          "Internal title for the merchant's discount list. Defaults to the code if not provided. 1-255 chars.",
+      },
+      percentOff: {
+        type: "integer",
+        minimum: 1,
+        maximum: 100,
+        description: "Percentage off (1-100).",
+      },
+      startsAt: {
+        type: "string",
+        format: "date-time",
+        description: "ISO-8601 datetime when the code becomes redeemable.",
+      },
+      endsAt: {
+        type: "string",
+        format: "date-time",
+        description:
+          "Optional ISO-8601 datetime when the code stops being redeemable. Open-ended is allowed but propose an end date in your rationale unless the merchant is explicit.",
+      },
+      usageLimit: {
+        type: "integer",
+        minimum: 1,
+        description:
+          "Optional total number of redemptions allowed across all customers. Omit for unlimited. Useful for limited campaigns (\"first 100 customers\").",
+      },
+      appliesOncePerCustomer: {
+        type: "boolean",
+        description:
+          "If true, each customer can use the code at most once. Useful for first-purchase incentives and welcome codes.",
+      },
+    },
+    required: ["code", "percentOff", "startsAt"],
+  },
+};
+
 const createBundleDiscountDeclaration: FunctionDeclaration = {
   name: "create_bundle_discount",
   description:
@@ -334,6 +385,7 @@ const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
     setDiscountStatusDeclaration,
     deleteDiscountDeclaration,
     createBundleDiscountDeclaration,
+    createDiscountCodeDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["update_product_price", updateProductPriceHandler],
@@ -345,6 +397,7 @@ const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
     ["set_discount_status", setDiscountStatusHandler],
     ["delete_discount", deleteDiscountHandler],
     ["create_bundle_discount", createBundleDiscountHandler],
+    ["create_discount_code", createDiscountCodeHandler],
   ]),
   classification: {
     read: new Set(["read_discounts"]),
@@ -357,6 +410,7 @@ const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
       "set_discount_status",
       "delete_discount",
       "create_bundle_discount",
+      "create_discount_code",
     ]),
     inlineWrite: new Set(),
   },

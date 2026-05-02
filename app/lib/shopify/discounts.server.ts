@@ -1065,3 +1065,178 @@ export async function createBundleDiscount(
     },
   };
 }
+
+// ============================================================================
+// create_discount_code (Round PP-D — code-based percentage discount)
+//
+// Wraps Shopify's discountCodeBasicCreate. Same merchant-facing shape
+// as create_discount (the automatic basic discount) but with a `code`
+// the customer types at checkout. Useful for:
+//   - Influencer / partner codes (each gets a unique code)
+//   - Email-list exclusives (SUMMER20)
+//   - First-purchase incentives (limit 1 per customer)
+//
+// V1 keeps it store-wide (customerGets.items: all). Per-collection or
+// per-product code discounts require a different input shape; defer
+// until a merchant asks.
+// ============================================================================
+
+const CreateDiscountCodeInput = z.object({
+  code: z
+    .string()
+    .max(255)
+    // Shopify treats codes as case-insensitive for redemption but stores
+    // them as the merchant typed. No format restrictions; merchants
+    // sometimes use spaces or symbols. Trim first, then enforce
+    // non-empty so "   " is rejected, not silently accepted as "".
+    .trim()
+    .refine((s) => s.length > 0, {
+      message: "code cannot be empty or whitespace-only",
+    }),
+  title: z.string().min(1).max(255).optional(),
+  percentOff: z.number().int().min(1).max(100),
+  startsAt: z.string().min(10),
+  endsAt: z.string().min(10).optional(),
+  usageLimit: z.number().int().min(1).optional(),
+  appliesOncePerCustomer: z.boolean().optional(),
+});
+
+const DISCOUNT_CODE_BASIC_CREATE_MUTATION = `#graphql
+  mutation DiscountCodeBasicCreate($basicCodeDiscount: DiscountCodeBasicInput!) {
+    discountCodeBasicCreate(basicCodeDiscount: $basicCodeDiscount) {
+      codeDiscountNode {
+        id
+        codeDiscount {
+          ... on DiscountCodeBasic {
+            title
+            status
+            startsAt
+            endsAt
+            summary
+            usageLimit
+            appliesOncePerCustomer
+            codes(first: 1) {
+              edges { node { code } }
+            }
+          }
+        }
+      }
+      userErrors { field message code }
+    }
+  }
+`;
+
+type DiscountCodeBasicCreateResponse = {
+  discountCodeBasicCreate: {
+    codeDiscountNode: {
+      id: string;
+      codeDiscount: {
+        title?: string;
+        status?: string;
+        startsAt?: string;
+        endsAt?: string | null;
+        summary?: string;
+        usageLimit?: number | null;
+        appliesOncePerCustomer?: boolean;
+        codes?: {
+          edges: Array<{ node: { code: string } }>;
+        };
+      };
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string; code?: string }>;
+  };
+};
+
+export type CreatedDiscountCode = {
+  id: string;
+  code: string;
+  title: string;
+  percentOff: number;
+  status: string;
+  startsAt: string;
+  endsAt: string | null;
+  summary: string;
+  usageLimit: number | null;
+  appliesOncePerCustomer: boolean;
+};
+
+export async function createDiscountCode(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<CreatedDiscountCode>> {
+  const parsed = CreateDiscountCodeInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  // Default the title to the code itself when the merchant didn't
+  // provide one. The title is what the merchant sees in their discount
+  // list; the code is what the customer types at checkout. Different
+  // values are fine and common but if not specified the code is the
+  // best fallback.
+  const title = parsed.data.title ?? parsed.data.code;
+  const percentageDecimal = parsed.data.percentOff / 100;
+
+  const basicCodeDiscount: Record<string, unknown> = {
+    title,
+    code: parsed.data.code,
+    startsAt: parsed.data.startsAt,
+    customerSelection: { all: true },
+    customerGets: {
+      value: { percentage: percentageDecimal },
+      items: { all: true },
+    },
+  };
+  if (parsed.data.endsAt) {
+    basicCodeDiscount.endsAt = parsed.data.endsAt;
+  }
+  if (parsed.data.usageLimit !== undefined) {
+    basicCodeDiscount.usageLimit = parsed.data.usageLimit;
+  }
+  if (parsed.data.appliesOncePerCustomer !== undefined) {
+    basicCodeDiscount.appliesOncePerCustomer = parsed.data.appliesOncePerCustomer;
+  }
+
+  const result = await graphqlRequest<DiscountCodeBasicCreateResponse>(
+    admin,
+    DISCOUNT_CODE_BASIC_CREATE_MUTATION,
+    { basicCodeDiscount },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const payload = result.data.discountCodeBasicCreate;
+  if (payload.userErrors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${payload.userErrors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const node = payload.codeDiscountNode;
+  if (!node) {
+    return {
+      ok: false,
+      error: "discountCodeBasicCreate returned no codeDiscountNode",
+    };
+  }
+  const inner = node.codeDiscount ?? {};
+  const returnedCode = inner.codes?.edges?.[0]?.node?.code ?? parsed.data.code;
+  return {
+    ok: true,
+    data: {
+      id: node.id,
+      code: returnedCode,
+      title: inner.title ?? title,
+      percentOff: parsed.data.percentOff,
+      status: inner.status ?? "ACTIVE",
+      startsAt: inner.startsAt ?? parsed.data.startsAt,
+      endsAt: inner.endsAt ?? null,
+      summary: inner.summary ?? "",
+      usageLimit:
+        typeof inner.usageLimit === "number" ? inner.usageLimit : null,
+      appliesOncePerCustomer:
+        typeof inner.appliesOncePerCustomer === "boolean"
+          ? inner.appliesOncePerCustomer
+          : (parsed.data.appliesOncePerCustomer ?? false),
+    },
+  };
+}

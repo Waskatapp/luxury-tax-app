@@ -6,6 +6,7 @@ import {
 import {
   createBundleDiscount,
   createDiscount,
+  createDiscountCode,
   deleteDiscount,
   readDiscounts,
   setDiscountStatus,
@@ -103,4 +104,11 @@ export const createBundleDiscountHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return createBundleDiscount(ctx.admin, input);
+};
+
+export const createDiscountCodeHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return createDiscountCode(ctx.admin, input);
 };
