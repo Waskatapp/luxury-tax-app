@@ -64,9 +64,17 @@ export const DEPARTMENTS: Department[] = [
     label: "Pricing & Promotions",
     managerTitle: "Pricing & Promotions manager",
     description:
-      "Owns prices and discounts: setting variant prices, creating " +
-      "percentage-off automatic discounts.",
-    toolNames: ["update_product_price", "create_discount"],
+      "Owns prices and discounts: setting variant prices, sale-price " +
+      "strikethrough (compareAtPrice), bulk price changes across collections " +
+      "or product lists, listing discounts, and creating percentage-off " +
+      "automatic discounts.",
+    toolNames: [
+      "update_product_price",
+      "create_discount",
+      "update_compare_at_price",
+      "bulk_update_prices",
+      "read_discounts",
+    ],
   },
   {
     id: "insights",

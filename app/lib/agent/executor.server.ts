@@ -441,12 +441,21 @@ export async function snapshotBefore(
 ): Promise<unknown | null> {
   try {
     switch (toolName) {
-      case "update_product_price": {
+      case "update_product_price":
+      case "update_compare_at_price": {
+        // V-PP-A — both share the same snapshot. fetchVariantPrice now
+        // pulls compareAtPrice alongside price, so the AuditLog
+        // before-state has both regardless of which tool fired.
         const variantId = String(toolInput.variantId ?? "");
         if (!variantId) return null;
         const r = await fetchVariantPrice(ctx.admin, variantId);
         return r.ok ? r.data : null;
       }
+      // bulk_update_prices: no snapshotBefore — the result itself
+      // returns per-variant {oldPrice, newPrice} in `changes[]`, so the
+      // AuditLog's `after` field carries the full diff. Re-resolving
+      // 50+ variants for a separate snapshot would double the read cost
+      // for no extra value.
       case "update_product_description": {
         const productId = String(toolInput.productId ?? "");
         if (!productId) return null;
@@ -568,6 +577,13 @@ export async function executeApprovedWrite(
         "read_products",
         "read_collections",
         "get_analytics",
+        // V-PP-A — discount writes (create_discount, future
+        // update/pause/delete in Round B) bust the read_discounts
+        // cache so the CEO sees fresh state on the next list query.
+        // Price writes (update_product_price, bulk_update_prices,
+        // update_compare_at_price) also bust read_products which
+        // surfaces variant prices.
+        "read_discounts",
       ]);
     }
     return result;

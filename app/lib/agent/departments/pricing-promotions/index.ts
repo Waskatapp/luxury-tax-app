@@ -7,7 +7,10 @@ import type {
 } from "../department-spec";
 
 import {
+  bulkUpdatePricesHandler,
   createDiscountHandler,
+  readDiscountsHandler,
+  updateCompareAtPriceHandler,
   updateProductPriceHandler,
 } from "./handlers";
 import PRICING_PROMPT from "./prompt.md?raw";
@@ -58,24 +61,124 @@ const createDiscountDeclaration: FunctionDeclaration = {
   },
 };
 
+const updateCompareAtPriceDeclaration: FunctionDeclaration = {
+  name: "update_compare_at_price",
+  description:
+    "Set the variant's compare-at-price (the strikethrough \"was $X\" Shopify shows on the storefront when compareAtPrice > price). Use this when the merchant wants to mark a product as on sale: set compareAtPrice to the original/regular price, then leave or update the actual price as the sale price. To CLEAR the strikethrough (return to normal pricing), pass newCompareAtPrice as \"\" or \"0\". REQUIRES HUMAN APPROVAL.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      productId: {
+        type: "string",
+        description: "Product GID, e.g. gid://shopify/Product/12345",
+      },
+      variantId: {
+        type: "string",
+        description: "Variant GID, e.g. gid://shopify/ProductVariant/67890",
+      },
+      newCompareAtPrice: {
+        type: "string",
+        description:
+          'Decimal string in the store currency (e.g. "29.99"), or "" / "0" to clear the strikethrough.',
+      },
+    },
+    required: ["productId", "variantId", "newCompareAtPrice"],
+  },
+};
+
+const bulkUpdatePricesDeclaration: FunctionDeclaration = {
+  name: "bulk_update_prices",
+  description:
+    "Apply a percentage or fixed-amount price change across many variants in one operation. Specify EXACTLY ONE scope: collectionId (every product in a collection), productIds (an explicit product list), or variantIds (an explicit variant list). REQUIRES HUMAN APPROVAL. Caps: 50 products (collection or productIds path) or 100 variants (variantIds path). Refuses to proceed if any computed new price would be negative — surfaces the offending variants instead. Compare-at-price is NOT touched by this tool — only the regular price.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      collectionId: {
+        type: "string",
+        description:
+          "Apply to all products in this collection. Capped at 50 products; if exceeded, the tool errors and the merchant must scope down.",
+      },
+      productIds: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Apply to all variants of these specific products. Capped at 50 products.",
+      },
+      variantIds: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Apply to these specific variants only. Capped at 100 variants.",
+      },
+      changeType: {
+        type: "string",
+        enum: ["percentage", "fixed_amount"],
+        description:
+          "How to interpret changeValue. percentage = multiply price (changeValue interpreted as percent: 10 = +10%, -15 = -15%). fixed_amount = add to price (changeValue interpreted as money in store currency: 5.00 = +$5, -2.50 = -$2.50).",
+      },
+      changeValue: {
+        type: "number",
+        description:
+          "The change to apply. For percentage: -100 to +500 (positive = mark up, negative = discount). For fixed_amount: -100000 to +100000 in store currency. Cannot be 0.",
+      },
+      roundTo: {
+        type: "string",
+        enum: [".99", ".95", ".00"],
+        description:
+          'Optional pretty-rounding ending. ".99" → land on $X.99. ".95" → $X.95. ".00" → whole dollar. Applied AFTER computing the new price; rounds DOWN so the new price is never higher than the unrounded compute.',
+      },
+    },
+    required: ["changeType", "changeValue"],
+  },
+};
+
+const readDiscountsDeclaration: FunctionDeclaration = {
+  name: "read_discounts",
+  description:
+    "List discounts on the store: automatic + code, basic + bundle (Bxgy) + free-shipping. Returns id, title, type, status (ACTIVE / SCHEDULED / EXPIRED), startsAt, endsAt, a summary string Shopify renders, and (for code discounts) the code itself + total redemptions.\n\nThe `query` parameter is a Shopify search string. Bare keywords match across title; `field:value` narrows: `status:active`, `status:expired`, `title:summer`. Use this BEFORE update_discount, set_discount_status, or delete_discount — those tools require the discount's id, which the merchant doesn't know.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      first: { type: "integer", minimum: 1, maximum: 50 },
+      after: { type: "string" },
+      query: {
+        type: "string",
+        description:
+          "Shopify search query. Bare keywords match titles; field-prefixed forms narrow (e.g. `status:active`, `title:summer`).",
+      },
+    },
+  },
+};
+
 const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
   id: "pricing-promotions",
   label: "Pricing & Promotions",
   managerTitle: "Pricing & Promotions manager",
   description:
-    "Owns prices and discounts: setting variant prices, creating percentage-off automatic discounts.",
+    "Owns prices and discounts: setting variant prices, sale-price strikethrough (compareAtPrice), bulk price changes, listing discounts, and creating automatic discounts.",
   systemPrompt: PRICING_PROMPT,
   toolDeclarations: [
     updateProductPriceDeclaration,
     createDiscountDeclaration,
+    updateCompareAtPriceDeclaration,
+    bulkUpdatePricesDeclaration,
+    readDiscountsDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["update_product_price", updateProductPriceHandler],
     ["create_discount", createDiscountHandler],
+    ["update_compare_at_price", updateCompareAtPriceHandler],
+    ["bulk_update_prices", bulkUpdatePricesHandler],
+    ["read_discounts", readDiscountsHandler],
   ]),
   classification: {
-    read: new Set(),
-    write: new Set(["update_product_price", "create_discount"]),
+    read: new Set(["read_discounts"]),
+    write: new Set([
+      "update_product_price",
+      "create_discount",
+      "update_compare_at_price",
+      "bulk_update_prices",
+    ]),
     inlineWrite: new Set(),
   },
 };

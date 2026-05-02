@@ -29,6 +29,11 @@ export const CACHEABLE_READ_TOOLS = new Set<string>([
   // the same workflow body in conversation history doesn't re-bloat
   // Gemini token cost across re-prompts within the 5-min TTL.
   "read_workflow",
+  // V-PP-A — Pricing & Promotions read tool. Discount listings rarely
+  // change within a 5-min window; caching saves a Shopify roundtrip
+  // when the CEO chains read_discounts → update_discount in the same
+  // conversation. Invalidated on any discount-write (Round PP-B+).
+  "read_discounts",
 ]);
 
 type CachedResult = {
