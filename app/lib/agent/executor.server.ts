@@ -18,6 +18,10 @@ import {
 import { fetchCollectionDetails } from "../shopify/collections.server";
 import { fetchVariantPrice } from "../shopify/pricing.server";
 import { fetchDiscount } from "../shopify/discounts.server";
+import {
+  fetchCollectionSeo,
+  fetchProductSeo,
+} from "../shopify/seo.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
 // Insights department (app/lib/agent/departments/insights/). The
 // underlying app/lib/shopify/analytics.server.ts module is unchanged;
@@ -521,6 +525,22 @@ export async function snapshotBefore(
         const collectionId = String(toolInput.collectionId ?? "");
         if (!collectionId) return null;
         const r = await fetchCollectionDetails(ctx.admin, collectionId);
+        return r.ok ? r.data : null;
+      }
+      case "update_product_seo": {
+        // V-Mkt-A — Marketing SEO writes share the seo.server snapshot
+        // helpers. AuditLog before-state captures the pre-update SEO
+        // title + description so the diff is meaningful even when one
+        // field stays the same.
+        const productId = String(toolInput.productId ?? "");
+        if (!productId) return null;
+        const r = await fetchProductSeo(ctx.admin, productId);
+        return r.ok ? r.data : null;
+      }
+      case "update_collection_seo": {
+        const collectionId = String(toolInput.collectionId ?? "");
+        if (!collectionId) return null;
+        const r = await fetchCollectionSeo(ctx.admin, collectionId);
         return r.ok ? r.data : null;
       }
       case "remove_product_image":

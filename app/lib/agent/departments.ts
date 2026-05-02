@@ -17,7 +17,8 @@
 export type DepartmentId =
   | "products"
   | "pricing-promotions"
-  | "insights";
+  | "insights"
+  | "marketing";
 
 export type Department = {
   id: DepartmentId;
@@ -96,6 +97,19 @@ export const DEPARTMENTS: Department[] = [
       "get_product_performance",
       "compare_periods",
       "get_top_performers",
+    ],
+  },
+  {
+    id: "marketing",
+    label: "Marketing",
+    managerTitle: "Marketing manager",
+    description:
+      "Owns store findability and merchant-authored content: SEO titles " +
+      "and meta descriptions on products and collections. Future rounds " +
+      "will add blog articles and static pages.",
+    toolNames: [
+      "update_product_seo",
+      "update_collection_seo",
     ],
   },
 ];

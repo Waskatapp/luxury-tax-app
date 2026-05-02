@@ -48,6 +48,10 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   "delete_discount",
   "create_bundle_discount",
   "create_discount_code",
+  // V-Mkt-A — Marketing department SEO writes. Both go through the
+  // standard ApprovalCard flow (PendingAction → approve → executor).
+  "update_product_seo",
+  "update_collection_seo",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)
