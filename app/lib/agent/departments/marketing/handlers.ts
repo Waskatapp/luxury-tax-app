@@ -18,6 +18,12 @@ import {
   updateArticle,
 } from "../../../shopify/articles.server";
 import {
+  createPage,
+  deletePage,
+  readPages,
+  updatePage,
+} from "../../../shopify/pages.server";
+import {
   updateCollectionSeo,
   updateProductSeo,
 } from "../../../shopify/seo.server";
@@ -76,4 +82,43 @@ export const deleteArticleHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return deleteArticle(ctx.admin, input);
+};
+
+// V-Mkt-C — Static pages. read_pages cached per-conversation; writes
+// pass through (snapshotBefore in executor.server.ts handles AuditLog
+// pre-state via fetchPage).
+export const readPagesHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  if (ctx.conversationId) {
+    const cached = readCacheGet(ctx.conversationId, "read_pages", input);
+    if (cached !== undefined) return { ok: true, data: cached };
+  }
+  const result = await readPages(ctx.admin, input);
+  if (result.ok && ctx.conversationId) {
+    readCacheSet(ctx.conversationId, "read_pages", input, result.data);
+  }
+  return result;
+};
+
+export const createPageHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return createPage(ctx.admin, input);
+};
+
+export const updatePageHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return updatePage(ctx.admin, input);
+};
+
+export const deletePageHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return deletePage(ctx.admin, input);
 };

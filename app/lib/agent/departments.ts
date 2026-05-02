@@ -105,9 +105,8 @@ export const DEPARTMENTS: Department[] = [
     managerTitle: "Marketing manager",
     description:
       "Owns store findability and merchant-authored content: SEO titles " +
-      "and meta descriptions on products and collections, plus blog " +
-      "articles (read / create / update / delete). Future rounds will " +
-      "add static pages.",
+      "and meta descriptions on products and collections, blog articles, " +
+      "and static pages (About / FAQ / Shipping / Returns / Privacy etc.).",
     toolNames: [
       "update_product_seo",
       "update_collection_seo",
@@ -115,6 +114,10 @@ export const DEPARTMENTS: Department[] = [
       "create_article",
       "update_article",
       "delete_article",
+      "read_pages",
+      "create_page",
+      "update_page",
+      "delete_page",
     ],
   },
 ];

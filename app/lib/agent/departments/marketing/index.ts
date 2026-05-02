@@ -5,10 +5,14 @@ import type { DepartmentSpec, ToolHandler } from "../department-spec";
 
 import {
   createArticleHandler,
+  createPageHandler,
   deleteArticleHandler,
+  deletePageHandler,
   readArticlesHandler,
+  readPagesHandler,
   updateArticleHandler,
   updateCollectionSeoHandler,
+  updatePageHandler,
   updateProductSeoHandler,
 } from "./handlers";
 import MARKETING_PROMPT from "./prompt.md?raw";
@@ -216,12 +220,122 @@ const deleteArticleDeclaration: FunctionDeclaration = {
   },
 };
 
+// ----------------------------------------------------------------------------
+// V-Mkt-C — Static page tools (read_pages, create_page, update_page,
+// delete_page). Same scopes as articles (read_content + write_content);
+// no manifest changes required for this round.
+// ----------------------------------------------------------------------------
+
+const readPagesDeclaration: FunctionDeclaration = {
+  name: "read_pages",
+  description:
+    "List the store's static pages (About, FAQ, Shipping Policy, Returns, Privacy, etc.). Returns title, handle, body summary, template suffix, published status, and timestamps for up to 50 pages. Body is omitted from list results — call this first to find the page, then propose `update_page` / `delete_page` with the page's id.\n\nFilter by text with `query` (matches title via Shopify's page search syntax — e.g. `title:shipping`, `published_status:published`). Read-only — no approval card.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 50,
+        description: "Max pages to return. Defaults to 20.",
+      },
+      query: {
+        type: "string",
+        description:
+          "Optional Shopify page search syntax — bare keywords match titles, or use `title:about` / `published_status:published` for precision.",
+      },
+    },
+  },
+};
+
+const createPageDeclaration: FunctionDeclaration = {
+  name: "create_page",
+  description:
+    "Create a new static page on the store. **REQUIRES HUMAN APPROVAL.**\n\nUse this for the merchant's static content surfaces — About, FAQ, Shipping Policy, Returns, Privacy, etc. The body is HTML. Default `isPublished` is FALSE so the page goes into Shopify admin as a draft for the merchant to review; only pass `true` when the merchant explicitly says publish.\n\n`templateSuffix` lets the merchant target a custom theme template (e.g. `templateSuffix: \"contact\"` maps to `page.contact.liquid`). Omit unless the merchant has explicitly named a custom template.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      title: {
+        type: "string",
+        description: "Page title (also used as the default handle). 1-255 chars.",
+      },
+      body: {
+        type: "string",
+        description:
+          "Page body, HTML allowed. Use <p> for paragraphs. Pages are usually longer-form than articles — full FAQs, multi-section policies, etc. are typical.",
+      },
+      templateSuffix: {
+        type: "string",
+        description:
+          "Optional theme template suffix. e.g. \"contact\" maps to page.contact.liquid. Omit unless the merchant has a specific template in mind.",
+      },
+      isPublished: {
+        type: "boolean",
+        description:
+          "Whether to publish immediately. Defaults to FALSE — published pages are public. Default unpublished so the merchant can review.",
+      },
+    },
+    required: ["title", "body"],
+  },
+};
+
+const updatePageDeclaration: FunctionDeclaration = {
+  name: "update_page",
+  description:
+    "Update an existing static page. **REQUIRES HUMAN APPROVAL.**\n\nPartial update — only the fields you set are changed. At least one field beyond `pageId` must be provided. Use `isPublished: true` to publish, `isPublished: false` to soft-hide. Pass `templateSuffix: null` to clear the theme template (Shopify falls back to page.liquid).",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      pageId: {
+        type: "string",
+        description:
+          "Page GID, e.g. gid://shopify/Page/12345. Get from a read_pages call first.",
+      },
+      title: { type: "string", description: "New title. 1-255 chars." },
+      body: { type: "string", description: "New body (HTML allowed)." },
+      templateSuffix: {
+        type: ["string", "null"],
+        description:
+          "New theme template suffix. Pass null to clear; omit to leave alone.",
+      },
+      isPublished: {
+        type: "boolean",
+        description:
+          "Publish/unpublish toggle. true = publish, false = unpublish (soft-hide).",
+      },
+    },
+    required: ["pageId"],
+  },
+};
+
+const deletePageDeclaration: FunctionDeclaration = {
+  name: "delete_page",
+  description:
+    "Permanently delete a static page. **REQUIRES HUMAN APPROVAL** AND a defensive `confirmTitle` check (must match the page's current title — case-insensitive).\n\nPrefer `update_page(isPublished: false)` for 'hide this' — that's reversible. Use `delete_page` only when the merchant explicitly says delete / remove. The AuditLog before-state preserves the full page body for recovery.\n\nBe especially careful with policy pages (Shipping, Returns, Privacy) — deleting them can break the storefront. When in doubt, propose unpublish instead and ask.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      pageId: {
+        type: "string",
+        description:
+          "Page GID, e.g. gid://shopify/Page/12345. Get from read_pages.",
+      },
+      confirmTitle: {
+        type: "string",
+        description:
+          "The page's current title — must match (case-insensitive trim) before delete proceeds. Pass exactly what read_pages returned for the title field.",
+      },
+    },
+    required: ["pageId", "confirmTitle"],
+  },
+};
+
 const MARKETING_SPEC: DepartmentSpec = {
   id: "marketing",
   label: "Marketing",
   managerTitle: "Marketing manager",
   description:
-    "Owns store findability and merchant-authored content: SEO titles + meta descriptions on products and collections, plus blog articles. Future rounds add static pages. All writes go through human approval.",
+    "Owns store findability and merchant-authored content: SEO titles + meta descriptions on products and collections, blog articles, and static pages (About / FAQ / Shipping / Returns / Privacy). All writes go through human approval.",
   systemPrompt: MARKETING_PROMPT,
   toolDeclarations: [
     updateProductSeoDeclaration,
@@ -230,6 +344,10 @@ const MARKETING_SPEC: DepartmentSpec = {
     createArticleDeclaration,
     updateArticleDeclaration,
     deleteArticleDeclaration,
+    readPagesDeclaration,
+    createPageDeclaration,
+    updatePageDeclaration,
+    deletePageDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["update_product_seo", updateProductSeoHandler],
@@ -238,15 +356,22 @@ const MARKETING_SPEC: DepartmentSpec = {
     ["create_article", createArticleHandler],
     ["update_article", updateArticleHandler],
     ["delete_article", deleteArticleHandler],
+    ["read_pages", readPagesHandler],
+    ["create_page", createPageHandler],
+    ["update_page", updatePageHandler],
+    ["delete_page", deletePageHandler],
   ]),
   classification: {
-    read: new Set(["read_articles"]),
+    read: new Set(["read_articles", "read_pages"]),
     write: new Set([
       "update_product_seo",
       "update_collection_seo",
       "create_article",
       "update_article",
       "delete_article",
+      "create_page",
+      "update_page",
+      "delete_page",
     ]),
     inlineWrite: new Set(),
   },

@@ -23,6 +23,7 @@ import {
   fetchProductSeo,
 } from "../shopify/seo.server";
 import { fetchArticle } from "../shopify/articles.server";
+import { fetchPage } from "../shopify/pages.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
 // Insights department (app/lib/agent/departments/insights/). The
 // underlying app/lib/shopify/analytics.server.ts module is unchanged;
@@ -559,6 +560,17 @@ export async function snapshotBefore(
         const r = await fetchArticle(ctx.admin, articleId);
         return r.ok ? r.data : null;
       }
+      case "update_page":
+      case "delete_page": {
+        // V-Mkt-C — Pages mirror articles. fetchPage snapshot preserves
+        // the full body so a deleted policy page (Shipping / Returns /
+        // Privacy) can be recovered from the AuditLog if the merchant
+        // realizes they shouldn't have removed it.
+        const pageId = String(toolInput.pageId ?? "");
+        if (!pageId) return null;
+        const r = await fetchPage(ctx.admin, pageId);
+        return r.ok ? r.data : null;
+      }
       case "remove_product_image":
       case "reorder_product_images": {
         // Both: AuditLog before-state is the current media listing for
@@ -646,6 +658,8 @@ export async function executeApprovedWrite(
         // delete_article) bust the read_articles cache so the next
         // listing reflects the new state immediately.
         "read_articles",
+        // V-Mkt-C — same rationale for static pages.
+        "read_pages",
       ]);
     }
     return result;

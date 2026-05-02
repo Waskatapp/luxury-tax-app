@@ -58,6 +58,11 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   "create_article",
   "update_article",
   "delete_article",
+  // V-Mkt-C — Static page writes. Same shape as articles; delete_page
+  // also runs a confirmTitle gate before the destructive mutation.
+  "create_page",
+  "update_page",
+  "delete_page",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)

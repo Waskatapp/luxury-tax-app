@@ -48,6 +48,8 @@ export const CACHEABLE_READ_TOOLS = new Set<string>([
   // V-Mkt-B — read_articles. Caches the article-list result; busted
   // on any article write. Pattern matches read_products / read_collections.
   "read_articles",
+  // V-Mkt-C — read_pages. Same caching rationale as read_articles.
+  "read_pages",
 ]);
 
 type CachedResult = {
