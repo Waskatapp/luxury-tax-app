@@ -3,6 +3,10 @@ import {
   readProducts,
   updateProductDescription,
   updateProductStatus,
+  updateProductTags,
+  updateProductTitle,
+  updateProductType,
+  updateProductVendor,
 } from "../../../shopify/products.server";
 import { readCollections } from "../../../shopify/collections.server";
 import { readCacheGet, readCacheSet } from "../../read-cache.server";
@@ -90,4 +94,32 @@ export const createProductDraftHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return createProductDraft(ctx.admin, input);
+};
+
+export const updateProductTitleHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return updateProductTitle(ctx.admin, input);
+};
+
+export const updateProductTagsHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return updateProductTags(ctx.admin, input);
+};
+
+export const updateProductVendorHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return updateProductVendor(ctx.admin, input);
+};
+
+export const updateProductTypeHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return updateProductType(ctx.admin, input);
 };

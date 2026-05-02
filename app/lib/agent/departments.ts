@@ -34,14 +34,19 @@ export const DEPARTMENTS: Department[] = [
     managerTitle: "Products manager",
     description:
       "Owns the product catalog: searching products and collections, " +
-      "rewriting descriptions, changing status (DRAFT/ACTIVE/ARCHIVED), " +
-      "and creating new draft products.",
+      "rewriting descriptions, renaming products, managing tags / vendor / " +
+      "product type, changing status (DRAFT/ACTIVE/ARCHIVED), and creating " +
+      "new draft products.",
     toolNames: [
       "read_products",
       "read_collections",
       "update_product_description",
       "update_product_status",
       "create_product_draft",
+      "update_product_title",
+      "update_product_tags",
+      "update_product_vendor",
+      "update_product_type",
     ],
   },
   {

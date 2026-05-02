@@ -12,6 +12,10 @@ import {
   readProductsHandler,
   updateProductDescriptionHandler,
   updateProductStatusHandler,
+  updateProductTagsHandler,
+  updateProductTitleHandler,
+  updateProductTypeHandler,
+  updateProductVendorHandler,
 } from "./handlers";
 import PRODUCTS_PROMPT from "./prompt.md?raw";
 
@@ -113,12 +117,94 @@ const createProductDraftDeclaration: FunctionDeclaration = {
   },
 };
 
+const updateProductTitleDeclaration: FunctionDeclaration = {
+  name: "update_product_title",
+  description:
+    "Rename a product (changes the product's title — the human-readable name shoppers see). REQUIRES HUMAN APPROVAL. The handle (URL slug) is NOT changed by this tool — Shopify keeps the existing handle so existing storefront links keep working.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      productId: {
+        type: "string",
+        description: "Product GID, e.g. gid://shopify/Product/12345",
+      },
+      title: {
+        type: "string",
+        description: "The new product title. 1-255 chars.",
+      },
+    },
+    required: ["productId", "title"],
+  },
+};
+
+const updateProductTagsDeclaration: FunctionDeclaration = {
+  name: "update_product_tags",
+  description:
+    "Set the FULL list of tags on a product. This REPLACES all existing tags with the array you pass — it is not an additive operation. To add or remove individual tags, you MUST first call read_products to get the current `tags` array, compute the new list (current + added, or current minus removed), then call this tool with the full final list. REQUIRES HUMAN APPROVAL. Tags drive collections, search, and storefront filters — changing them can affect what's visible to shoppers.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      productId: {
+        type: "string",
+        description: "Product GID, e.g. gid://shopify/Product/12345",
+      },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "The complete new tag list (replaces existing). Each tag is 1-255 chars; max 250 tags per product.",
+      },
+    },
+    required: ["productId", "tags"],
+  },
+};
+
+const updateProductVendorDeclaration: FunctionDeclaration = {
+  name: "update_product_vendor",
+  description:
+    "Set the vendor (manufacturer / brand) on a product. REQUIRES HUMAN APPROVAL. Vendor often appears on the product page and powers vendor-based collection rules.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      productId: {
+        type: "string",
+        description: "Product GID, e.g. gid://shopify/Product/12345",
+      },
+      vendor: {
+        type: "string",
+        description: "The new vendor name. 1-255 chars.",
+      },
+    },
+    required: ["productId", "vendor"],
+  },
+};
+
+const updateProductTypeDeclaration: FunctionDeclaration = {
+  name: "update_product_type",
+  description:
+    "Set the product type (the category Shopify uses to group similar items, e.g. 'T-Shirt', 'Pet Food', 'Snowboard'). REQUIRES HUMAN APPROVAL. Product type powers type-based collection rules and helps shoppers filter the catalog.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      productId: {
+        type: "string",
+        description: "Product GID, e.g. gid://shopify/Product/12345",
+      },
+      productType: {
+        type: "string",
+        description: "The new product type. 1-255 chars.",
+      },
+    },
+    required: ["productId", "productType"],
+  },
+};
+
 const PRODUCTS_SPEC: DepartmentSpec = {
   id: "products",
   label: "Products",
   managerTitle: "Products manager",
   description:
-    "Owns the product catalog: searching products and collections, rewriting descriptions, changing status (DRAFT/ACTIVE/ARCHIVED), and creating new draft products.",
+    "Owns the product catalog: searching products and collections, rewriting descriptions, renaming products, managing tags/vendor/product type, changing status (DRAFT/ACTIVE/ARCHIVED), and creating new draft products.",
   systemPrompt: PRODUCTS_PROMPT,
   toolDeclarations: [
     readProductsDeclaration,
@@ -126,6 +212,10 @@ const PRODUCTS_SPEC: DepartmentSpec = {
     updateProductDescriptionDeclaration,
     updateProductStatusDeclaration,
     createProductDraftDeclaration,
+    updateProductTitleDeclaration,
+    updateProductTagsDeclaration,
+    updateProductVendorDeclaration,
+    updateProductTypeDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["read_products", readProductsHandler],
@@ -133,6 +223,10 @@ const PRODUCTS_SPEC: DepartmentSpec = {
     ["update_product_description", updateProductDescriptionHandler],
     ["update_product_status", updateProductStatusHandler],
     ["create_product_draft", createProductDraftHandler],
+    ["update_product_title", updateProductTitleHandler],
+    ["update_product_tags", updateProductTagsHandler],
+    ["update_product_vendor", updateProductVendorHandler],
+    ["update_product_type", updateProductTypeHandler],
   ]),
   classification: {
     read: new Set(["read_products", "read_collections"]),
@@ -140,6 +234,10 @@ const PRODUCTS_SPEC: DepartmentSpec = {
       "update_product_description",
       "update_product_status",
       "create_product_draft",
+      "update_product_title",
+      "update_product_tags",
+      "update_product_vendor",
+      "update_product_type",
     ]),
     inlineWrite: new Set(),
   },

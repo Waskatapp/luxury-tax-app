@@ -547,3 +547,481 @@ export async function createProductDraft(
     },
   };
 }
+
+// ----------------------------------------------------------------------------
+// update_product_title (write — runs from approval route, never inline)
+// ----------------------------------------------------------------------------
+
+const UpdateProductTitleInput = z.object({
+  productId: z.string().min(1),
+  title: z.string().min(1).max(255),
+});
+
+const FETCH_PRODUCT_TITLE_QUERY = `#graphql
+  query FetchProductTitle($id: ID!) {
+    product(id: $id) {
+      id
+      title
+    }
+  }
+`;
+
+const PRODUCT_TITLE_UPDATE_MUTATION = `#graphql
+  mutation ProductTitleUpdate($product: ProductUpdateInput!) {
+    productUpdate(product: $product) {
+      product {
+        id
+        title
+        updatedAt
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type FetchTitleResponse = {
+  product: { id: string; title: string } | null;
+};
+
+type ProductTitleUpdateResponse = {
+  productUpdate: {
+    product: {
+      id: string;
+      title: string;
+      updatedAt: string;
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type ProductTitleSnapshot = {
+  productId: string;
+  title: string;
+};
+
+export async function fetchProductTitle(
+  admin: ShopifyAdmin,
+  productId: string,
+): Promise<ToolModuleResult<ProductTitleSnapshot>> {
+  const result = await graphqlRequest<FetchTitleResponse>(
+    admin,
+    FETCH_PRODUCT_TITLE_QUERY,
+    { id: productId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.data.product) {
+    return { ok: false, error: `product not found: ${productId}` };
+  }
+  return {
+    ok: true,
+    data: {
+      productId: result.data.product.id,
+      title: result.data.product.title,
+    },
+  };
+}
+
+export async function updateProductTitle(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<ProductTitleSnapshot>> {
+  const parsed = UpdateProductTitleInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<ProductTitleUpdateResponse>(
+    admin,
+    PRODUCT_TITLE_UPDATE_MUTATION,
+    {
+      product: {
+        id: parsed.data.productId,
+        title: parsed.data.title,
+      },
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.productUpdate.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const updated = result.data.productUpdate.product;
+  if (!updated) return { ok: false, error: "productUpdate returned no product" };
+
+  return {
+    ok: true,
+    data: {
+      productId: updated.id,
+      title: updated.title,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// update_product_tags (write — runs from approval route, never inline)
+//
+// Replaces the FULL tag list. Shopify's productUpdate `tags` field is a
+// SET, not a delta — passing ["a","b"] sets tags to exactly ["a","b"] and
+// drops everything else. The Products manager is instructed (prompt.md)
+// to call read_products first, compute the merged list (current tags +
+// new tags / minus removed tags), then propose this tool with the full
+// final list. Surgical add/remove via productTagsAdd/productTagsRemove
+// is intentionally not exposed — one tool, one shape.
+// ----------------------------------------------------------------------------
+
+const UpdateProductTagsInput = z.object({
+  productId: z.string().min(1),
+  tags: z.array(z.string().min(1).max(255)).max(250),
+});
+
+const FETCH_PRODUCT_TAGS_QUERY = `#graphql
+  query FetchProductTags($id: ID!) {
+    product(id: $id) {
+      id
+      title
+      tags
+    }
+  }
+`;
+
+const PRODUCT_TAGS_UPDATE_MUTATION = `#graphql
+  mutation ProductTagsUpdate($product: ProductUpdateInput!) {
+    productUpdate(product: $product) {
+      product {
+        id
+        title
+        tags
+        updatedAt
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type FetchTagsResponse = {
+  product: { id: string; title: string; tags: string[] } | null;
+};
+
+type ProductTagsUpdateResponse = {
+  productUpdate: {
+    product: {
+      id: string;
+      title: string;
+      tags: string[];
+      updatedAt: string;
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type ProductTagsSnapshot = {
+  productId: string;
+  title: string;
+  tags: string[];
+};
+
+export async function fetchProductTags(
+  admin: ShopifyAdmin,
+  productId: string,
+): Promise<ToolModuleResult<ProductTagsSnapshot>> {
+  const result = await graphqlRequest<FetchTagsResponse>(
+    admin,
+    FETCH_PRODUCT_TAGS_QUERY,
+    { id: productId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.data.product) {
+    return { ok: false, error: `product not found: ${productId}` };
+  }
+  return {
+    ok: true,
+    data: {
+      productId: result.data.product.id,
+      title: result.data.product.title,
+      tags: result.data.product.tags ?? [],
+    },
+  };
+}
+
+export async function updateProductTags(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<ProductTagsSnapshot>> {
+  const parsed = UpdateProductTagsInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<ProductTagsUpdateResponse>(
+    admin,
+    PRODUCT_TAGS_UPDATE_MUTATION,
+    {
+      product: {
+        id: parsed.data.productId,
+        tags: parsed.data.tags,
+      },
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.productUpdate.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const updated = result.data.productUpdate.product;
+  if (!updated) return { ok: false, error: "productUpdate returned no product" };
+
+  return {
+    ok: true,
+    data: {
+      productId: updated.id,
+      title: updated.title,
+      tags: updated.tags ?? [],
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// update_product_vendor (write — runs from approval route, never inline)
+// ----------------------------------------------------------------------------
+
+const UpdateProductVendorInput = z.object({
+  productId: z.string().min(1),
+  vendor: z.string().min(1).max(255),
+});
+
+const FETCH_PRODUCT_VENDOR_QUERY = `#graphql
+  query FetchProductVendor($id: ID!) {
+    product(id: $id) {
+      id
+      title
+      vendor
+    }
+  }
+`;
+
+const PRODUCT_VENDOR_UPDATE_MUTATION = `#graphql
+  mutation ProductVendorUpdate($product: ProductUpdateInput!) {
+    productUpdate(product: $product) {
+      product {
+        id
+        title
+        vendor
+        updatedAt
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type FetchVendorResponse = {
+  product: { id: string; title: string; vendor: string | null } | null;
+};
+
+type ProductVendorUpdateResponse = {
+  productUpdate: {
+    product: {
+      id: string;
+      title: string;
+      vendor: string | null;
+      updatedAt: string;
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type ProductVendorSnapshot = {
+  productId: string;
+  title: string;
+  vendor: string | null;
+};
+
+export async function fetchProductVendor(
+  admin: ShopifyAdmin,
+  productId: string,
+): Promise<ToolModuleResult<ProductVendorSnapshot>> {
+  const result = await graphqlRequest<FetchVendorResponse>(
+    admin,
+    FETCH_PRODUCT_VENDOR_QUERY,
+    { id: productId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.data.product) {
+    return { ok: false, error: `product not found: ${productId}` };
+  }
+  return {
+    ok: true,
+    data: {
+      productId: result.data.product.id,
+      title: result.data.product.title,
+      vendor: result.data.product.vendor,
+    },
+  };
+}
+
+export async function updateProductVendor(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<ProductVendorSnapshot>> {
+  const parsed = UpdateProductVendorInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<ProductVendorUpdateResponse>(
+    admin,
+    PRODUCT_VENDOR_UPDATE_MUTATION,
+    {
+      product: {
+        id: parsed.data.productId,
+        vendor: parsed.data.vendor,
+      },
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.productUpdate.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const updated = result.data.productUpdate.product;
+  if (!updated) return { ok: false, error: "productUpdate returned no product" };
+
+  return {
+    ok: true,
+    data: {
+      productId: updated.id,
+      title: updated.title,
+      vendor: updated.vendor,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// update_product_type (write — runs from approval route, never inline)
+// ----------------------------------------------------------------------------
+
+const UpdateProductTypeInput = z.object({
+  productId: z.string().min(1),
+  productType: z.string().min(1).max(255),
+});
+
+const FETCH_PRODUCT_TYPE_QUERY = `#graphql
+  query FetchProductType($id: ID!) {
+    product(id: $id) {
+      id
+      title
+      productType
+    }
+  }
+`;
+
+const PRODUCT_TYPE_UPDATE_MUTATION = `#graphql
+  mutation ProductTypeUpdate($product: ProductUpdateInput!) {
+    productUpdate(product: $product) {
+      product {
+        id
+        title
+        productType
+        updatedAt
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type FetchTypeResponse = {
+  product: { id: string; title: string; productType: string | null } | null;
+};
+
+type ProductTypeUpdateResponse = {
+  productUpdate: {
+    product: {
+      id: string;
+      title: string;
+      productType: string | null;
+      updatedAt: string;
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type ProductTypeSnapshot = {
+  productId: string;
+  title: string;
+  productType: string | null;
+};
+
+export async function fetchProductType(
+  admin: ShopifyAdmin,
+  productId: string,
+): Promise<ToolModuleResult<ProductTypeSnapshot>> {
+  const result = await graphqlRequest<FetchTypeResponse>(
+    admin,
+    FETCH_PRODUCT_TYPE_QUERY,
+    { id: productId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.data.product) {
+    return { ok: false, error: `product not found: ${productId}` };
+  }
+  return {
+    ok: true,
+    data: {
+      productId: result.data.product.id,
+      title: result.data.product.title,
+      productType: result.data.product.productType,
+    },
+  };
+}
+
+export async function updateProductType(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<ProductTypeSnapshot>> {
+  const parsed = UpdateProductTypeInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<ProductTypeUpdateResponse>(
+    admin,
+    PRODUCT_TYPE_UPDATE_MUTATION,
+    {
+      product: {
+        id: parsed.data.productId,
+        productType: parsed.data.productType,
+      },
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.productUpdate.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const updated = result.data.productUpdate.product;
+  if (!updated) return { ok: false, error: "productUpdate returned no product" };
+
+  return {
+    ok: true,
+    data: {
+      productId: updated.id,
+      title: updated.title,
+      productType: updated.productType,
+    },
+  };
+}

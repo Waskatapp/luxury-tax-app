@@ -7,6 +7,10 @@
 import {
   fetchProductDescription,
   fetchProductStatus,
+  fetchProductTags,
+  fetchProductTitle,
+  fetchProductType,
+  fetchProductVendor,
 } from "../shopify/products.server";
 import { fetchVariantPrice } from "../shopify/pricing.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
@@ -449,6 +453,30 @@ export async function snapshotBefore(
         const productId = String(toolInput.productId ?? "");
         if (!productId) return null;
         const r = await fetchProductStatus(ctx.admin, productId);
+        return r.ok ? r.data : null;
+      }
+      case "update_product_title": {
+        const productId = String(toolInput.productId ?? "");
+        if (!productId) return null;
+        const r = await fetchProductTitle(ctx.admin, productId);
+        return r.ok ? r.data : null;
+      }
+      case "update_product_tags": {
+        const productId = String(toolInput.productId ?? "");
+        if (!productId) return null;
+        const r = await fetchProductTags(ctx.admin, productId);
+        return r.ok ? r.data : null;
+      }
+      case "update_product_vendor": {
+        const productId = String(toolInput.productId ?? "");
+        if (!productId) return null;
+        const r = await fetchProductVendor(ctx.admin, productId);
+        return r.ok ? r.data : null;
+      }
+      case "update_product_type": {
+        const productId = String(toolInput.productId ?? "");
+        if (!productId) return null;
+        const r = await fetchProductType(ctx.admin, productId);
         return r.ok ? r.data : null;
       }
       default:
