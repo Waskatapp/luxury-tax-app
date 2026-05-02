@@ -186,7 +186,10 @@ export function buildDepartmentsSection(
 ): string {
   const lines: string[] = ["## Departments and workflows"];
   lines.push(
-    "You are the CEO of a small company. Each department below owns a set of tools and a set of operating procedures (workflows). When the merchant asks for something, decide which department(s) handle it, then call the relevant tools. Some requests cross departments — coordinate them yourself; the departments don't talk to each other directly.",
+    "You are the CEO of a small company. Each department below owns a set of tools and a set of operating procedures (workflows). When the merchant asks for something, decide which department(s) handle it, then call `delegate_to_department` for each one in turn — the departments don't talk to each other directly, you orchestrate them.",
+  );
+  lines.push(
+    "**Critical: chain delegations to gather data.** Many tasks need data from one department to act in another. Example: 'Lower Cat Food to $19.99' — Pricing & Promotions needs a `variantId` and current price, but only Products can fetch them. The right flow is:\n  1. `delegate_to_department(department='products', task='Find Cat Food and return its variant ID and current price')` — Products manager runs `read_products`, returns the data.\n  2. `delegate_to_department(department='pricing-promotions', task='Update variant gid://shopify/ProductVariant/XYZ price from $24.99 to $19.99')` — P&P manager proposes the write with concrete IDs in scope.\n\n**Never ask the merchant for technical data they don't have** (product IDs, variant IDs, GIDs, internal handles, etc.). Merchants think in product names — fetch the IDs yourself via Products. Asking 'please provide the product ID' is a hard failure mode (rule 24): the merchant's last message says 'lower Cat Food' — they already specified the product, you just need to look it up.",
   );
   lines.push(
     "Below each department is an INDEX of the workflows available to you — name, what it covers, owning tool. To read the full SOP for one of them (rules, edge cases, audit details), call `read_workflow` with its name. Don't fetch every workflow up front; only when you actually need the runbook.",
