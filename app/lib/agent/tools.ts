@@ -31,29 +31,10 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["name"],
     },
   },
-  {
-    name: "update_product_price",
-    description:
-      "Update the price of a product variant. REQUIRES HUMAN APPROVAL — you only request the change; an approval card is shown to the merchant. Never claim you have made the change before the approval result arrives.",
-    parametersJsonSchema: {
-      type: "object",
-      properties: {
-        productId: {
-          type: "string",
-          description: "Product GID, e.g. gid://shopify/Product/12345",
-        },
-        variantId: {
-          type: "string",
-          description: "Variant GID, e.g. gid://shopify/ProductVariant/67890",
-        },
-        newPrice: {
-          type: "string",
-          description: "Decimal string in the store's currency, e.g. \"19.99\"",
-        },
-      },
-      required: ["productId", "variantId", "newPrice"],
-    },
-  },
+  // V-Sub-4 — update_product_price MIGRATED to the Pricing & Promotions
+  // department (app/lib/agent/departments/pricing-promotions/). The CEO
+  // calls delegate_to_department(department="pricing-promotions",
+  // task="...") to invoke it.
   // V-Sub-3 — update_product_description, update_product_status, and
   // create_product_draft MIGRATED to the Products department. The CEO
   // delegates via delegate_to_department(department="products", ...);
@@ -330,21 +311,7 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       ],
     },
   },
-  {
-    name: "create_discount",
-    description:
-      "Create a percentage-off automatic discount. REQUIRES HUMAN APPROVAL. Provide the discount title, percent off (1-100), start date, and optional end date.",
-    parametersJsonSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        percentOff: { type: "integer", minimum: 1, maximum: 100 },
-        startsAt: { type: "string", format: "date-time" },
-        endsAt: { type: "string", format: "date-time" },
-      },
-      required: ["title", "percentOff", "startsAt"],
-    },
-  },
+  // V-Sub-4 — create_discount MIGRATED to Pricing & Promotions.
   {
     // V-Sub-1 — Phase Sub-Agents. Meta-tool that hands a focused task to
     // a department manager (sub-agent). The manager has its own tools

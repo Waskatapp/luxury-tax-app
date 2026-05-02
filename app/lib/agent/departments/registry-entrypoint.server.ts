@@ -16,4 +16,4 @@
 import "./_pilot/index";
 import "./insights/index";
 import "./products/index";
-// Sub-4: import "./pricing-promotions/index";
+import "./pricing-promotions/index";

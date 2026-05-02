@@ -1,16 +1,14 @@
-// V-Sub-3 — most product helpers migrated to the Products department
-// module. We still import the snapshot helpers (used by snapshotBefore
-// for AuditLog pre-state) and the price/discount writers (still in the
-// central executor switch until Sub-4 / Sub-5).
+// V-Sub-4 — all write executors migrated to department modules
+// (Products, Pricing & Promotions). We still import the snapshot
+// helpers (fetchProductDescription, fetchProductStatus, fetchVariantPrice)
+// because snapshotBefore() builds AuditLog pre-state by tool name
+// regardless of which department owns the executor — keeping the
+// snapshot logic centralized avoids duplicating it across departments.
 import {
   fetchProductDescription,
   fetchProductStatus,
 } from "../shopify/products.server";
-import {
-  fetchVariantPrice,
-  updateProductPrice,
-} from "../shopify/pricing.server";
-import { createDiscount } from "../shopify/discounts.server";
+import { fetchVariantPrice } from "../shopify/pricing.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
 // Insights department (app/lib/agent/departments/insights/). The
 // underlying app/lib/shopify/analytics.server.ts module is unchanged;
@@ -372,16 +370,12 @@ export async function executeTool(
         };
       }
 
-      case "update_product_price":
-      case "create_discount":
-        return {
-          ok: false,
-          error: `${name} must route through the approval flow. executeTool should not be called for write tools.`,
-        };
       // V-Sub-3 — update_product_description, update_product_status,
       // create_product_draft MIGRATED to the Products department.
-      // Approval-time execution routes via the registry-driven dispatch
-      // in executeApprovedWrite below.
+      // V-Sub-4 — update_product_price, create_discount MIGRATED to the
+      // Pricing & Promotions department.
+      // All write tools now belong to a department. Approval-time
+      // dispatch happens in executeApprovedWrite below via the registry.
 
       case "delegate_to_department": {
         // V-Sub-1 — Phase Sub-Agents. Dispatch a focused sub-agent turn
@@ -491,20 +485,14 @@ export async function executeApprovedWrite(
       }
       result = await handler(input, ctx);
     } else {
-      switch (name) {
-        // V-Sub-3 — update_product_description, update_product_status,
-        // create_product_draft MIGRATED to Products department; routed
-        // via the registry path above. Same for any future write that
-        // gets migrated.
-        case "update_product_price":
-          result = await updateProductPrice(ctx.admin, input);
-          break;
-        case "create_discount":
-          result = await createDiscount(ctx.admin, input);
-          break;
-        default:
-          return { ok: false, error: `unknown write tool: ${name}` };
-      }
+      // V-Sub-4 — every write tool is now department-owned and routed
+      // via the registry path above. The legacy switch is empty
+      // (kept as a fallback for unknown tool names which should be
+      // unreachable since the registry already returned null).
+      return {
+        ok: false,
+        error: `unknown write tool: ${name}. The registry has no department owning it; either it's mistyped or the department module isn't registered in registry-entrypoint.server.ts.`,
+      };
     }
 
     // V2.4 — invalidate the read cache after any successful write so

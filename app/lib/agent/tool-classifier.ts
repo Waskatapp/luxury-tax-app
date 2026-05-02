@@ -14,15 +14,16 @@ export const READ_TOOLS = new Set<string>([
   "read_workflow",
 ]);
 
-// V-Sub-3 — IMPORTANT: even after department migration, we keep ALL
-// write tool names in this set. Reason: this set is consumed by client-
-// side MessageBubble (`isApprovalRequiredWrite`) to decide which tool_use
-// blocks render as ApprovalCards. Sub-agent's PROPOSED writes are
-// surfaced as synthetic tool_use blocks at the CEO level (see api.chat.tsx
-// proposed-writes wiring); for the merchant's UI to render an ApprovalCard,
-// the tool name must pass this filter regardless of whether it lives in
-// the central executor switch or a department handler. The DISPATCH side
-// (executeApprovedWrite) is registry-driven; the UI side stays flat.
+// V-Sub-3 / V-Sub-4 — IMPORTANT: even after department migration, we
+// keep ALL write tool names in this set. Reason: this set is consumed
+// by client-side MessageBubble (`isApprovalRequiredWrite`) to decide
+// which tool_use blocks render as ApprovalCards. Sub-agent's PROPOSED
+// writes are surfaced as synthetic tool_use blocks at the CEO level
+// (see api.chat.tsx proposed-writes wiring); for the merchant's UI to
+// render an ApprovalCard, the tool name must pass this filter
+// regardless of whether dispatch is registry-driven or central-switch.
+// The DISPATCH side (executeApprovedWrite) is fully registry-driven
+// after Sub-4; the UI side stays a flat list.
 export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   "update_product_price",
   "update_product_description",
