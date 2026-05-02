@@ -14,6 +14,7 @@ import {
   fetchProductVendor,
   fetchVariantDetails,
 } from "../shopify/products.server";
+import { fetchCollectionDetails } from "../shopify/collections.server";
 import { fetchVariantPrice } from "../shopify/pricing.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
 // Insights department (app/lib/agent/departments/insights/). The
@@ -491,6 +492,12 @@ export async function snapshotBefore(
         const productId = String(toolInput.productId ?? "");
         if (!productId) return null;
         const r = await fetchProductForDuplicate(ctx.admin, productId);
+        return r.ok ? r.data : null;
+      }
+      case "update_collection": {
+        const collectionId = String(toolInput.collectionId ?? "");
+        if (!collectionId) return null;
+        const r = await fetchCollectionDetails(ctx.admin, collectionId);
         return r.ok ? r.data : null;
       }
       default:

@@ -152,3 +152,270 @@ export async function readCollections(
     data: { collections, pageInfo: result.data.collections.pageInfo },
   };
 }
+
+// ----------------------------------------------------------------------------
+// Sort-order enum (shared by create + update)
+//
+// Manual sort lets the merchant drag products into a custom order. The
+// other values let Shopify auto-sort the storefront listing. We don't
+// expose COLLECTION_DEFAULT (smart-collection only).
+// ----------------------------------------------------------------------------
+const CollectionSortOrderEnum = z.enum([
+  "MANUAL",
+  "BEST_SELLING",
+  "ALPHA_ASC",
+  "ALPHA_DESC",
+  "PRICE_DESC",
+  "PRICE_ASC",
+  "CREATED",
+  "CREATED_DESC",
+]);
+
+// ----------------------------------------------------------------------------
+// create_collection (write — runs from approval route, never inline)
+//
+// Manual collections only in v1. Smart (rule-based) collections need a
+// ruleSet schema — substantial design work; deferred until merchants ask.
+// ----------------------------------------------------------------------------
+
+const CreateCollectionInput = z.object({
+  title: z.string().min(1).max(255),
+  descriptionHtml: z.string().optional(),
+  sortOrder: CollectionSortOrderEnum.optional(),
+});
+
+const COLLECTION_CREATE_MUTATION = `#graphql
+  mutation CollectionCreate($input: CollectionInput!) {
+    collectionCreate(input: $input) {
+      collection {
+        id
+        title
+        handle
+        sortOrder
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type CollectionCreateResponse = {
+  collectionCreate: {
+    collection: {
+      id: string;
+      title: string;
+      handle: string;
+      sortOrder: string | null;
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type CreatedCollection = {
+  collectionId: string;
+  title: string;
+  handle: string;
+  sortOrder: string | null;
+};
+
+export async function createCollection(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<CreatedCollection>> {
+  const parsed = CreateCollectionInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<CollectionCreateResponse>(
+    admin,
+    COLLECTION_CREATE_MUTATION,
+    {
+      input: {
+        title: parsed.data.title,
+        ...(parsed.data.descriptionHtml
+          ? { descriptionHtml: parsed.data.descriptionHtml }
+          : {}),
+        ...(parsed.data.sortOrder ? { sortOrder: parsed.data.sortOrder } : {}),
+      },
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.collectionCreate.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const created = result.data.collectionCreate.collection;
+  if (!created) {
+    return { ok: false, error: "collectionCreate returned no collection" };
+  }
+
+  return {
+    ok: true,
+    data: {
+      collectionId: created.id,
+      title: created.title,
+      handle: created.handle,
+      sortOrder: created.sortOrder,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// update_collection (write — runs from approval route, never inline)
+//
+// At least one of title/descriptionHtml/sortOrder must be set. Smart
+// collections (with ruleSet) and manual collections (with explicit
+// product IDs) are both updatable here — we just don't accept rule
+// changes or product-list changes in v1.
+// ----------------------------------------------------------------------------
+
+const UpdateCollectionInput = z
+  .object({
+    collectionId: z.string().min(1),
+    title: z.string().min(1).max(255).optional(),
+    descriptionHtml: z.string().optional(),
+    sortOrder: CollectionSortOrderEnum.optional(),
+  })
+  .refine(
+    (v) =>
+      v.title !== undefined ||
+      v.descriptionHtml !== undefined ||
+      v.sortOrder !== undefined,
+    {
+      message: "at least one of title/descriptionHtml/sortOrder must be set",
+    },
+  );
+
+const FETCH_COLLECTION_DETAILS_QUERY = `#graphql
+  query FetchCollectionDetails($id: ID!) {
+    collection(id: $id) {
+      id
+      title
+      handle
+      descriptionHtml
+      sortOrder
+    }
+  }
+`;
+
+const COLLECTION_UPDATE_MUTATION = `#graphql
+  mutation CollectionUpdate($input: CollectionInput!) {
+    collectionUpdate(input: $input) {
+      collection {
+        id
+        title
+        handle
+        descriptionHtml
+        sortOrder
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+type FetchCollectionDetailsResponse = {
+  collection: {
+    id: string;
+    title: string;
+    handle: string;
+    descriptionHtml: string | null;
+    sortOrder: string | null;
+  } | null;
+};
+
+type CollectionUpdateResponse = {
+  collectionUpdate: {
+    collection: {
+      id: string;
+      title: string;
+      handle: string;
+      descriptionHtml: string | null;
+      sortOrder: string | null;
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+export type CollectionDetailsSnapshot = {
+  collectionId: string;
+  title: string;
+  handle: string;
+  descriptionHtml: string | null;
+  sortOrder: string | null;
+};
+
+export async function fetchCollectionDetails(
+  admin: ShopifyAdmin,
+  collectionId: string,
+): Promise<ToolModuleResult<CollectionDetailsSnapshot>> {
+  const result = await graphqlRequest<FetchCollectionDetailsResponse>(
+    admin,
+    FETCH_COLLECTION_DETAILS_QUERY,
+    { id: collectionId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.data.collection) {
+    return { ok: false, error: `collection not found: ${collectionId}` };
+  }
+  return {
+    ok: true,
+    data: {
+      collectionId: result.data.collection.id,
+      title: result.data.collection.title,
+      handle: result.data.collection.handle,
+      descriptionHtml: result.data.collection.descriptionHtml,
+      sortOrder: result.data.collection.sortOrder,
+    },
+  };
+}
+
+export async function updateCollection(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<CollectionDetailsSnapshot>> {
+  const parsed = UpdateCollectionInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const input: Record<string, unknown> = { id: parsed.data.collectionId };
+  if (parsed.data.title !== undefined) input.title = parsed.data.title;
+  if (parsed.data.descriptionHtml !== undefined) {
+    input.descriptionHtml = parsed.data.descriptionHtml;
+  }
+  if (parsed.data.sortOrder !== undefined) input.sortOrder = parsed.data.sortOrder;
+
+  const result = await graphqlRequest<CollectionUpdateResponse>(
+    admin,
+    COLLECTION_UPDATE_MUTATION,
+    { input },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.collectionUpdate.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const updated = result.data.collectionUpdate.collection;
+  if (!updated) {
+    return { ok: false, error: "collectionUpdate returned no collection" };
+  }
+
+  return {
+    ok: true,
+    data: {
+      collectionId: updated.id,
+      title: updated.title,
+      handle: updated.handle,
+      descriptionHtml: updated.descriptionHtml,
+      sortOrder: updated.sortOrder,
+    },
+  };
+}

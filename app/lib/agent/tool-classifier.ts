@@ -35,6 +35,8 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   "update_product_type",
   "update_variant",
   "duplicate_product",
+  "create_collection",
+  "update_collection",
   "create_discount",
 ]);
 

@@ -10,7 +10,11 @@ import {
   updateProductVendor,
   updateVariant,
 } from "../../../shopify/products.server";
-import { readCollections } from "../../../shopify/collections.server";
+import {
+  createCollection,
+  readCollections,
+  updateCollection,
+} from "../../../shopify/collections.server";
 import { readCacheGet, readCacheSet } from "../../read-cache.server";
 import type {
   HandlerContext,
@@ -138,4 +142,18 @@ export const duplicateProductHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return duplicateProduct(ctx.admin, input);
+};
+
+export const createCollectionHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return createCollection(ctx.admin, input);
+};
+
+export const updateCollectionHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return updateCollection(ctx.admin, input);
 };

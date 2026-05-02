@@ -37,7 +37,8 @@ export const DEPARTMENTS: Department[] = [
       "rewriting descriptions, renaming products, managing tags / vendor / " +
       "product type, editing variant details (SKU/barcode/weight/inventory " +
       "policy/shipping/tax), duplicating products, changing status " +
-      "(DRAFT/ACTIVE/ARCHIVED), and creating new draft products.",
+      "(DRAFT/ACTIVE/ARCHIVED), creating new draft products, and " +
+      "creating / updating manual collections.",
     toolNames: [
       "read_products",
       "read_collections",
@@ -50,6 +51,8 @@ export const DEPARTMENTS: Department[] = [
       "update_product_type",
       "update_variant",
       "duplicate_product",
+      "create_collection",
+      "update_collection",
     ],
   },
   {

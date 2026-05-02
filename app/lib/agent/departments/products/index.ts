@@ -7,10 +7,12 @@ import type {
 } from "../department-spec";
 
 import {
+  createCollectionHandler,
   createProductDraftHandler,
   duplicateProductHandler,
   readCollectionsHandler,
   readProductsHandler,
+  updateCollectionHandler,
   updateProductDescriptionHandler,
   updateProductStatusHandler,
   updateProductTagsHandler,
@@ -277,6 +279,77 @@ const duplicateProductDeclaration: FunctionDeclaration = {
   },
 };
 
+const createCollectionDeclaration: FunctionDeclaration = {
+  name: "create_collection",
+  description:
+    "Create a new MANUAL collection (a hand-curated grouping of products). Smart (rule-based) collections are not supported by this tool yet — if the merchant wants 'all products tagged X', tell the CEO and they'll route differently. The collection starts empty; products are added through the Shopify admin or a future tool. REQUIRES HUMAN APPROVAL. Returns the new collection's GID + handle (URL slug).",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      title: {
+        type: "string",
+        description: "Collection title. 1-255 chars. Visible to shoppers.",
+      },
+      descriptionHtml: {
+        type: "string",
+        description:
+          "Optional HTML description. Appears at the top of the collection page on the storefront.",
+      },
+      sortOrder: {
+        type: "string",
+        enum: [
+          "MANUAL",
+          "BEST_SELLING",
+          "ALPHA_ASC",
+          "ALPHA_DESC",
+          "PRICE_DESC",
+          "PRICE_ASC",
+          "CREATED",
+          "CREATED_DESC",
+        ],
+        description:
+          "How products are ordered on the storefront. MANUAL = merchant drags into a custom order; the others are auto-sorts.",
+      },
+    },
+    required: ["title"],
+  },
+};
+
+const updateCollectionDeclaration: FunctionDeclaration = {
+  name: "update_collection",
+  description:
+    "Update an existing collection's title, description, and/or sort order. Pass at least one of the optional fields. Smart-collection RULES (the conditions like 'tag is winter') and the product-list itself are NOT changed by this tool — those need their own dedicated tools (out of scope for now). REQUIRES HUMAN APPROVAL. Always call read_collections first to confirm the current values.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      collectionId: {
+        type: "string",
+        description: "Collection GID, e.g. gid://shopify/Collection/12345",
+      },
+      title: { type: "string", description: "New collection title (1-255 chars)." },
+      descriptionHtml: {
+        type: "string",
+        description: "New HTML description (replaces existing).",
+      },
+      sortOrder: {
+        type: "string",
+        enum: [
+          "MANUAL",
+          "BEST_SELLING",
+          "ALPHA_ASC",
+          "ALPHA_DESC",
+          "PRICE_DESC",
+          "PRICE_ASC",
+          "CREATED",
+          "CREATED_DESC",
+        ],
+        description: "New sort order for the storefront listing.",
+      },
+    },
+    required: ["collectionId"],
+  },
+};
+
 const PRODUCTS_SPEC: DepartmentSpec = {
   id: "products",
   label: "Products",
@@ -296,6 +369,8 @@ const PRODUCTS_SPEC: DepartmentSpec = {
     updateProductTypeDeclaration,
     updateVariantDeclaration,
     duplicateProductDeclaration,
+    createCollectionDeclaration,
+    updateCollectionDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["read_products", readProductsHandler],
@@ -309,6 +384,8 @@ const PRODUCTS_SPEC: DepartmentSpec = {
     ["update_product_type", updateProductTypeHandler],
     ["update_variant", updateVariantHandler],
     ["duplicate_product", duplicateProductHandler],
+    ["create_collection", createCollectionHandler],
+    ["update_collection", updateCollectionHandler],
   ]),
   classification: {
     read: new Set(["read_products", "read_collections"]),
@@ -322,6 +399,8 @@ const PRODUCTS_SPEC: DepartmentSpec = {
       "update_product_type",
       "update_variant",
       "duplicate_product",
+      "create_collection",
+      "update_collection",
     ]),
     inlineWrite: new Set(),
   },
