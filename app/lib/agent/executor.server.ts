@@ -485,13 +485,14 @@ export async function executeApprovedWrite(
       }
       result = await handler(input, ctx);
     } else {
-      // V-Sub-4 — every write tool is now department-owned and routed
-      // via the registry path above. The legacy switch is empty
-      // (kept as a fallback for unknown tool names which should be
-      // unreachable since the registry already returned null).
+      // V-Sub-5 — every write tool is department-owned. If we reach this
+      // branch it means departmentForTool returned null for `name`, which
+      // can only happen if Gemini hallucinated a tool name OR a department
+      // module wasn't imported in registry-entrypoint.server.ts. Both are
+      // bugs upstream; surface a clear error so they're easy to diagnose.
       return {
         ok: false,
-        error: `unknown write tool: ${name}. The registry has no department owning it; either it's mistyped or the department module isn't registered in registry-entrypoint.server.ts.`,
+        error: `unknown write tool: ${name}. No department in the registry owns it. Either the model hallucinated the name or the department module isn't imported in registry-entrypoint.server.ts.`,
       };
     }
 

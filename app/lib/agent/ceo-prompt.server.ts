@@ -2,20 +2,14 @@ import IDENTITY_MD from "./ceo-prompt/identity.md?raw";
 import DECISION_RULES_MD from "./ceo-prompt/decision-rules.md?raw";
 import OUTPUT_FORMAT_MD from "./ceo-prompt/output-format.md?raw";
 
-import { DEPARTMENTS, type DepartmentId } from "./departments";
-// V-Sub-2 — registry-entrypoint side-effect import populates the
-// in-process department registry; isDepartmentMigrated() then tells us
-// whether a given department's tools have moved into the sub-agent
-// architecture (so the CEO should delegate) or still live in the
-// central tool list (call directly). Phase Sub-5 retires the
-// non-migrated branch entirely.
+import { DEPARTMENTS } from "./departments";
+// V-Sub-5 — registry-entrypoint import populates the registry on module
+// load. After Sub-5, all 3 departments (Products, Pricing & Promotions,
+// Insights) are migrated; the prompt always renders the
+// "delegate_to_department" hint. The legacy isDepartmentMigrated fork
+// from Sub-2 is removed.
 import "./departments/registry-entrypoint.server";
-import { getDepartmentSpec } from "./departments/registry.server";
 import type { WorkflowIndexEntry } from "./workflow-loader.server";
-
-function isDepartmentMigrated(id: DepartmentId): boolean {
-  return getDepartmentSpec(id) !== null;
-}
 
 // V2.1 CEO Brain — replaces V1's monolithic buildSystemInstruction with a
 // modular assembler. Each prompt block lives in its own .md file so a
@@ -207,19 +201,12 @@ export function buildDepartmentsSection(
   for (const dept of DEPARTMENTS) {
     lines.push(`### ${dept.label}`);
     lines.push(dept.description);
-    // V-Sub-2 — if the department has been migrated to the new sub-agent
-    // architecture (registered in the registry), tell the CEO to use
-    // delegate_to_department; otherwise list tools as before. As phases
-    // Sub-3 / Sub-4 ship, more departments switch to the delegate path
-    // automatically. Final state (Sub-5): every department uses delegate.
-    const isMigrated = isDepartmentMigrated(dept.id);
-    if (isMigrated) {
-      lines.push(
-        `**Tools owned:** ${dept.toolNames.map((t) => `\`${t}\``).join(", ")} — these tools live INSIDE the manager's scope, not yours. To use them, call \`delegate_to_department(department="${dept.id}", task="...")\`. The manager will call the right tool and return a summary or a proposed write for the merchant to approve.`,
-      );
-    } else {
-      lines.push(`**Tools owned:** ${dept.toolNames.map((t) => `\`${t}\``).join(", ")}`);
-    }
+    // V-Sub-5 — every department is registered in the registry; the
+    // delegate hint is always rendered. Tools live inside the manager's
+    // scope, not the CEO's direct tool list.
+    lines.push(
+      `**Tools owned:** ${dept.toolNames.map((t) => `\`${t}\``).join(", ")} — these tools live INSIDE the manager's scope, not yours. To use them, call \`delegate_to_department(department="${dept.id}", task="...")\`. The manager will call the right tool and return a summary or a proposed write for the merchant to approve.`,
+    );
     const entries = byDept.get(dept.id) ?? [];
     if (entries.length > 0) {
       lines.push("**Operating procedures available** (call `read_workflow` for the full SOP):");
