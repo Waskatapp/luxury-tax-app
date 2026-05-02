@@ -22,7 +22,7 @@ function articleResult(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe("createArticle", () => {
-  it("happy path with explicit blogId — sends required fields, returns snapshot", async () => {
+  it("happy path with explicit blogId + author — single mutation call (no shop fallback)", async () => {
     const admin = fakeAdmin([
       {
         kind: "data",
@@ -39,6 +39,7 @@ describe("createArticle", () => {
       blogId: "gid://shopify/Blog/1",
       title: "Cat Care Tips",
       body: "<p>Some body.</p>",
+      author: "Jane",
     });
 
     expect(result.ok).toBe(true);
@@ -52,21 +53,61 @@ describe("createArticle", () => {
       body: "<p>Some body.</p>",
       isPublished: false,
     });
-    // The mutation input carries blogId + title + body + isPublished:false default.
-    // No optional fields populated.
+    // Only the articleCreate mutation runs — explicit author skips the shop
+    // owner fallback fetch, blogId provided skips the blogs(first:1) fetch.
+    expect(admin.calls).toHaveLength(1);
     expect(admin.calls[0].variables).toEqual({
       article: {
         blogId: "gid://shopify/Blog/1",
         title: "Cat Care Tips",
         body: "<p>Some body.</p>",
         isPublished: false,
+        author: { name: "Jane" },
       },
     });
   });
 
-  it("blogId omitted — falls back to first blog via blogs(first:1) call", async () => {
+  it("author omitted — falls back to shop name via shop { name } query", async () => {
+    // Shopify's ArticleCreateInput.author is REQUIRED (AuthorInput!). When
+    // the caller doesn't pass one we fetch shop.name and use it. The bug
+    // we're guarding against: omitting author entirely caused
+    // "Variable $article ... Expected value to not be null" GraphQL errors.
     const admin = fakeAdmin([
-      // First call: getDefaultBlogId
+      {
+        kind: "data",
+        body: { shop: { name: "MyStore" } },
+      },
+      {
+        kind: "data",
+        body: {
+          articleCreate: {
+            article: articleResult({ author: { name: "MyStore" } }),
+            userErrors: [],
+          },
+        },
+      },
+    ]);
+
+    const result = await createArticle(admin, {
+      blogId: "gid://shopify/Blog/1",
+      title: "Cat Care Tips",
+      body: "<p>Body.</p>",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.author).toBe("MyStore");
+    expect(admin.calls).toHaveLength(2);
+    // Second call (articleCreate) must include the resolved author.
+    const createVars = admin.calls[1].variables as {
+      article: { author: { name: string } };
+    };
+    expect(createVars.article.author).toEqual({ name: "MyStore" });
+  });
+
+  it("blogId AND author omitted — chains blogs lookup, shop lookup, then create", async () => {
+    const admin = fakeAdmin([
+      // 1. getDefaultBlogId — blogs(first:1)
       {
         kind: "data",
         body: {
@@ -77,12 +118,20 @@ describe("createArticle", () => {
           },
         },
       },
-      // Second call: articleCreate
+      // 2. getDefaultAuthorName — shop { name }
+      {
+        kind: "data",
+        body: { shop: { name: "MyStore" } },
+      },
+      // 3. articleCreate
       {
         kind: "data",
         body: {
           articleCreate: {
-            article: articleResult({ blog: { id: "gid://shopify/Blog/99", title: "News" } }),
+            article: articleResult({
+              blog: { id: "gid://shopify/Blog/99", title: "News" },
+              author: { name: "MyStore" },
+            }),
             userErrors: [],
           },
         },
@@ -96,11 +145,14 @@ describe("createArticle", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(admin.calls).toHaveLength(2);
+    expect(admin.calls).toHaveLength(3);
     expect(admin.calls[0].variables).toEqual({ first: 1 });
-    // articleCreate uses the resolved blog id.
-    const createVars = admin.calls[1].variables as { article: { blogId: string } };
+    // articleCreate uses the resolved blog id and author.
+    const createVars = admin.calls[2].variables as {
+      article: { blogId: string; author: { name: string } };
+    };
     expect(createVars.article.blogId).toBe("gid://shopify/Blog/99");
+    expect(createVars.article.author).toEqual({ name: "MyStore" });
   });
 
   it("blogId omitted AND store has zero blogs — surfaces a clear error", async () => {
@@ -192,6 +244,7 @@ describe("createArticle", () => {
       blogId: "gid://shopify/Blog/1",
       title: "T",
       body: "<p>B</p>",
+      author: "Jane",
     });
     const vars = admin.calls[0].variables as {
       article: { isPublished: boolean };
@@ -251,6 +304,7 @@ describe("createArticle", () => {
       blogId: "gid://shopify/Blog/1",
       title: "anything",
       body: "<p>B</p>",
+      author: "Jane",
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;

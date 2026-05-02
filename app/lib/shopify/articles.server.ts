@@ -153,6 +153,17 @@ const BLOGS_FIRST_QUERY = `#graphql
   }
 `;
 
+// V-Mkt-B fix — Shopify's ArticleCreateInput.author is AuthorInput!
+// (required), so omitting the field fails GraphQL validation BEFORE the
+// resolver runs. When the caller doesn't pass an author, we fall back to
+// the shop owner's display name — matching the behavior of Shopify's
+// admin UI when a store owner creates an article through the dashboard.
+const SHOP_OWNER_QUERY = `#graphql
+  query Shop {
+    shop { name }
+  }
+`;
+
 const FETCH_ARTICLE_QUERY = `#graphql
   query FetchArticle($id: ID!) {
     article(id: $id) {
@@ -276,6 +287,10 @@ type BlogsResponse = {
   blogs: { edges: Array<{ node: { id: string; title: string } }> };
 };
 
+type ShopResponse = {
+  shop: { name: string };
+};
+
 type FetchArticleResponse = { article: ArticleNode | null };
 
 type ReadArticlesResponse = {
@@ -375,6 +390,24 @@ async function getDefaultBlogId(
   };
 }
 
+// Default author fallback. Shopify's ArticleCreateInput.author is required
+// (`AuthorInput!`); if the caller didn't pass one we use the shop's display
+// name (e.g. "MyStore") as a sensible default rather than failing the
+// mutation. The merchant can always edit the author later via update_article.
+async function getDefaultAuthorName(
+  admin: ShopifyAdmin,
+): Promise<ToolModuleResult<string>> {
+  const result = await graphqlRequest<ShopResponse>(admin, SHOP_OWNER_QUERY);
+  if (!result.ok) return { ok: false, error: result.error };
+  const name = result.data.shop?.name?.trim();
+  if (!name) {
+    // Shouldn't happen — every Shopify store has a name — but fall back
+    // gracefully rather than blowing up the merchant's article draft.
+    return { ok: true, data: "Store" };
+  }
+  return { ok: true, data: name };
+}
+
 // ----------------------------------------------------------------------------
 // fetchArticle — snapshot helper used by snapshotBefore() in
 // executor.server.ts and by deleteArticle's defensive gate.
@@ -469,16 +502,24 @@ export async function createArticle(
     blogId = def.data.blogId;
   }
 
+  // Resolve author. Required by Shopify (ArticleCreateInput.author is
+  // AuthorInput!) — falls back to the shop's display name when the merchant
+  // didn't specify one.
+  let authorName = parsed.data.author;
+  if (authorName === undefined) {
+    const def = await getDefaultAuthorName(admin);
+    if (!def.ok) return def;
+    authorName = def.data;
+  }
+
   const articleInput: Record<string, unknown> = {
     blogId,
     title: parsed.data.title,
     body: parsed.data.body,
     isPublished: parsed.data.isPublished,
+    author: { name: authorName },
   };
   if (parsed.data.summary !== undefined) articleInput.summary = parsed.data.summary;
-  if (parsed.data.author !== undefined) {
-    articleInput.author = { name: parsed.data.author };
-  }
   if (parsed.data.tags !== undefined) articleInput.tags = parsed.data.tags;
   if (parsed.data.imageUrl !== undefined) {
     articleInput.image = { url: parsed.data.imageUrl };
