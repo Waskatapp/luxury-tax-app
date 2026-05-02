@@ -45,6 +45,9 @@ export const CACHEABLE_READ_TOOLS = new Set<string>([
   // sort by revenue" (different cache key, separate scan, but each
   // is cached for follow-up drills).
   "get_top_performers",
+  // V-Mkt-B — read_articles. Caches the article-list result; busted
+  // on any article write. Pattern matches read_products / read_collections.
+  "read_articles",
 ]);
 
 type CachedResult = {

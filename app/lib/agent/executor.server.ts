@@ -22,6 +22,7 @@ import {
   fetchCollectionSeo,
   fetchProductSeo,
 } from "../shopify/seo.server";
+import { fetchArticle } from "../shopify/articles.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
 // Insights department (app/lib/agent/departments/insights/). The
 // underlying app/lib/shopify/analytics.server.ts module is unchanged;
@@ -543,6 +544,21 @@ export async function snapshotBefore(
         const r = await fetchCollectionSeo(ctx.admin, collectionId);
         return r.ok ? r.data : null;
       }
+      case "update_article":
+      case "delete_article": {
+        // V-Mkt-B — both share fetchArticle. The before-state captures
+        // the full article (title, body, summary, author, tags, image,
+        // published flag, blog reference) so a deleted article can be
+        // reconstructed from the AuditLog if the merchant regrets it.
+        // delete_article runs a separate confirmTitle gate inside its
+        // handler — that's about preventing the WRONG delete; this
+        // snapshot is about preserving what existed if the right delete
+        // is later regretted.
+        const articleId = String(toolInput.articleId ?? "");
+        if (!articleId) return null;
+        const r = await fetchArticle(ctx.admin, articleId);
+        return r.ok ? r.data : null;
+      }
       case "remove_product_image":
       case "reorder_product_images": {
         // Both: AuditLog before-state is the current media listing for
@@ -626,6 +642,10 @@ export async function executeApprovedWrite(
         "compare_periods",
         // V-IN-B — Same rationale: writes shift the rankings.
         "get_top_performers",
+        // V-Mkt-B — article writes (create_article / update_article /
+        // delete_article) bust the read_articles cache so the next
+        // listing reflects the new state immediately.
+        "read_articles",
       ]);
     }
     return result;

@@ -52,6 +52,12 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   // standard ApprovalCard flow (PendingAction → approve → executor).
   "update_product_seo",
   "update_collection_seo",
+  // V-Mkt-B — Blog article writes. delete_article runs a defensive
+  // confirmTitle check inside its handler before issuing the destructive
+  // mutation.
+  "create_article",
+  "update_article",
+  "delete_article",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)
