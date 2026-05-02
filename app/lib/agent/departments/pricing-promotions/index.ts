@@ -8,6 +8,7 @@ import type {
 
 import {
   bulkUpdatePricesHandler,
+  createBundleDiscountHandler,
   createDiscountHandler,
   deleteDiscountHandler,
   readDiscountsHandler,
@@ -225,6 +226,97 @@ const deleteDiscountDeclaration: FunctionDeclaration = {
   },
 };
 
+const createBundleDiscountDeclaration: FunctionDeclaration = {
+  name: "create_bundle_discount",
+  description:
+    "Create a Buy-X-Get-Y (Bxgy) compound automatic discount: 'buy 2 of these products, get 1 of those products at 50% off' / BOGO ('buy 1 get 1 free' = percentage 100, getQuantity 1) / tiered offers. The merchant describes intent in natural language; you translate to this tool's flat schema.\n\n**The buy and get sides are INDEPENDENT** — you can require a buy on collection X and reward an item from collection Y, or buy specific products and reward different specific products, or any combination. **buyItemIds and getItemIds expect Shopify GIDs** (product GIDs for buyType/getType=\"products\", collection GIDs for \"collections\"). The merchant doesn't know GIDs — the CEO must chain a Products or Collections delegation FIRST to fetch them, then delegate to P&P with concrete IDs in the task description.\n\nFor BOGO: discountType=\"percentage\", discountValue=100. For 50% off the get item: discountType=\"percentage\", discountValue=50. For $5 off the get item: discountType=\"fixed_amount\", discountValue=5.00 (in store currency).\n\nREQUIRES HUMAN APPROVAL. The result includes Shopify's own `summary` rendering of the bundle — relay that summary verbatim to the merchant after approval so they see the bundle exactly as it will appear in their admin.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      title: {
+        type: "string",
+        description:
+          "Internal title visible in the merchant's discount list. 1-255 chars. Example: 'Cat Food + Treat Bundle'.",
+      },
+      startsAt: {
+        type: "string",
+        format: "date-time",
+        description: "ISO-8601 datetime when the bundle becomes active.",
+      },
+      endsAt: {
+        type: "string",
+        format: "date-time",
+        description: "Optional ISO-8601 datetime when the bundle ends. Must be after startsAt.",
+      },
+      buyType: {
+        type: "string",
+        enum: ["products", "collections"],
+        description:
+          "What kind of items qualify as the BUY side: specific products or any item from collections.",
+      },
+      buyItemIds: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Product GIDs (if buyType=products) or Collection GIDs (if buyType=collections). At least one. Get these via Products/Collections delegation FIRST.",
+      },
+      buyQuantity: {
+        type: "integer",
+        minimum: 1,
+        description:
+          "How many of the buy items the customer must add to qualify. Example: 2 for 'buy 2 cat food bags'.",
+      },
+      getType: {
+        type: "string",
+        enum: ["products", "collections"],
+        description:
+          "What kind of items get the discount: specific products or any item from collections. Independent of buyType.",
+      },
+      getItemIds: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Product GIDs or Collection GIDs (matching getType). At least one. Can overlap with buyItemIds for 'buy more, save more on the same product' flows.",
+      },
+      getQuantity: {
+        type: "integer",
+        minimum: 1,
+        description:
+          "How many of the get items receive the discount. Example: 1 for 'get 1 treat free'.",
+      },
+      discountType: {
+        type: "string",
+        enum: ["percentage", "fixed_amount"],
+        description:
+          "percentage = % off the get items (1-100). fixed_amount = money off in store currency.",
+      },
+      discountValue: {
+        type: "number",
+        description:
+          "If percentage: 1-100 (100 = free / BOGO). If fixed_amount: > 0 in store currency. Always positive.",
+      },
+      usesPerOrderLimit: {
+        type: "integer",
+        minimum: 1,
+        description:
+          "Optional cap on how many times the bundle can apply per order. Example: 1 = each order gets the offer once even if buying 4 cat food bags.",
+      },
+    },
+    required: [
+      "title",
+      "startsAt",
+      "buyType",
+      "buyItemIds",
+      "buyQuantity",
+      "getType",
+      "getItemIds",
+      "getQuantity",
+      "discountType",
+      "discountValue",
+    ],
+  },
+};
+
 const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
   id: "pricing-promotions",
   label: "Pricing & Promotions",
@@ -241,6 +333,7 @@ const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
     updateDiscountDeclaration,
     setDiscountStatusDeclaration,
     deleteDiscountDeclaration,
+    createBundleDiscountDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["update_product_price", updateProductPriceHandler],
@@ -251,6 +344,7 @@ const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
     ["update_discount", updateDiscountHandler],
     ["set_discount_status", setDiscountStatusHandler],
     ["delete_discount", deleteDiscountHandler],
+    ["create_bundle_discount", createBundleDiscountHandler],
   ]),
   classification: {
     read: new Set(["read_discounts"]),
@@ -262,6 +356,7 @@ const PRICING_PROMOTIONS_SPEC: DepartmentSpec = {
       "update_discount",
       "set_discount_status",
       "delete_discount",
+      "create_bundle_discount",
     ]),
     inlineWrite: new Set(),
   },

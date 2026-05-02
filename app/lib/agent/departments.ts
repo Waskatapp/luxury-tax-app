@@ -67,7 +67,8 @@ export const DEPARTMENTS: Department[] = [
       "Owns prices and discounts: setting variant prices, sale-price " +
       "strikethrough (compareAtPrice), bulk price changes across collections " +
       "or product lists, listing discounts, creating / updating / pausing / " +
-      "deleting automatic discounts.",
+      "deleting automatic discounts, and compound bundle (Buy-X-Get-Y) " +
+      "discounts.",
     toolNames: [
       "update_product_price",
       "create_discount",
@@ -77,6 +78,7 @@ export const DEPARTMENTS: Department[] = [
       "update_discount",
       "set_discount_status",
       "delete_discount",
+      "create_bundle_discount",
     ],
   },
   {

@@ -846,3 +846,222 @@ export async function deleteDiscount(
     data: { deletedDiscountId: deletedId },
   };
 }
+
+// ============================================================================
+// create_bundle_discount (Round PP-C — the headliner)
+//
+// Wraps Shopify's discountAutomaticBxgyCreate. Bxgy = "Buy X, Get Y at
+// discount" — covers BOGO, compound bundles, tiered offers like
+// "Buy 2 cat food bags, get 1 treat 50% off".
+//
+// Input is a merchant-friendly FLAT shape; the handler maps to Shopify's
+// nested DiscountAutomaticBxgyInput shape internally. Mapping is the
+// highest-value behavior to test — see tests/unit/shopify/discounts-bundle.test.ts.
+//
+// Currency: only required for fixed_amount discounts. Percentage discounts
+// don't need it (Shopify's percentage field is unitless 0-1). For
+// fixed_amount the handler interprets discountValue in store currency
+// directly — Shopify's Decimal scalar is currency-agnostic, the store's
+// configured currency applies at render time.
+// ============================================================================
+
+const CreateBundleDiscountInput = z
+  .object({
+    title: z.string().min(1).max(255),
+    startsAt: z.string().min(10),
+    endsAt: z.string().min(10).optional(),
+
+    // What the customer must buy to qualify
+    buyType: z.enum(["products", "collections"]),
+    buyItemIds: z.array(z.string().min(1)).min(1),
+    buyQuantity: z.number().int().min(1),
+
+    // What the customer gets at a discount
+    getType: z.enum(["products", "collections"]),
+    getItemIds: z.array(z.string().min(1)).min(1),
+    getQuantity: z.number().int().min(1),
+
+    // The discount to apply on the "get" items
+    discountType: z.enum(["percentage", "fixed_amount"]),
+    discountValue: z.number().positive(),
+
+    usesPerOrderLimit: z.number().int().min(1).optional(),
+  })
+  .refine(
+    (v) =>
+      v.discountType === "percentage"
+        ? v.discountValue >= 1 && v.discountValue <= 100
+        : true,
+    { message: "percentage discountValue must be between 1 and 100" },
+  )
+  .refine(
+    (v) => {
+      if (!v.endsAt) return true;
+      const start = new Date(v.startsAt).getTime();
+      const end = new Date(v.endsAt).getTime();
+      if (Number.isNaN(start) || Number.isNaN(end)) return false;
+      return end > start;
+    },
+    { message: "endsAt must be after startsAt (and both must be valid ISO-8601)" },
+  );
+
+const DISCOUNT_AUTOMATIC_BXGY_CREATE_MUTATION = `#graphql
+  mutation BundleDiscountCreate($automaticBxgyDiscount: DiscountAutomaticBxgyInput!) {
+    discountAutomaticBxgyCreate(automaticBxgyDiscount: $automaticBxgyDiscount) {
+      automaticDiscountNode {
+        id
+        automaticDiscount {
+          ... on DiscountAutomaticBxgy {
+            title
+            startsAt
+            endsAt
+            status
+            summary
+            usesPerOrderLimit
+          }
+        }
+      }
+      userErrors { field message code }
+    }
+  }
+`;
+
+type BundleDiscountCreateResponse = {
+  discountAutomaticBxgyCreate: {
+    automaticDiscountNode: {
+      id: string;
+      automaticDiscount: {
+        title?: string;
+        startsAt?: string;
+        endsAt?: string | null;
+        status?: string;
+        summary?: string;
+        usesPerOrderLimit?: number | null;
+      };
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string; code?: string }>;
+  };
+};
+
+export type CreatedBundleDiscount = {
+  id: string;
+  title: string;
+  status: string;
+  startsAt: string;
+  endsAt: string | null;
+  // Shopify's own rendering of the bundle ("Buy 2, get 1 free", etc.).
+  // The CEO should relay this verbatim to the merchant — it's the most
+  // honest description of what was actually configured.
+  summary: string;
+  usesPerOrderLimit: number | null;
+};
+
+// Build the nested DiscountItemsInput payload for either side of the
+// Bxgy. Pure mapping; tested directly via the bundle suite.
+function buildItemsInput(
+  itemType: "products" | "collections",
+  itemIds: string[],
+): Record<string, unknown> {
+  if (itemType === "products") {
+    return { products: { productsToAdd: itemIds } };
+  }
+  return { collections: { add: itemIds } };
+}
+
+// Build the customerGets.value payload — Bxgy uses discountOnQuantity
+// with a `quantity` (how many "get" items qualify) and an `effect`
+// (percentage or amount). Pure mapping for testability.
+function buildCustomerGetsValue(
+  getQuantity: number,
+  discountType: "percentage" | "fixed_amount",
+  discountValue: number,
+): Record<string, unknown> {
+  if (discountType === "percentage") {
+    return {
+      discountOnQuantity: {
+        quantity: String(getQuantity),
+        // Shopify wants 0-1 decimal: 50% off → 0.5
+        effect: { percentage: discountValue / 100 },
+      },
+    };
+  }
+  return {
+    discountOnQuantity: {
+      quantity: String(getQuantity),
+      // Decimal scalar — pass as 2-decimal string in store currency.
+      effect: { amount: discountValue.toFixed(2) },
+    },
+  };
+}
+
+export async function createBundleDiscount(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<CreatedBundleDiscount>> {
+  const parsed = CreateBundleDiscountInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  // Map merchant-friendly flat input → Shopify's nested input shape.
+  const automaticBxgyDiscount: Record<string, unknown> = {
+    title: parsed.data.title,
+    startsAt: parsed.data.startsAt,
+    customerBuys: {
+      items: buildItemsInput(parsed.data.buyType, parsed.data.buyItemIds),
+      value: { quantity: String(parsed.data.buyQuantity) },
+    },
+    customerGets: {
+      items: buildItemsInput(parsed.data.getType, parsed.data.getItemIds),
+      value: buildCustomerGetsValue(
+        parsed.data.getQuantity,
+        parsed.data.discountType,
+        parsed.data.discountValue,
+      ),
+    },
+  };
+  if (parsed.data.endsAt) {
+    automaticBxgyDiscount.endsAt = parsed.data.endsAt;
+  }
+  if (parsed.data.usesPerOrderLimit !== undefined) {
+    automaticBxgyDiscount.usesPerOrderLimit = String(parsed.data.usesPerOrderLimit);
+  }
+
+  const result = await graphqlRequest<BundleDiscountCreateResponse>(
+    admin,
+    DISCOUNT_AUTOMATIC_BXGY_CREATE_MUTATION,
+    { automaticBxgyDiscount },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const payload = result.data.discountAutomaticBxgyCreate;
+  if (payload.userErrors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${payload.userErrors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const node = payload.automaticDiscountNode;
+  if (!node) {
+    return {
+      ok: false,
+      error: "discountAutomaticBxgyCreate returned no automaticDiscountNode",
+    };
+  }
+  const inner = node.automaticDiscount ?? {};
+  return {
+    ok: true,
+    data: {
+      id: node.id,
+      title: inner.title ?? parsed.data.title,
+      status: inner.status ?? "ACTIVE",
+      startsAt: inner.startsAt ?? parsed.data.startsAt,
+      endsAt: inner.endsAt ?? null,
+      summary: inner.summary ?? "",
+      usesPerOrderLimit:
+        typeof inner.usesPerOrderLimit === "number"
+          ? inner.usesPerOrderLimit
+          : null,
+    },
+  };
+}

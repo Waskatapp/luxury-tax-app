@@ -4,6 +4,7 @@ import {
   updateProductPrice,
 } from "../../../shopify/pricing.server";
 import {
+  createBundleDiscount,
   createDiscount,
   deleteDiscount,
   readDiscounts,
@@ -95,4 +96,11 @@ export const deleteDiscountHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return deleteDiscount(ctx.admin, input);
+};
+
+export const createBundleDiscountHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return createBundleDiscount(ctx.admin, input);
 };
