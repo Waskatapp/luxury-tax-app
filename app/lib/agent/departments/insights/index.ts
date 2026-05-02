@@ -10,6 +10,7 @@ import {
   comparePeriodsHandler,
   getAnalyticsHandler,
   getProductPerformanceHandler,
+  getTopPerformersHandler,
 } from "./handlers";
 import INSIGHTS_PROMPT from "./prompt.md?raw";
 
@@ -107,6 +108,41 @@ const comparePeriodsDeclaration: FunctionDeclaration = {
   },
 };
 
+const getTopPerformersDeclaration: FunctionDeclaration = {
+  name: "get_top_performers",
+  description:
+    "Ranked list of products by sales performance over the last `days` days. Richer than `get_analytics(top_products)` — supports both directions (TOP best-sellers, BOTTOM underperformers) and both sort axes (units sold OR revenue earned).\n\nUse this when the merchant asks:\n- 'What are my top sellers?' → direction=top, sortBy=units (the default)\n- 'Which products earned the most revenue?' → direction=top, sortBy=revenue\n- 'What's selling poorly?' → direction=bottom, sortBy=units\n- 'Which products are dragging revenue down?' → direction=bottom, sortBy=revenue\n\n**Bottom direction excludes products that didn't sell at all** in the window — those are dead inventory, a different question. Bottom shows lowest performers AMONG products that ARE selling. Read-only — no approval card.\n\nDefaults: direction=top, sortBy=units, limit=10, days=30.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      days: {
+        type: "integer",
+        minimum: 1,
+        maximum: 365,
+        description: "Lookback window in days. Defaults to 30.",
+      },
+      direction: {
+        type: "string",
+        enum: ["top", "bottom"],
+        description:
+          "top = best performers (descending). bottom = worst performers among products that ARE selling (ascending; zero-unit products excluded).",
+      },
+      sortBy: {
+        type: "string",
+        enum: ["units", "revenue"],
+        description:
+          "units = rank by quantity sold. revenue = rank by revenue earned (line-item: unitPrice × quantity). For marketing-spend planning use revenue; for inventory planning use units.",
+      },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 50,
+        description: "Number of products to return. Defaults to 10.",
+      },
+    },
+  },
+};
+
 const INSIGHTS_SPEC: DepartmentSpec = {
   id: "insights",
   label: "Insights",
@@ -118,17 +154,20 @@ const INSIGHTS_SPEC: DepartmentSpec = {
     getAnalyticsDeclaration,
     getProductPerformanceDeclaration,
     comparePeriodsDeclaration,
+    getTopPerformersDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["get_analytics", getAnalyticsHandler],
     ["get_product_performance", getProductPerformanceHandler],
     ["compare_periods", comparePeriodsHandler],
+    ["get_top_performers", getTopPerformersHandler],
   ]),
   classification: {
     read: new Set([
       "get_analytics",
       "get_product_performance",
       "compare_periods",
+      "get_top_performers",
     ]),
     write: new Set(),
     inlineWrite: new Set(),

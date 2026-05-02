@@ -40,6 +40,11 @@ export const CACHEABLE_READ_TOOLS = new Set<string>([
   // product/period question multiple ways within a conversation.
   "get_product_performance",
   "compare_periods",
+  // V-IN-B — get_top_performers. Scans up to 200 orders per call;
+  // caching helps when the merchant asks "top sellers" then "wait,
+  // sort by revenue" (different cache key, separate scan, but each
+  // is cached for follow-up drills).
+  "get_top_performers",
 ]);
 
 type CachedResult = {

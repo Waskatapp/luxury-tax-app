@@ -95,6 +95,7 @@ export const DEPARTMENTS: Department[] = [
       "get_analytics",
       "get_product_performance",
       "compare_periods",
+      "get_top_performers",
     ],
   },
 ];

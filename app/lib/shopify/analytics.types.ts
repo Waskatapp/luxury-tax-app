@@ -100,3 +100,32 @@ export type ComparePeriodsResult = {
   cappedAtPageLimit: boolean;   // true if EITHER window capped
   note: string;
 };
+
+// V-IN-B — Round IN-B. Generalizes the existing top_products metric
+// in get_analytics: adds direction (top vs bottom), sortBy (units vs
+// revenue), and a configurable limit. Bottom direction filters out
+// zero-unit products (those are dead inventory, a different question).
+export type TopPerformersDirection = "top" | "bottom";
+export type TopPerformersSortBy = "units" | "revenue";
+
+export type TopPerformersProduct = {
+  id: string;
+  title: string;
+  handle: string | null;
+  unitsSold: number;
+  // Decimal string (line-item revenue: unitPrice × quantity, summed
+  // in cents to avoid float drift).
+  revenue: string;
+  orderCount: number;
+};
+
+export type TopPerformersResult = {
+  rangeDays: number;
+  direction: TopPerformersDirection;
+  sortBy: TopPerformersSortBy;
+  limit: number;
+  currencyCode: string;
+  products: TopPerformersProduct[];
+  cappedAtPageLimit: boolean;
+  note: string;
+};

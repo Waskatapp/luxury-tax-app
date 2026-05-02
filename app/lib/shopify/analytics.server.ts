@@ -12,6 +12,7 @@ import type {
   AnalyticsTopProductsResult,
   ComparePeriodsResult,
   ProductPerformanceResult,
+  TopPerformersResult,
 } from "./analytics.types";
 
 export type {
@@ -21,6 +22,7 @@ export type {
   AnalyticsTopProductsResult,
   ComparePeriodsResult,
   ProductPerformanceResult,
+  TopPerformersResult,
 };
 
 export type ToolModuleResult<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -658,6 +660,201 @@ export async function comparePeriods(
         unitsSoldPct: pctDelta(c.unitsSold, p.unitsSold),
         revenuePct: pctDelta(cCents, pCents),
       },
+      cappedAtPageLimit,
+      note,
+    },
+  };
+}
+
+// ============================================================================
+// V-IN-B — get_top_performers
+//
+// Ranked product list for a time window. Generalizes the existing
+// top_products metric in get_analytics: adds bottom direction (for
+// underperformer queries), revenue-based sorting (for marketing-spend
+// planning), and configurable limit.
+//
+// Uses a query similar to TOP_PRODUCTS_FROM_ORDERS_QUERY but with
+// originalUnitPriceSet included on each line item so we can tally
+// revenue alongside units. Same page-size discipline (50 orders × 4
+// pages = 200 orders cap) — keeps within one rate-limiter bucket per
+// page.
+// ============================================================================
+
+const TopPerformersInput = z.object({
+  days: z.number().int().min(1).max(365).default(30),
+  direction: z.enum(["top", "bottom"]).default("top"),
+  sortBy: z.enum(["units", "revenue"]).default("units"),
+  limit: z.number().int().min(1).max(50).default(10),
+});
+
+const TOP_PERFORMERS_QUERY = `#graphql
+  query AnalyticsTopPerformers($first: Int!, $query: String!, $after: String) {
+    orders(first: $first, query: $query, after: $after, sortKey: CREATED_AT) {
+      edges {
+        cursor
+        node {
+          id
+          lineItems(first: 10) {
+            edges {
+              node {
+                quantity
+                originalUnitPriceSet {
+                  shopMoney { amount currencyCode }
+                }
+                product { id title handle }
+              }
+            }
+          }
+        }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+type TopPerformersResponse = {
+  orders: {
+    edges: Array<{
+      cursor: string;
+      node: {
+        id: string;
+        lineItems: {
+          edges: Array<{
+            node: {
+              quantity: number;
+              originalUnitPriceSet: {
+                shopMoney: { amount: string; currencyCode: string };
+              };
+              product: { id: string; title: string; handle: string } | null;
+            };
+          }>;
+        };
+      };
+    }>;
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  };
+};
+
+export async function getTopPerformers(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<TopPerformersResult>> {
+  const parsed = TopPerformersInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+  const { days, direction, sortBy, limit } = parsed.data;
+
+  const startsAtDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const queryFilter = `created_at:>=${startsAtDate.toISOString()}`;
+
+  type Tally = {
+    productId: string;
+    title: string;
+    handle: string | null;
+    unitsSold: number;
+    // Tracked in cents to avoid float drift; converted to decimal
+    // string at result-shaping time.
+    revenueCents: number;
+    orderIds: Set<string>;
+  };
+  const tallies = new Map<string, Tally>();
+  let currencyCode = "USD";
+
+  let after: string | null = null;
+  let cappedAtPageLimit = false;
+
+  for (let page = 0; page < TOP_PRODUCTS_ORDERS_MAX_PAGES; page++) {
+    const result: GraphQLResult<TopPerformersResponse> =
+      await graphqlRequest<TopPerformersResponse>(
+        admin,
+        TOP_PERFORMERS_QUERY,
+        {
+          first: TOP_PRODUCTS_ORDERS_PAGE_SIZE,
+          query: queryFilter,
+          after,
+        },
+      );
+    if (!result.ok) return { ok: false, error: result.error };
+
+    for (const edge of result.data.orders.edges) {
+      const orderId = edge.node.id;
+      for (const li of edge.node.lineItems.edges) {
+        const product = li.node.product;
+        if (!product) continue; // line item from a deleted product
+        const unitPriceCents = Math.round(
+          parseFloat(li.node.originalUnitPriceSet.shopMoney.amount) * 100,
+        );
+        currencyCode = li.node.originalUnitPriceSet.shopMoney.currencyCode;
+        const lineRevenueCents = unitPriceCents * li.node.quantity;
+        const existing = tallies.get(product.id);
+        if (existing) {
+          existing.unitsSold += li.node.quantity;
+          existing.revenueCents += lineRevenueCents;
+          existing.orderIds.add(orderId);
+        } else {
+          tallies.set(product.id, {
+            productId: product.id,
+            title: product.title,
+            handle: product.handle,
+            unitsSold: li.node.quantity,
+            revenueCents: lineRevenueCents,
+            orderIds: new Set([orderId]),
+          });
+        }
+      }
+    }
+
+    if (!result.data.orders.pageInfo.hasNextPage) break;
+    after = result.data.orders.pageInfo.endCursor;
+    if (page === TOP_PRODUCTS_ORDERS_MAX_PAGES - 1) cappedAtPageLimit = true;
+  }
+
+  // For "bottom" direction, filter out zero-unit products. They didn't
+  // appear in any order at all in this window — that's a "dead stock"
+  // question, not "underperformer." Keep the bottom list focused on
+  // products that ARE selling but selling poorly.
+  let candidates = Array.from(tallies.values());
+  if (direction === "bottom") {
+    candidates = candidates.filter((t) => t.unitsSold > 0);
+  }
+
+  const compareValue = (t: Tally) =>
+    sortBy === "units" ? t.unitsSold : t.revenueCents;
+
+  candidates.sort((a, b) => {
+    const av = compareValue(a);
+    const bv = compareValue(b);
+    return direction === "top" ? bv - av : av - bv;
+  });
+
+  const products = candidates.slice(0, limit).map((t) => ({
+    id: t.productId,
+    title: t.title,
+    handle: t.handle,
+    unitsSold: t.unitsSold,
+    revenue: (t.revenueCents / 100).toFixed(2),
+    orderCount: t.orderIds.size,
+  }));
+
+  const note = cappedAtPageLimit
+    ? `Ranking based on the most recent ${TOP_PRODUCTS_ORDERS_PAGE_SIZE * TOP_PRODUCTS_ORDERS_MAX_PAGES} orders in the window. Older orders weren't counted; the ranking may be incomplete for high-volume stores.`
+    : products.length === 0
+      ? `No qualifying products in the last ${days} days.`
+      : direction === "top"
+        ? `Top ${Math.min(limit, products.length)} products by ${sortBy} across all orders in the last ${days} days.`
+        : `Bottom ${Math.min(limit, products.length)} products by ${sortBy} (excluding products that didn't sell at all). 'Bottom' here means lowest-performing among products that ARE selling.`;
+
+  return {
+    ok: true,
+    data: {
+      rangeDays: days,
+      direction,
+      sortBy,
+      limit,
+      currencyCode,
+      products,
       cappedAtPageLimit,
       note,
     },

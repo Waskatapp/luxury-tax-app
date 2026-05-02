@@ -604,6 +604,8 @@ export async function executeApprovedWrite(
         // the next analytics question gets fresh state.
         "get_product_performance",
         "compare_periods",
+        // V-IN-B — Same rationale: writes shift the rankings.
+        "get_top_performers",
       ]);
     }
     return result;

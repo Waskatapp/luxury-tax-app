@@ -2,6 +2,7 @@ import {
   comparePeriods,
   getAnalytics,
   getProductPerformance,
+  getTopPerformers,
 } from "../../../shopify/analytics.server";
 import { readCacheGet, readCacheSet } from "../../read-cache.server";
 import type {
@@ -88,6 +89,28 @@ export const comparePeriodsHandler: ToolHandler = async (
   const result = await comparePeriods(ctx.admin, input);
   if (result.ok && ctx.conversationId) {
     readCacheSet(ctx.conversationId, "compare_periods", input, result.data);
+  }
+  return result;
+};
+
+// V-IN-B — get_top_performers handler. Read-cache friendly so "top
+// sellers this month" → "wait, sort by revenue instead" hits the cache
+// only when args match — different sortBy / direction / limit produces
+// a different cache key (per the canonical-args serializer in
+// read-cache.server.ts), so the two queries scan independently.
+export const getTopPerformersHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  if (ctx.conversationId) {
+    const cached = readCacheGet(ctx.conversationId, "get_top_performers", input);
+    if (cached !== undefined) {
+      return { ok: true, data: cached };
+    }
+  }
+  const result = await getTopPerformers(ctx.admin, input);
+  if (result.ok && ctx.conversationId) {
+    readCacheSet(ctx.conversationId, "get_top_performers", input, result.data);
   }
   return result;
 };
