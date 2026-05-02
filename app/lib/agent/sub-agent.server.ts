@@ -76,6 +76,16 @@ export async function runSubAgent(
   const readsExecuted: SubAgentReadCall[] = [];
   const proposedWrites: ProposedWrite[] = [];
 
+  // V-Mkt-B fix — guard against the model double-firing the same
+  // tool_use block within one response (observed in chat: the Marketing
+  // manager emitted two delete_article calls with identical args — the
+  // merchant approved both, the second naturally failed because the
+  // first deletion already succeeded, and the cascade triggered a
+  // catastrophic stream error). Tracks (toolName + canonical-args) keys
+  // we've already queued; duplicates get a synthetic "already queued"
+  // function-response and don't bloat the merchant's approval card.
+  const seenWriteKeys = new Set<string>();
+
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let response;
     try {
@@ -181,6 +191,31 @@ export async function runSubAgent(
         spec.classification.inlineWrite.has(toolName);
 
       if (isWrite) {
+        // Dedupe: if the model emitted an identical write earlier in
+        // this turn, skip the duplicate. The merchant only ever sees
+        // ONE approval card per (tool, args) tuple even when Gemini
+        // double-fires.
+        const writeKey = toolName + ":" + canonicalArgs(call.args ?? {});
+        if (seenWriteKeys.has(writeKey)) {
+          log.warn("sub-agent: skipping duplicate proposed write", {
+            departmentId: spec.id,
+            toolName,
+          });
+          functionResponseParts.push({
+            functionResponse: {
+              name: toolName,
+              response: {
+                status: "duplicate_skipped",
+                message:
+                  "An identical write was already queued in this turn — the duplicate is being ignored. Don't call it again; finalize your rationale.",
+              },
+            },
+          });
+          sawWrite = true;
+          continue;
+        }
+        seenWriteKeys.add(writeKey);
+
         // Approval-gated write. Collect for return; don't execute.
         proposedWrites.push({
           toolName,
@@ -288,6 +323,29 @@ export async function runSubAgent(
     reason: `Sub-agent did not finish within ${MAX_ROUNDS} rounds.`,
   };
 }
+
+// Stable serialization for write-args dedup. Object keys sorted so
+// `{a:1,b:2}` and `{b:2,a:1}` produce the same key. Same shape as the
+// helper in read-cache.server.ts; copied here rather than imported to
+// keep the dependency direction (sub-agent → read-cache) avoided.
+function canonicalArgs(v: unknown): string {
+  if (v === null || v === undefined) return "null";
+  if (typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(canonicalArgs).join(",") + "]";
+  const obj = v as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return (
+    "{" +
+    keys.map((k) => JSON.stringify(k) + ":" + canonicalArgs(obj[k])).join(",") +
+    "}"
+  );
+}
+
+// ---- Test seams ----
+
+export const _testing = {
+  canonicalArgs,
+};
 
 // Pure helper for tests + error messages.
 function getKnownDepartments(): string[] {
