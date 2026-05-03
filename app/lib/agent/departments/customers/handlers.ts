@@ -12,6 +12,10 @@ import {
   updateEmailMarketingConsent,
   updateSmsMarketingConsent,
 } from "../../../shopify/customers.server";
+import {
+  readSegmentMembers,
+  readSegments,
+} from "../../../shopify/segments.server";
 import { readCacheGet, readCacheSet } from "../../read-cache.server";
 import type { HandlerContext, ToolHandler } from "../department-spec";
 
@@ -80,4 +84,46 @@ export const updateSmsMarketingConsentHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return updateSmsMarketingConsent(ctx.admin, input);
+};
+
+// V-Cu-B — Segment read handlers. Cached per-conversation; busted by
+// any customer write (since segment composition can shift on tag edits
+// — the executor's readCacheInvalidate handles that).
+export const readSegmentsHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  if (ctx.conversationId) {
+    const cached = readCacheGet(ctx.conversationId, "read_segments", input);
+    if (cached !== undefined) return { ok: true, data: cached };
+  }
+  const result = await readSegments(ctx.admin, input);
+  if (result.ok && ctx.conversationId) {
+    readCacheSet(ctx.conversationId, "read_segments", input, result.data);
+  }
+  return result;
+};
+
+export const readSegmentMembersHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  if (ctx.conversationId) {
+    const cached = readCacheGet(
+      ctx.conversationId,
+      "read_segment_members",
+      input,
+    );
+    if (cached !== undefined) return { ok: true, data: cached };
+  }
+  const result = await readSegmentMembers(ctx.admin, input);
+  if (result.ok && ctx.conversationId) {
+    readCacheSet(
+      ctx.conversationId,
+      "read_segment_members",
+      input,
+      result.data,
+    );
+  }
+  return result;
 };

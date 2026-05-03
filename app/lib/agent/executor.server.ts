@@ -684,6 +684,13 @@ export async function executeApprovedWrite(
         // fresh state.
         "read_customers",
         "read_customer_detail",
+        // V-Cu-B — Customer writes can shift SEGMENT membership too:
+        // tag changes affect tag-based segments, consent changes
+        // affect subscriber-based segments, etc. Bust the segment
+        // reads so a "show me my VIPs" follow-up after an
+        // update_customer_tags call doesn't return stale membership.
+        "read_segments",
+        "read_segment_members",
       ]);
     }
     return result;

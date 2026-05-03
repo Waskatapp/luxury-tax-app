@@ -128,8 +128,8 @@ export const DEPARTMENTS: Department[] = [
     description:
       "Owns the customer list: read summaries + drill-in details, edit " +
       "identity (name / email / phone / note), manage tags (replacement " +
-      "set), and update email + SMS marketing consent (separate per-" +
-      "channel audit trails).",
+      "set), update email + SMS marketing consent (separate per-channel " +
+      "audit trails), and read customer segments + their members.",
     toolNames: [
       "read_customers",
       "read_customer_detail",
@@ -137,6 +137,8 @@ export const DEPARTMENTS: Department[] = [
       "update_customer_tags",
       "update_email_marketing_consent",
       "update_sms_marketing_consent",
+      "read_segments",
+      "read_segment_members",
     ],
   },
 ];

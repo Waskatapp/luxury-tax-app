@@ -6,6 +6,8 @@ import type { DepartmentSpec, ToolHandler } from "../department-spec";
 import {
   readCustomerDetailHandler,
   readCustomersHandler,
+  readSegmentMembersHandler,
+  readSegmentsHandler,
   updateCustomerHandler,
   updateCustomerTagsHandler,
   updateEmailMarketingConsentHandler,
@@ -139,12 +141,64 @@ const updateSmsMarketingConsentDeclaration: FunctionDeclaration = {
   },
 };
 
+// ----------------------------------------------------------------------------
+// V-Cu-B — Customer segments (read-only). Segment WRITES are deferred —
+// Shopify's visual segment editor handles the DSL query authoring much
+// better than chat. We ship reads so the CEO can leverage existing
+// segments for "show me my VIPs" type questions.
+// ----------------------------------------------------------------------------
+
+const readSegmentsDeclaration: FunctionDeclaration = {
+  name: "read_segments",
+  description:
+    "List the merchant's customer segments. Each segment is a saved query (defined in Shopify admin's segment editor) that selects a subset of customers — e.g. \"VIP Customers\", \"Repeat Buyers\", \"At-Risk\". Returns id, name, the segment's DSL query string, and creation/edit timestamps.\n\nUse this when the merchant asks 'what segments do I have?' / 'list my customer segments' / when you need a segmentId to drill into a specific segment's members. Read-only — no approval card.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 50,
+        description: "Max segments to return. Defaults to 20.",
+      },
+      query: {
+        type: "string",
+        description:
+          "Optional Shopify segment search syntax. Bare keywords match segment names.",
+      },
+    },
+  },
+};
+
+const readSegmentMembersDeclaration: FunctionDeclaration = {
+  name: "read_segment_members",
+  description:
+    "List the customers who currently match a segment's query. **Requires the segmentId** — call `read_segments` FIRST to find the right segment if you only have its name.\n\nReturns customer summaries (id, displayName, email, lifetime stats). Use this for 'show me the customers in my VIP segment' / 'how many people are in my Repeat Buyers segment?' Read-only — no approval card.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      segmentId: {
+        type: "string",
+        description:
+          "Segment GID, e.g. gid://shopify/Segment/12345. Get from a read_segments call first.",
+      },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 50,
+        description: "Max members to return. Defaults to 20.",
+      },
+    },
+    required: ["segmentId"],
+  },
+};
+
 const CUSTOMERS_SPEC: DepartmentSpec = {
   id: "customers",
   label: "Customers",
   managerTitle: "Customers manager",
   description:
-    "Owns the customer list: read summaries + drill-in details, edit identity (name / email / phone / note), manage tags (replacement set), and update email + SMS marketing consent state (separate per-channel audit trails). All writes go through human approval.",
+    "Owns the customer list: read summaries + drill-in details, edit identity (name / email / phone / note), manage tags (replacement set), update email + SMS marketing consent state (separate per-channel audit trails), and read customer segments + their members (read-only). All writes go through human approval.",
   systemPrompt: CUSTOMERS_PROMPT,
   toolDeclarations: [
     readCustomersDeclaration,
@@ -153,6 +207,8 @@ const CUSTOMERS_SPEC: DepartmentSpec = {
     updateCustomerTagsDeclaration,
     updateEmailMarketingConsentDeclaration,
     updateSmsMarketingConsentDeclaration,
+    readSegmentsDeclaration,
+    readSegmentMembersDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["read_customers", readCustomersHandler],
@@ -161,9 +217,16 @@ const CUSTOMERS_SPEC: DepartmentSpec = {
     ["update_customer_tags", updateCustomerTagsHandler],
     ["update_email_marketing_consent", updateEmailMarketingConsentHandler],
     ["update_sms_marketing_consent", updateSmsMarketingConsentHandler],
+    ["read_segments", readSegmentsHandler],
+    ["read_segment_members", readSegmentMembersHandler],
   ]),
   classification: {
-    read: new Set(["read_customers", "read_customer_detail"]),
+    read: new Set([
+      "read_customers",
+      "read_customer_detail",
+      "read_segments",
+      "read_segment_members",
+    ]),
     write: new Set([
       "update_customer",
       "update_customer_tags",

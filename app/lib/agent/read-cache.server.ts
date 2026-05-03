@@ -56,6 +56,10 @@ export const CACHEABLE_READ_TOOLS = new Set<string>([
   // the common "tell me about X" → "what about Y" → "back to X" flow.
   "read_customers",
   "read_customer_detail",
+  // V-Cu-B — Customer segments (read-only). Cache because segment
+  // composition rarely changes within a 5-min conversation window.
+  "read_segments",
+  "read_segment_members",
 ]);
 
 type CachedResult = {
