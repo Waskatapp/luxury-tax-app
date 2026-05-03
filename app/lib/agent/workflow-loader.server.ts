@@ -11,7 +11,7 @@ import { log } from "../log.server";
 // Each workflow file MAY include a YAML-style frontmatter block at the top:
 //
 //   ---
-//   department: products | pricing-promotions | insights | marketing | cross-cutting
+//   department: products | pricing-promotions | insights | marketing | customers | cross-cutting
 //   ---
 //
 //   # Workflow: ...

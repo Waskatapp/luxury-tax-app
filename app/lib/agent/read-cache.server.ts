@@ -50,6 +50,12 @@ export const CACHEABLE_READ_TOOLS = new Set<string>([
   "read_articles",
   // V-Mkt-C — read_pages. Same caching rationale as read_articles.
   "read_pages",
+  // V-Cu-A — Customers reads. read_customer_detail is the heavy one
+  // (single GraphQL roundtrip including consent state + recent orders +
+  // default address); caching it across the conversation matters for
+  // the common "tell me about X" → "what about Y" → "back to X" flow.
+  "read_customers",
+  "read_customer_detail",
 ]);
 
 type CachedResult = {

@@ -18,7 +18,8 @@ export type DepartmentId =
   | "products"
   | "pricing-promotions"
   | "insights"
-  | "marketing";
+  | "marketing"
+  | "customers";
 
 export type Department = {
   id: DepartmentId;
@@ -118,6 +119,24 @@ export const DEPARTMENTS: Department[] = [
       "create_page",
       "update_page",
       "delete_page",
+    ],
+  },
+  {
+    id: "customers",
+    label: "Customers",
+    managerTitle: "Customers manager",
+    description:
+      "Owns the customer list: read summaries + drill-in details, edit " +
+      "identity (name / email / phone / note), manage tags (replacement " +
+      "set), and update email + SMS marketing consent (separate per-" +
+      "channel audit trails).",
+    toolNames: [
+      "read_customers",
+      "read_customer_detail",
+      "update_customer",
+      "update_customer_tags",
+      "update_email_marketing_consent",
+      "update_sms_marketing_consent",
     ],
   },
 ];

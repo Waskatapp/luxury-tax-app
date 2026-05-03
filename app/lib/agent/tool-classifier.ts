@@ -63,6 +63,16 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   "create_page",
   "update_page",
   "delete_page",
+  // V-Cu-A — Customers writes. update_customer is partial-identity (Zod
+  // refine: at least one field). update_customer_tags is replacement-
+  // set semantics (manager prompt teaches merge-first workflow). The
+  // two consent writes are intentionally split per-channel because
+  // CAN-SPAM (email) and TCPA (SMS) carry different legal weight and
+  // separate AuditLog entries are non-negotiable.
+  "update_customer",
+  "update_customer_tags",
+  "update_email_marketing_consent",
+  "update_sms_marketing_consent",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)

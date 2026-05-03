@@ -21,3 +21,4 @@ import "./products/index";
 import "./pricing-promotions/index";
 import "./insights/index";
 import "./marketing/index";
+import "./customers/index";

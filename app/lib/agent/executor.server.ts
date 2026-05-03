@@ -24,6 +24,7 @@ import {
 } from "../shopify/seo.server";
 import { fetchArticle } from "../shopify/articles.server";
 import { fetchPage } from "../shopify/pages.server";
+import { fetchCustomerDetail } from "../shopify/customers.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
 // Insights department (app/lib/agent/departments/insights/). The
 // underlying app/lib/shopify/analytics.server.ts module is unchanged;
@@ -571,6 +572,22 @@ export async function snapshotBefore(
         const r = await fetchPage(ctx.admin, pageId);
         return r.ok ? r.data : null;
       }
+      case "update_customer":
+      case "update_customer_tags":
+      case "update_email_marketing_consent":
+      case "update_sms_marketing_consent": {
+        // V-Cu-A — All four customer writes share fetchCustomerDetail.
+        // The snapshot captures identity + tags + note + email & SMS
+        // consent state + lifetime stats. For consent writes especially
+        // the before-state is legally meaningful: it's the prior consent
+        // record that the merchant's mutation is REPLACING, and the
+        // AuditLog row is the audit trail any privacy/compliance review
+        // would consult. One canonical snapshot, all four writes.
+        const customerId = String(toolInput.customerId ?? "");
+        if (!customerId) return null;
+        const r = await fetchCustomerDetail(ctx.admin, customerId);
+        return r.ok ? r.data : null;
+      }
       case "remove_product_image":
       case "reorder_product_images": {
         // Both: AuditLog before-state is the current media listing for
@@ -660,6 +677,13 @@ export async function executeApprovedWrite(
         "read_articles",
         // V-Mkt-C — same rationale for static pages.
         "read_pages",
+        // V-Cu-A — Customer writes shift list-level fields (tags,
+        // consent, identity) that read_customers surfaces, AND the
+        // detail-level snapshot that read_customer_detail returns.
+        // Bust both so post-write reads in the same conversation see
+        // fresh state.
+        "read_customers",
+        "read_customer_detail",
       ]);
     }
     return result;
