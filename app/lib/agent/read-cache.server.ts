@@ -60,6 +60,13 @@ export const CACHEABLE_READ_TOOLS = new Set<string>([
   // composition rarely changes within a 5-min conversation window.
   "read_segments",
   "read_segment_members",
+  // V-Or-A — Orders reads. read_order_detail is the heavy one (single
+  // GraphQL roundtrip including line items + shipping address +
+  // fulfillments + refunds); caching matters for the common
+  // "tell me about #1001" → "what about Cat Lover's other orders" →
+  // "back to #1001" drill-in flow.
+  "read_orders",
+  "read_order_detail",
 ]);
 
 type CachedResult = {

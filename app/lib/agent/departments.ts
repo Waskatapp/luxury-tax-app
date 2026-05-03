@@ -19,7 +19,8 @@ export type DepartmentId =
   | "pricing-promotions"
   | "insights"
   | "marketing"
-  | "customers";
+  | "customers"
+  | "orders";
 
 export type Department = {
   id: DepartmentId;
@@ -139,6 +140,22 @@ export const DEPARTMENTS: Department[] = [
       "update_sms_marketing_consent",
       "read_segments",
       "read_segment_members",
+    ],
+  },
+  {
+    id: "orders",
+    label: "Orders",
+    managerTitle: "Orders manager",
+    description:
+      "Owns the order book — read order list (with Shopify search " +
+      "syntax for fulfillment / financial status / dates / customer / " +
+      "tags) and read full single-order details (line items, shipping " +
+      "address, fulfillments with tracking, refunds, totals). READ-ONLY " +
+      "in this version; future rounds will add note + tag edits, " +
+      "fulfillment writes, and cancel + refund.",
+    toolNames: [
+      "read_orders",
+      "read_order_detail",
     ],
   },
 ];
