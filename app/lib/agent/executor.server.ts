@@ -25,6 +25,7 @@ import {
 import { fetchArticle } from "../shopify/articles.server";
 import { fetchPage } from "../shopify/pages.server";
 import { fetchCustomerDetail } from "../shopify/customers.server";
+import { fetchOrderDetail } from "../shopify/orders.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
 // Insights department (app/lib/agent/departments/insights/). The
 // underlying app/lib/shopify/analytics.server.ts module is unchanged;
@@ -588,6 +589,19 @@ export async function snapshotBefore(
         const r = await fetchCustomerDetail(ctx.admin, customerId);
         return r.ok ? r.data : null;
       }
+      case "update_order_note":
+      case "update_order_tags": {
+        // V-Or-B — Both order writes share fetchOrderDetail. Same
+        // canonical-snapshot pattern as customers: one query, one shape,
+        // all order writes get the same OrderDetail before-state in
+        // their AuditLog row. Future Or-C/D fulfillment + cancel +
+        // refund tools will fall through this same case block by adding
+        // their tool names to the list above.
+        const orderId = String(toolInput.orderId ?? "");
+        if (!orderId) return null;
+        const r = await fetchOrderDetail(ctx.admin, orderId);
+        return r.ok ? r.data : null;
+      }
       case "remove_product_image":
       case "reorder_product_images": {
         // Both: AuditLog before-state is the current media listing for
@@ -691,6 +705,12 @@ export async function executeApprovedWrite(
         // update_customer_tags call doesn't return stale membership.
         "read_segments",
         "read_segment_members",
+        // V-Or-B — Order writes shift list-level fields (tags) and
+        // detail-level fields (note + tags). Bust both order reads so
+        // a post-write "show me unfulfilled orders" or "tell me about
+        // #1001 again" returns fresh state.
+        "read_orders",
+        "read_order_detail",
       ]);
     }
     return result;

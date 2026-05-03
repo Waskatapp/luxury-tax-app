@@ -143,6 +143,23 @@ export const ReadOrderDetailInput = z.object({
   orderId: z.string().min(1),
 });
 
+// V-Or-B — Note + tag writes. Both target orderUpdate(input: OrderInput!).
+// Note: empty string is a valid value (clears the note). Tags: FULL
+// replacement list, mirroring update_customer_tags / update_product_tags.
+
+const NOTE_MAX = 5000;
+const TAG_MAX = 250;
+
+export const UpdateOrderNoteInput = z.object({
+  orderId: z.string().min(1),
+  note: z.string().max(NOTE_MAX),
+});
+
+export const UpdateOrderTagsInput = z.object({
+  orderId: z.string().min(1),
+  tags: z.array(z.string().min(1).max(TAG_MAX)).max(250),
+});
+
 // ----------------------------------------------------------------------------
 // GraphQL
 // ----------------------------------------------------------------------------
@@ -167,6 +184,20 @@ const READ_ORDERS_QUERY = `#graphql
         }
       }
       pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+// V-Or-B — orderUpdate mutation. Used by both update_order_note and
+// update_order_tags. The OrderInput type accepts `id` plus optional
+// note / tags / email / metafields / etc. — we only send the fields the
+// caller set. After the mutation we refetch via fetchOrderDetail so the
+// result + AuditLog after-state share the canonical OrderDetail shape.
+const ORDER_UPDATE_MUTATION = `#graphql
+  mutation OrderUpdate($input: OrderInput!) {
+    orderUpdate(input: $input) {
+      order { id }
+      userErrors { field message }
     }
   }
 `;
@@ -335,6 +366,13 @@ type ReadOrdersResponse = {
 };
 
 type FetchOrderDetailResponse = { order: OrderDetailNode | null };
+
+type OrderUpdateResponse = {
+  orderUpdate: {
+    order: { id: string } | null;
+    userErrors: Array<{ field?: string[]; message: string }>;
+  };
+};
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -515,6 +553,80 @@ export async function readOrderDetail(
   if (!parsed.success) {
     return { ok: false, error: `invalid input: ${parsed.error.message}` };
   }
+  return fetchOrderDetail(admin, parsed.data.orderId);
+}
+
+// ----------------------------------------------------------------------------
+// updateOrderNote — admin-only note (customer never sees it). Empty string
+// clears the note; null is rejected by Zod. Returns the post-update full
+// snapshot so the result + AuditLog after-state stay canonical across all
+// order writes.
+// ----------------------------------------------------------------------------
+
+export async function updateOrderNote(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<OrderDetail>> {
+  const parsed = UpdateOrderNoteInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<OrderUpdateResponse>(
+    admin,
+    ORDER_UPDATE_MUTATION,
+    { input: { id: parsed.data.orderId, note: parsed.data.note } },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.orderUpdate.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  if (!result.data.orderUpdate.order) {
+    return { ok: false, error: "orderUpdate returned no order" };
+  }
+
+  return fetchOrderDetail(admin, parsed.data.orderId);
+}
+
+// ----------------------------------------------------------------------------
+// updateOrderTags — REPLACEMENT semantics. Caller passes the FULL desired
+// tag list; the manager prompt teaches the merge-first workflow (read
+// existing tags, append/remove, propose with full final list). Mirrors
+// update_customer_tags / update_product_tags exactly.
+// ----------------------------------------------------------------------------
+
+export async function updateOrderTags(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<OrderDetail>> {
+  const parsed = UpdateOrderTagsInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<OrderUpdateResponse>(
+    admin,
+    ORDER_UPDATE_MUTATION,
+    { input: { id: parsed.data.orderId, tags: parsed.data.tags } },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.orderUpdate.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  if (!result.data.orderUpdate.order) {
+    return { ok: false, error: "orderUpdate returned no order" };
+  }
+
   return fetchOrderDetail(admin, parsed.data.orderId);
 }
 

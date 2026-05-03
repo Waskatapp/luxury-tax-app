@@ -73,6 +73,12 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   "update_customer_tags",
   "update_email_marketing_consent",
   "update_sms_marketing_consent",
+  // V-Or-B — Orders note + tag writes. Lowest-risk writes in the
+  // Orders dept — both target orderUpdate and only touch admin-only
+  // metadata (customer never sees them). Tags follow replacement-set
+  // semantics like other tag writes.
+  "update_order_note",
+  "update_order_tags",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)

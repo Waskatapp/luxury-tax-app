@@ -149,13 +149,16 @@ export const DEPARTMENTS: Department[] = [
     description:
       "Owns the order book — read order list (with Shopify search " +
       "syntax for fulfillment / financial status / dates / customer / " +
-      "tags) and read full single-order details (line items, shipping " +
-      "address, fulfillments with tracking, refunds, totals). READ-ONLY " +
-      "in this version; future rounds will add note + tag edits, " +
-      "fulfillment writes, and cancel + refund.",
+      "tags), read full single-order details (line items, shipping " +
+      "address, fulfillments with tracking, refunds, totals), and " +
+      "edit admin-only metadata (note + tags, replacement set; " +
+      "customer never sees these). Future rounds will add fulfillment " +
+      "writes (send customer email) and cancel + refund (high-risk).",
     toolNames: [
       "read_orders",
       "read_order_detail",
+      "update_order_note",
+      "update_order_tags",
     ],
   },
 ];

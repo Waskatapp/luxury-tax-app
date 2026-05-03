@@ -1,11 +1,16 @@
-// V-Or-A — Orders department handlers. Round A is read-only — both reads
-// thread the per-conversation cache (5-min TTL). Writes added in Or-B/C/D
-// will be pass-through wrappers; snapshotBefore + readCacheInvalidate
-// wiring lives in executor.server.ts.
+// V-Or-A — Orders department handlers. Reads thread the per-conversation
+// cache (5-min TTL). Writes are pass-through wrappers; snapshotBefore +
+// readCacheInvalidate wiring lives in executor.server.ts.
+//
+// V-Or-B — Note + tag writes (update_order_note, update_order_tags).
+// Both target orderUpdate; admin-only metadata (customer never sees the
+// note; tags are internal organization). Lowest-risk writes in Orders.
 
 import {
   readOrderDetail,
   readOrders,
+  updateOrderNote,
+  updateOrderTags,
 } from "../../../shopify/orders.server";
 import { readCacheGet, readCacheSet } from "../../read-cache.server";
 import type { HandlerContext, ToolHandler } from "../department-spec";
@@ -43,4 +48,18 @@ export const readOrderDetailHandler: ToolHandler = async (
     );
   }
   return result;
+};
+
+export const updateOrderNoteHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return updateOrderNote(ctx.admin, input);
+};
+
+export const updateOrderTagsHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return updateOrderTags(ctx.admin, input);
 };
