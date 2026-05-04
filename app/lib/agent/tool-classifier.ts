@@ -79,6 +79,14 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   // semantics like other tag writes.
   "update_order_note",
   "update_order_tags",
+  // V-Or-C — Fulfillment writes. Both target fulfillmentCreateV2 and
+  // SEND THE CUSTOMER A SHIPPING-CONFIRMATION EMAIL on approval unless
+  // notifyCustomer:false. Medium-risk (no money, but customer-facing).
+  // The FunctionDeclaration descriptions + manager prompt make the
+  // email behavior prominent so the merchant doesn't approve thinking
+  // this is internal-only.
+  "mark_as_fulfilled",
+  "fulfill_order_with_tracking",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)

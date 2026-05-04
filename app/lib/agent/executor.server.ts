@@ -590,13 +590,15 @@ export async function snapshotBefore(
         return r.ok ? r.data : null;
       }
       case "update_order_note":
-      case "update_order_tags": {
-        // V-Or-B — Both order writes share fetchOrderDetail. Same
-        // canonical-snapshot pattern as customers: one query, one shape,
-        // all order writes get the same OrderDetail before-state in
-        // their AuditLog row. Future Or-C/D fulfillment + cancel +
-        // refund tools will fall through this same case block by adding
-        // their tool names to the list above.
+      case "update_order_tags":
+      case "mark_as_fulfilled":
+      case "fulfill_order_with_tracking": {
+        // V-Or-B + V-Or-C — All order writes share fetchOrderDetail.
+        // Same canonical-snapshot pattern as customers: one query, one
+        // shape, all order writes get the same OrderDetail before-state
+        // in their AuditLog row (capturing fulfillment status + tracking
+        // info that the write is about to mutate). Future Or-D cancel +
+        // refund tools will fall through this same case block.
         const orderId = String(toolInput.orderId ?? "");
         if (!orderId) return null;
         const r = await fetchOrderDetail(ctx.admin, orderId);

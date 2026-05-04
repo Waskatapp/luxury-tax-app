@@ -160,6 +160,40 @@ export const UpdateOrderTagsInput = z.object({
   tags: z.array(z.string().min(1).max(TAG_MAX)).max(250),
 });
 
+// V-Or-C — Fulfillment writes. Both target fulfillmentCreateV2 under
+// the hood. SHOPIFY EMAILS THE CUSTOMER A SHIPPING-CONFIRMATION when a
+// fulfillment is created — the FunctionDeclaration descriptions and
+// the manager prompt surface this fact prominently. Pass
+// notifyCustomer:false to suppress the email (rare).
+//
+// Both tools are MEDIUM-risk: no money moves, but the customer sees
+// the result. The merchant should never approve a fulfillment thinking
+// "this just records internally."
+
+const TRACKING_NUMBER_MAX = 100;
+const TRACKING_COMPANY_MAX = 50;
+const TRACKING_URL_MAX = 500;
+
+export const MarkAsFulfilledInput = z.object({
+  orderId: z.string().min(1),
+  // Default true matches Shopify's own default. We pass it through
+  // explicitly so the AuditLog before/after captures the value the
+  // merchant approved.
+  notifyCustomer: z.boolean().default(true),
+});
+
+export const FulfillOrderWithTrackingInput = z.object({
+  orderId: z.string().min(1),
+  trackingNumber: z.string().min(1).max(TRACKING_NUMBER_MAX),
+  // Free-text carrier name. Shopify accepts "USPS", "FedEx", "UPS",
+  // "DHL", "Other", or a custom string. For known carriers Shopify
+  // auto-generates the tracking URL; otherwise the merchant must pass
+  // trackingUrl explicitly.
+  trackingCompany: z.string().min(1).max(TRACKING_COMPANY_MAX),
+  trackingUrl: z.string().url().max(TRACKING_URL_MAX).optional(),
+  notifyCustomer: z.boolean().default(true),
+});
+
 // ----------------------------------------------------------------------------
 // GraphQL
 // ----------------------------------------------------------------------------
@@ -197,6 +231,37 @@ const ORDER_UPDATE_MUTATION = `#graphql
   mutation OrderUpdate($input: OrderInput!) {
     orderUpdate(input: $input) {
       order { id }
+      userErrors { field message }
+    }
+  }
+`;
+
+// V-Or-C — Fulfill the order's open FulfillmentOrders. Shopify's modern
+// fulfillment model uses a FulfillmentOrder as the unit of fulfillment
+// (each FO can be at a different location, with different statuses).
+// To "mark this order as shipped" we fetch all open FOs first, then
+// pass them to fulfillmentCreateV2. Omitting fulfillmentOrderLineItems
+// means "fulfill ALL remaining items in this FO" — exactly what we
+// want for a blanket fulfillment.
+const FETCH_FULFILLMENT_ORDERS_QUERY = `#graphql
+  query FetchFulfillmentOrders($id: ID!) {
+    order(id: $id) {
+      id
+      fulfillmentOrders(first: 50) {
+        edges { node { id status } }
+      }
+    }
+  }
+`;
+
+const FULFILLMENT_CREATE_MUTATION = `#graphql
+  mutation FulfillmentCreate($fulfillment: FulfillmentV2Input!) {
+    fulfillmentCreateV2(fulfillment: $fulfillment) {
+      fulfillment {
+        id
+        status
+        trackingInfo { number url company }
+      }
       userErrors { field message }
     }
   }
@@ -370,6 +435,30 @@ type FetchOrderDetailResponse = { order: OrderDetailNode | null };
 type OrderUpdateResponse = {
   orderUpdate: {
     order: { id: string } | null;
+    userErrors: Array<{ field?: string[]; message: string }>;
+  };
+};
+
+type FulfillmentOrderListResponse = {
+  order: {
+    id: string;
+    fulfillmentOrders: {
+      edges: Array<{ node: { id: string; status: string } }>;
+    };
+  } | null;
+};
+
+type FulfillmentCreateResponse = {
+  fulfillmentCreateV2: {
+    fulfillment: {
+      id: string;
+      status: string;
+      trackingInfo: Array<{
+        number: string | null;
+        url: string | null;
+        company: string | null;
+      }>;
+    } | null;
     userErrors: Array<{ field?: string[]; message: string }>;
   };
 };
@@ -625,6 +714,152 @@ export async function updateOrderTags(
   }
   if (!result.data.orderUpdate.order) {
     return { ok: false, error: "orderUpdate returned no order" };
+  }
+
+  return fetchOrderDetail(admin, parsed.data.orderId);
+}
+
+// ----------------------------------------------------------------------------
+// V-Or-C — Fetch the order's open FulfillmentOrders. Used by both
+// markAsFulfilled and fulfillOrderWithTracking. Filters client-side
+// to FOs that can actually be fulfilled (OPEN, IN_PROGRESS,
+// INCOMPLETE) — CLOSED and CANCELLED FOs would error if we tried to
+// fulfill them.
+// ----------------------------------------------------------------------------
+
+const FULFILLABLE_FO_STATUSES = new Set(["OPEN", "IN_PROGRESS", "INCOMPLETE"]);
+
+async function fetchOpenFulfillmentOrders(
+  admin: ShopifyAdmin,
+  orderId: string,
+): Promise<ToolModuleResult<{ fulfillmentOrderIds: string[] }>> {
+  const result = await graphqlRequest<FulfillmentOrderListResponse>(
+    admin,
+    FETCH_FULFILLMENT_ORDERS_QUERY,
+    { id: orderId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.data.order) {
+    return { ok: false, error: `order not found: ${orderId}` };
+  }
+  const ids = result.data.order.fulfillmentOrders.edges
+    .filter((e) => FULFILLABLE_FO_STATUSES.has(e.node.status))
+    .map((e) => e.node.id);
+  return { ok: true, data: { fulfillmentOrderIds: ids } };
+}
+
+// ----------------------------------------------------------------------------
+// markAsFulfilled — fulfill all open FulfillmentOrders without tracking.
+// For stores that ship before adding tracking, or for digital/non-tracked
+// goods. SHOPIFY EMAILS THE CUSTOMER unless notifyCustomer:false.
+// ----------------------------------------------------------------------------
+
+export async function markAsFulfilled(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<OrderDetail>> {
+  const parsed = MarkAsFulfilledInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const fos = await fetchOpenFulfillmentOrders(admin, parsed.data.orderId);
+  if (!fos.ok) return fos;
+  if (fos.data.fulfillmentOrderIds.length === 0) {
+    return {
+      ok: false,
+      error:
+        "no open fulfillment orders — order is already fulfilled, cancelled, or has no items to fulfill",
+    };
+  }
+
+  const result = await graphqlRequest<FulfillmentCreateResponse>(
+    admin,
+    FULFILLMENT_CREATE_MUTATION,
+    {
+      fulfillment: {
+        lineItemsByFulfillmentOrder: fos.data.fulfillmentOrderIds.map((id) => ({
+          fulfillmentOrderId: id,
+        })),
+        notifyCustomer: parsed.data.notifyCustomer,
+      },
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.fulfillmentCreateV2.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  if (!result.data.fulfillmentCreateV2.fulfillment) {
+    return { ok: false, error: "fulfillmentCreateV2 returned no fulfillment" };
+  }
+
+  return fetchOrderDetail(admin, parsed.data.orderId);
+}
+
+// ----------------------------------------------------------------------------
+// fulfillOrderWithTracking — same as markAsFulfilled but with carrier +
+// tracking number + (optional) tracking URL. Shopify auto-generates the
+// URL for known carriers (USPS / FedEx / UPS / DHL etc.); merchant can
+// override with trackingUrl. The customer gets a shipping confirmation
+// email with the tracking link unless notifyCustomer:false.
+// ----------------------------------------------------------------------------
+
+export async function fulfillOrderWithTracking(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<OrderDetail>> {
+  const parsed = FulfillOrderWithTrackingInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const fos = await fetchOpenFulfillmentOrders(admin, parsed.data.orderId);
+  if (!fos.ok) return fos;
+  if (fos.data.fulfillmentOrderIds.length === 0) {
+    return {
+      ok: false,
+      error:
+        "no open fulfillment orders — order is already fulfilled, cancelled, or has no items to fulfill",
+    };
+  }
+
+  const trackingInfo: Record<string, unknown> = {
+    number: parsed.data.trackingNumber,
+    company: parsed.data.trackingCompany,
+  };
+  if (parsed.data.trackingUrl !== undefined) {
+    trackingInfo.url = parsed.data.trackingUrl;
+  }
+
+  const result = await graphqlRequest<FulfillmentCreateResponse>(
+    admin,
+    FULFILLMENT_CREATE_MUTATION,
+    {
+      fulfillment: {
+        lineItemsByFulfillmentOrder: fos.data.fulfillmentOrderIds.map((id) => ({
+          fulfillmentOrderId: id,
+        })),
+        trackingInfo,
+        notifyCustomer: parsed.data.notifyCustomer,
+      },
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.fulfillmentCreateV2.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  if (!result.data.fulfillmentCreateV2.fulfillment) {
+    return { ok: false, error: "fulfillmentCreateV2 returned no fulfillment" };
   }
 
   return fetchOrderDetail(admin, parsed.data.orderId);

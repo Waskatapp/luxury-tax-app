@@ -4,6 +4,8 @@ import { registerDepartment } from "../registry.server";
 import type { DepartmentSpec, ToolHandler } from "../department-spec";
 
 import {
+  fulfillOrderWithTrackingHandler,
+  markAsFulfilledHandler,
   readOrderDetailHandler,
   readOrdersHandler,
   updateOrderNoteHandler,
@@ -104,28 +106,104 @@ const updateOrderTagsDeclaration: FunctionDeclaration = {
   },
 };
 
+// ----------------------------------------------------------------------------
+// V-Or-C — Fulfillment writes. Both target fulfillmentCreateV2 and SEND
+// THE CUSTOMER A SHIPPING-CONFIRMATION EMAIL unless notifyCustomer:false.
+// Medium-risk: no money moves, but the customer sees the result. The
+// merchant should never approve a fulfillment thinking "this just records
+// internally." The descriptions below state the email behavior in the
+// first sentence — the manager prompt repeats it.
+// ----------------------------------------------------------------------------
+
+const markAsFulfilledDeclaration: FunctionDeclaration = {
+  name: "mark_as_fulfilled",
+  description:
+    "Mark an order as fulfilled WITHOUT tracking info. **REQUIRES HUMAN APPROVAL. THIS WILL EMAIL THE CUSTOMER A SHIPPING-CONFIRMATION** unless `notifyCustomer: false`.\n\nUse this for stores that ship before adding tracking, or for digital / non-tracked goods. Fulfills ALL open line items in one shot — internally calls `fulfillmentCreateV2` against every open FulfillmentOrder for the order.\n\nUse only after the merchant explicitly says the order has shipped (or is shipping today). Don't propose this from inferred intent — the customer email is sent on approval.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      orderId: {
+        type: "string",
+        description:
+          "Order GID, e.g. gid://shopify/Order/12345. Get this from a read_orders call first.",
+      },
+      notifyCustomer: {
+        type: "boolean",
+        description:
+          "Whether Shopify emails the customer a shipping confirmation. Defaults to true. Pass false ONLY when the merchant explicitly says 'don't email them' or this is internal bookkeeping.",
+      },
+    },
+    required: ["orderId"],
+  },
+};
+
+const fulfillOrderWithTrackingDeclaration: FunctionDeclaration = {
+  name: "fulfill_order_with_tracking",
+  description:
+    "Mark an order as fulfilled WITH carrier + tracking number. **REQUIRES HUMAN APPROVAL. THIS WILL EMAIL THE CUSTOMER A SHIPPING-CONFIRMATION WITH THE TRACKING LINK** unless `notifyCustomer: false`.\n\nFulfills all open line items in one shot. Shopify auto-generates a tracking URL for known carriers (USPS, FedEx, UPS, DHL); pass `trackingUrl` explicitly to override or for unknown carriers.\n\nUse only when the merchant explicitly says the order has shipped with a specific tracking number. Don't fabricate tracking numbers — if the merchant didn't provide one, ask, or use `mark_as_fulfilled` instead.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      orderId: {
+        type: "string",
+        description: "Order GID. Get from read_orders first.",
+      },
+      trackingNumber: {
+        type: "string",
+        description:
+          "Carrier tracking number, e.g. '1Z9999W99999999999' or '9400111202555842761024'. Up to 100 chars.",
+      },
+      trackingCompany: {
+        type: "string",
+        description:
+          "Carrier name. Common values: 'USPS', 'FedEx', 'UPS', 'DHL', 'Other'. Free text — Shopify accepts any string but auto-URL-generation only works for known carriers.",
+      },
+      trackingUrl: {
+        type: "string",
+        description:
+          "Optional tracking URL. Shopify auto-generates for known carriers; pass this when the merchant has a specific URL or the carrier is custom.",
+      },
+      notifyCustomer: {
+        type: "boolean",
+        description:
+          "Whether Shopify emails the customer a shipping confirmation with the tracking link. Defaults to true. Pass false ONLY when the merchant explicitly says 'don't email them'.",
+      },
+    },
+    required: ["orderId", "trackingNumber", "trackingCompany"],
+  },
+};
+
 const ORDERS_SPEC: DepartmentSpec = {
   id: "orders",
   label: "Orders",
   managerTitle: "Orders manager",
   description:
-    "Owns the order book — read order list (with Shopify search syntax for fulfillment / financial status / dates / customer / tags), read full single-order details (line items, shipping address, fulfillments with tracking, refunds, totals), and edit admin-only metadata (note + tags — NOT visible to the customer). Future rounds will add fulfillment writes (send customer email) and cancel + refund (high-risk, money-moving).",
+    "Owns the order book — read order list (with Shopify search syntax for fulfillment / financial status / dates / customer / tags), read full single-order details (line items, shipping address, fulfillments with tracking, refunds, totals), edit admin-only metadata (note + tags — NOT visible to the customer), and FULFILL orders (with or without tracking — SENDS CUSTOMER A SHIPPING CONFIRMATION EMAIL). Future rounds will add cancel + refund (high-risk, money-moving).",
   systemPrompt: ORDERS_PROMPT,
   toolDeclarations: [
     readOrdersDeclaration,
     readOrderDetailDeclaration,
     updateOrderNoteDeclaration,
     updateOrderTagsDeclaration,
+    markAsFulfilledDeclaration,
+    fulfillOrderWithTrackingDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["read_orders", readOrdersHandler],
     ["read_order_detail", readOrderDetailHandler],
     ["update_order_note", updateOrderNoteHandler],
     ["update_order_tags", updateOrderTagsHandler],
+    ["mark_as_fulfilled", markAsFulfilledHandler],
+    ["fulfill_order_with_tracking", fulfillOrderWithTrackingHandler],
   ]),
   classification: {
     read: new Set(["read_orders", "read_order_detail"]),
-    write: new Set(["update_order_note", "update_order_tags"]),
+    write: new Set([
+      "update_order_note",
+      "update_order_tags",
+      "mark_as_fulfilled",
+      "fulfill_order_with_tracking",
+    ]),
     inlineWrite: new Set(),
   },
 };
