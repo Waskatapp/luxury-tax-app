@@ -11,12 +11,21 @@
 // CONFIRMATION EMAIL unless notifyCustomer:false. Medium-risk because
 // the customer sees the result; the FunctionDeclaration descriptions
 // and the manager prompt surface this.
+//
+// V-Or-D — HIGH-RISK writes (cancel_order, refund_order). Cancel voids
+// payment; refund MOVES MONEY to the customer's payment method. The
+// underlying refundOrder runs three independent defensive gates
+// BEFORE the mutation fires (Zod refine on confirmAmount, currency
+// match, amount-cap), and uses Shopify 2026-04's @idempotent directive
+// to prevent double-charging on retry.
 
 import {
+  cancelOrder,
   fulfillOrderWithTracking,
   markAsFulfilled,
   readOrderDetail,
   readOrders,
+  refundOrder,
   updateOrderNote,
   updateOrderTags,
 } from "../../../shopify/orders.server";
@@ -84,4 +93,18 @@ export const fulfillOrderWithTrackingHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return fulfillOrderWithTracking(ctx.admin, input);
+};
+
+export const cancelOrderHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return cancelOrder(ctx.admin, input);
+};
+
+export const refundOrderHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return refundOrder(ctx.admin, input);
 };

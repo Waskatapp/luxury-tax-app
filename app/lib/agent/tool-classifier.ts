@@ -87,6 +87,14 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   // this is internal-only.
   "mark_as_fulfilled",
   "fulfill_order_with_tracking",
+  // V-Or-D — HIGH-RISK writes. Cancel voids payment + emails customer;
+  // refund MOVES MONEY to the customer's payment method. refund_order
+  // runs a triple-confirm pattern (Zod refine on confirmAmount, handler
+  // verifies currency match + amount cap) BEFORE the mutation fires,
+  // and includes Shopify 2026-04's required @idempotent directive with
+  // a per-call UUID to prevent double-charging on retry.
+  "cancel_order",
+  "refund_order",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)

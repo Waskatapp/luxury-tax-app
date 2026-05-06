@@ -10,6 +10,8 @@
 // Phase 3 for analytics). Round A ships with ZERO scope friction. Round B
 // adds write_orders.
 
+import { randomUUID } from "node:crypto";
+
 import { z } from "zod";
 
 import { graphqlRequest, type ShopifyAdmin } from "./graphql-client.server";
@@ -194,6 +196,81 @@ export const FulfillOrderWithTrackingInput = z.object({
   notifyCustomer: z.boolean().default(true),
 });
 
+// V-Or-D — Cancel + refund. THE highest-blast-radius writes in the
+// codebase. Cancel voids payment and emails the customer; refund
+// MOVES MONEY back to the customer's payment method.
+//
+// Defensive design:
+// - cancel hard-codes refund:false + restock:false (refunds go through
+//   the dedicated tool with its own audit trail; restock is the future
+//   Inventory dept's concern)
+// - refund uses a TRIPLE-CONFIRM pattern:
+//     1. Zod refine: confirmAmount === amount (1¢ tolerance)
+//     2. Handler verifies: currencyCode matches the order's currency
+//     3. Handler verifies: requested amount ≤ outstanding-refundable
+// - refund mutation includes Shopify 2026-04's required @idempotent
+//   directive with a per-call UUID to prevent double-charging on retry
+
+const ORDER_CANCEL_REASONS = [
+  "CUSTOMER",
+  "FRAUD",
+  "INVENTORY",
+  "DECLINED",
+  "STAFF",
+  "OTHER",
+] as const;
+
+export const CancelOrderInput = z.object({
+  orderId: z.string().min(1),
+  reason: z.enum(ORDER_CANCEL_REASONS),
+  notifyCustomer: z.boolean().default(true),
+  // staffNote attached to the cancel — only visible to merchant in
+  // Shopify admin. Useful audit context ("customer changed mind", etc.).
+  staffNote: z.string().max(500).optional(),
+});
+
+// Decimal-string regex: positive amounts with up to 2 decimal places.
+// Rejects "0", "0.00", negatives, scientific notation, leading zeros.
+// Currency precision is stored as decimal strings throughout the
+// codebase (matches Shopify's Decimal scalar) — never as float.
+const POSITIVE_AMOUNT_REGEX = /^(?!0+(?:\.0+)?$)\d+(?:\.\d{1,2})?$/;
+
+export const RefundOrderInput = z
+  .object({
+    orderId: z.string().min(1),
+    // Decimal string in order's currency. Must be positive (refunding $0
+    // makes no sense). Up to 2 decimal places (currency precision).
+    amount: z
+      .string()
+      .regex(POSITIVE_AMOUNT_REGEX, "amount must be a positive decimal with up to 2 decimal places (e.g. '29.99')"),
+    // MUST exactly match `amount` — Zod refine below. Cross-field guard
+    // against an LLM misreading "$5" as "$50" or vice versa. The Zod
+    // failure message is on the refine, not on the field, so the LLM
+    // can't sidestep by passing only confirmAmount.
+    confirmAmount: z
+      .string()
+      .regex(POSITIVE_AMOUNT_REGEX, "confirmAmount must match amount exactly"),
+    // ISO 4217 currency code. Must match the order's currency — handler
+    // re-verifies after fetch (defensive gate 2).
+    currencyCode: z.string().length(3),
+    // Optional admin-only note attached to the refund record.
+    reason: z.string().max(500).optional(),
+    notifyCustomer: z.boolean().default(true),
+  })
+  .refine(
+    (v) => {
+      // Compare in cents to avoid float drift on equality check.
+      const a = Math.round(parseFloat(v.amount) * 100);
+      const b = Math.round(parseFloat(v.confirmAmount) * 100);
+      return a === b;
+    },
+    {
+      message:
+        "confirmAmount must equal amount exactly (defensive gate against amount typos)",
+      path: ["confirmAmount"],
+    },
+  );
+
 // ----------------------------------------------------------------------------
 // GraphQL
 // ----------------------------------------------------------------------------
@@ -261,6 +338,78 @@ const FULFILLMENT_CREATE_MUTATION = `#graphql
         id
         status
         trackingInfo { number url company }
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+// V-Or-D — orderCancel. Hard-codes refund:false + restock:false for
+// audit clarity (refund routes through refund_order; restock will
+// route through future Inventory dept). The mutation returns a Job
+// because Shopify processes cancel asynchronously; we surface job.id
+// and rely on the post-cancel snapshot fetch to reflect final state.
+const ORDER_CANCEL_MUTATION = `#graphql
+  mutation OrderCancel(
+    $orderId: ID!
+    $reason: OrderCancelReason!
+    $notifyCustomer: Boolean!
+    $staffNote: String
+  ) {
+    orderCancel(
+      orderId: $orderId
+      reason: $reason
+      refund: false
+      restock: false
+      notifyCustomer: $notifyCustomer
+      staffNote: $staffNote
+    ) {
+      job { id done }
+      orderCancelUserErrors { field message code }
+      userErrors { field message }
+    }
+  }
+`;
+
+// V-Or-D — Fetch the order's transactions to find the parent SALE/CAPTURE
+// to refund against. transactions on Order returns an array directly
+// (not a connection). We pick the first SUCCESS sale/capture as the
+// parent — split-payment orders are rare in v1 territory.
+const FETCH_ORDER_TRANSACTIONS_QUERY = `#graphql
+  query FetchOrderTransactions($id: ID!) {
+    order(id: $id) {
+      id
+      transactions(first: 10) {
+        id
+        kind
+        status
+        gateway
+        amountSet { shopMoney { amount currencyCode } }
+        parentTransaction { id }
+      }
+    }
+  }
+`;
+
+// V-Or-D — refundCreate. Shopify 2026-04 REQUIRES the @idempotent
+// directive on this mutation. The key is a per-call UUID so retries
+// (network glitches, lambda re-runs) don't double-charge. Variables
+// in directive arguments are valid GraphQL since 2018.
+//
+// RefundInput shape: orderId + transactions (parentId + amount + gateway
+// + kind:REFUND). For "flat $X refund" we issue a transaction-only
+// refund with no shipping/lineItem allocation — Shopify treats it as
+// a generic refund against the parent transaction.
+const REFUND_CREATE_MUTATION = `#graphql
+  mutation RefundCreate($input: RefundInput!, $idempotencyKey: String!)
+  @idempotent(key: $idempotencyKey)
+  {
+    refundCreate(input: $input) {
+      refund {
+        id
+        createdAt
+        note
+        totalRefundedSet { shopMoney { amount currencyCode } }
       }
       userErrors { field message }
     }
@@ -458,6 +607,46 @@ type FulfillmentCreateResponse = {
         url: string | null;
         company: string | null;
       }>;
+    } | null;
+    userErrors: Array<{ field?: string[]; message: string }>;
+  };
+};
+
+type OrderCancelResponse = {
+  orderCancel: {
+    job: { id: string; done: boolean } | null;
+    orderCancelUserErrors: Array<{
+      field?: string[];
+      message: string;
+      code?: string;
+    }>;
+    userErrors: Array<{ field?: string[]; message: string }>;
+  };
+};
+
+type OrderTransactionNode = {
+  id: string;
+  kind: string;
+  status: string;
+  gateway: string | null;
+  amountSet: { shopMoney: { amount: string; currencyCode: string } };
+  parentTransaction: { id: string } | null;
+};
+
+type FetchOrderTransactionsResponse = {
+  order: {
+    id: string;
+    transactions: OrderTransactionNode[];
+  } | null;
+};
+
+type RefundCreateResponse = {
+  refundCreate: {
+    refund: {
+      id: string;
+      createdAt: string;
+      note: string | null;
+      totalRefundedSet: { shopMoney: { amount: string; currencyCode: string } };
     } | null;
     userErrors: Array<{ field?: string[]; message: string }>;
   };
@@ -866,9 +1055,216 @@ export async function fulfillOrderWithTracking(
 }
 
 // ----------------------------------------------------------------------------
+// V-Or-D — Order cancellation. Hard-codes refund:false + restock:false at
+// the GraphQL layer (mutation literal includes those values, not as
+// inputs) — refunds route through refund_order with their own audit
+// trail; restock is the future Inventory dept's domain. SHOPIFY EMAILS
+// THE CUSTOMER on cancel unless notifyCustomer:false.
+// ----------------------------------------------------------------------------
+
+export async function cancelOrder(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<OrderDetail>> {
+  const parsed = CancelOrderInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const variables: Record<string, unknown> = {
+    orderId: parsed.data.orderId,
+    reason: parsed.data.reason,
+    notifyCustomer: parsed.data.notifyCustomer,
+  };
+  if (parsed.data.staffNote !== undefined) {
+    variables.staffNote = parsed.data.staffNote;
+  }
+
+  const result = await graphqlRequest<OrderCancelResponse>(
+    admin,
+    ORDER_CANCEL_MUTATION,
+    variables,
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  // orderCancel surfaces errors in TWO buckets — the typed
+  // orderCancelUserErrors with a code, AND the generic userErrors. We
+  // surface both verbatim to preserve the typed error code (per CEO
+  // rule 7).
+  const cancelErrors = result.data.orderCancel.orderCancelUserErrors;
+  if (cancelErrors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${cancelErrors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  const errors = result.data.orderCancel.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+
+  // orderCancel returns a Job (async). Refetch the order to get the
+  // post-cancel snapshot — Shopify usually completes the cancel
+  // synchronously enough that the next read reflects it. If not,
+  // displayFinancialStatus / cancelledAt will lag for a moment but
+  // the AuditLog after-state still captures whatever Shopify shows.
+  return fetchOrderDetail(admin, parsed.data.orderId);
+}
+
+// ----------------------------------------------------------------------------
+// V-Or-D — Order refund. The most defensive write in the codebase. Three
+// independent gates BEFORE the mutation fires:
+//   1. Zod refine (already enforced) — confirmAmount equals amount.
+//   2. fetchOrderDetail snapshot — verify currencyCode matches the
+//      order's actual currency.
+//   3. Same snapshot — verify amount ≤ totalRefundable. Refunding more
+//      than what's outstanding silently or via Shopify error is a
+//      worse experience than a clean upfront refusal.
+//
+// Then a SEPARATE fetch of the order's transactions to find the parent
+// SALE/CAPTURE — refundCreate's transactions[].parentId must reference
+// a real successful payment transaction. No parent ⇒ refund refusal
+// (e.g. authorized-but-uncaptured orders, fully voided orders).
+//
+// Mutation includes the @idempotent directive with a per-call UUID so
+// retries (network glitches, lambda re-runs) don't double-refund. The
+// idempotency key is generated server-side; the merchant doesn't see it.
+// ----------------------------------------------------------------------------
+
+async function findRefundParentTransaction(
+  admin: ShopifyAdmin,
+  orderId: string,
+): Promise<
+  ToolModuleResult<{ parentId: string; gateway: string }>
+> {
+  const result = await graphqlRequest<FetchOrderTransactionsResponse>(
+    admin,
+    FETCH_ORDER_TRANSACTIONS_QUERY,
+    { id: orderId },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.data.order) {
+    return { ok: false, error: `order not found: ${orderId}` };
+  }
+  // Find the first successful sale/capture. Split-payment orders are
+  // rare in v1 territory; we refund against the primary payment.
+  const parent = result.data.order.transactions.find(
+    (t) =>
+      (t.kind === "SALE" || t.kind === "CAPTURE") && t.status === "SUCCESS",
+  );
+  if (!parent) {
+    return {
+      ok: false,
+      error:
+        "no successful sale/capture transaction found on this order — cannot refund (the order may be authorized-but-uncaptured, voided, or fully refunded already)",
+    };
+  }
+  if (!parent.gateway) {
+    return {
+      ok: false,
+      error: "parent transaction has no gateway — cannot construct refund",
+    };
+  }
+  return { ok: true, data: { parentId: parent.id, gateway: parent.gateway } };
+}
+
+export async function refundOrder(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<OrderDetail>> {
+  // Gate 1: Zod refine on confirmAmount === amount, plus regex on amount
+  // shape. Already happens here.
+  const parsed = RefundOrderInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  // Gate 2 + 3: fetch the order, verify currency match + amount cap.
+  const orderSnap = await fetchOrderDetail(admin, parsed.data.orderId);
+  if (!orderSnap.ok) return orderSnap;
+  const order = orderSnap.data;
+
+  if (order.currencyCode !== parsed.data.currencyCode) {
+    return {
+      ok: false,
+      error: `currency mismatch: order is ${order.currencyCode}, refund requested as ${parsed.data.currencyCode} — refusing to refund (Shopify wouldn't auto-convert; the merchant must confirm the order's actual currency)`,
+    };
+  }
+
+  // Compare in cents to avoid float drift.
+  const amountCents = Math.round(parseFloat(parsed.data.amount) * 100);
+  const refundableCents = Math.round(parseFloat(order.totalRefundable) * 100);
+  if (amountCents > refundableCents) {
+    return {
+      ok: false,
+      error: `requested refund $${parsed.data.amount} exceeds outstanding-refundable $${order.totalRefundable} — refusing (the order may be partially or fully refunded already)`,
+    };
+  }
+
+  // Gate 4 (implicit): find the parent SALE/CAPTURE to refund against.
+  // No successful payment ⇒ nothing to refund.
+  const parent = await findRefundParentTransaction(admin, parsed.data.orderId);
+  if (!parent.ok) return parent;
+
+  // Build the refund input. transactions array specifies WHICH
+  // transaction to refund against and HOW MUCH. No shipping/lineItem
+  // allocation in v1 — Shopify treats this as a generic refund.
+  const idempotencyKey = randomUUID();
+  const refundInput: Record<string, unknown> = {
+    orderId: parsed.data.orderId,
+    notify: parsed.data.notifyCustomer,
+    transactions: [
+      {
+        orderId: parsed.data.orderId,
+        parentId: parent.data.parentId,
+        gateway: parent.data.gateway,
+        amount: parsed.data.amount,
+        kind: "REFUND",
+      },
+    ],
+  };
+  if (parsed.data.reason !== undefined) {
+    refundInput.note = parsed.data.reason;
+  }
+
+  const result = await graphqlRequest<RefundCreateResponse>(
+    admin,
+    REFUND_CREATE_MUTATION,
+    {
+      input: refundInput,
+      idempotencyKey,
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.refundCreate.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  if (!result.data.refundCreate.refund) {
+    return { ok: false, error: "refundCreate returned no refund" };
+  }
+
+  // Refetch the order so the post-refund snapshot reflects the new
+  // totalRefunded / totalRefundable / refunds[] state. Same canonical-
+  // snapshot pattern as every other order write.
+  return fetchOrderDetail(admin, parsed.data.orderId);
+}
+
+// ----------------------------------------------------------------------------
 // Test seam — exported only for unit tests.
 // ----------------------------------------------------------------------------
 
 export const _testing = {
   subtractMoney,
+  // V-Or-D — Surfaced so tests can verify the @idempotent directive is
+  // present in the mutation query string (Shopify 2026-04 requirement).
+  REFUND_CREATE_MUTATION,
+  ORDER_CANCEL_MUTATION,
 };

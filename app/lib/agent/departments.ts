@@ -147,12 +147,13 @@ export const DEPARTMENTS: Department[] = [
     label: "Orders",
     managerTitle: "Orders manager",
     description:
-      "Owns the order book — read order list (with Shopify search " +
-      "syntax), read full single-order details (line items, shipping " +
-      "address, fulfillments, refunds, totals), edit admin-only " +
-      "metadata (note + tags), and FULFILL orders with or without " +
-      "tracking (sends customer a shipping confirmation email). " +
-      "Future rounds will add cancel + refund (high-risk).",
+      "Owns the order lifecycle end-to-end — read order list (with " +
+      "Shopify search syntax), read full single-order details, edit " +
+      "admin-only metadata (note + tags), FULFILL orders with or " +
+      "without tracking (sends customer email), CANCEL orders " +
+      "(voids payment, emails customer; does NOT refund — separate " +
+      "tool), and REFUND money to the customer (with confirmAmount + " +
+      "currency-match defensive gates).",
     toolNames: [
       "read_orders",
       "read_order_detail",
@@ -160,6 +161,8 @@ export const DEPARTMENTS: Department[] = [
       "update_order_tags",
       "mark_as_fulfilled",
       "fulfill_order_with_tracking",
+      "cancel_order",
+      "refund_order",
     ],
   },
 ];

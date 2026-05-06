@@ -4,10 +4,12 @@ import { registerDepartment } from "../registry.server";
 import type { DepartmentSpec, ToolHandler } from "../department-spec";
 
 import {
+  cancelOrderHandler,
   fulfillOrderWithTrackingHandler,
   markAsFulfilledHandler,
   readOrderDetailHandler,
   readOrdersHandler,
+  refundOrderHandler,
   updateOrderNoteHandler,
   updateOrderTagsHandler,
 } from "./handlers";
@@ -173,12 +175,107 @@ const fulfillOrderWithTrackingDeclaration: FunctionDeclaration = {
   },
 };
 
+// ----------------------------------------------------------------------------
+// V-Or-D — HIGH-RISK writes. Cancel voids payment; refund MOVES MONEY
+// to the customer's payment method. The descriptions below are the
+// firmest in the codebase — they exist to prevent the LLM from
+// proposing these writes from inferred intent. Always require explicit
+// merchant wording ("cancel" / "refund" / "give them their money back").
+//
+// refund_order specifically uses a TRIPLE-CONFIRM pattern at the
+// implementation layer (Zod refine on confirmAmount, handler verifies
+// currency match + amount cap) AND surfaces those gates in the
+// description so the LLM understands why the input shape is unusual.
+// ----------------------------------------------------------------------------
+
+const cancelOrderDeclaration: FunctionDeclaration = {
+  name: "cancel_order",
+  description:
+    "Cancel an order. **REQUIRES HUMAN APPROVAL. THIS PERMANENTLY VOIDS THE ORDER and EMAILS THE CUSTOMER** about the cancellation unless `notifyCustomer: false`. Once cancelled, the order CANNOT be uncancelled — only refunded if it was paid.\n\nThis tool does NOT issue a refund — refunds go through `refund_order` separately so they get their own audit trail. If the merchant says \"cancel and refund this order\", that's TWO writes (two ApprovalCards), one for the cancel and one for the refund.\n\nThis tool does NOT restock inventory — restock belongs to inventory management (future round). Hard-coded `restock: false` for v1.\n\n**Use ONLY when the merchant explicitly says cancel / void / kill this order.** Never propose from inferred intent (e.g. don't 'just cancel' if the merchant only said the customer is unhappy — they may want a refund without canceling, or a partial refund, or just a discount on their next order).",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      orderId: {
+        type: "string",
+        description:
+          "Order GID, e.g. gid://shopify/Order/12345. Get this from a read_orders call first.",
+      },
+      reason: {
+        type: "string",
+        enum: [
+          "CUSTOMER",
+          "FRAUD",
+          "INVENTORY",
+          "DECLINED",
+          "STAFF",
+          "OTHER",
+        ],
+        description:
+          "Why the order is being cancelled. CUSTOMER = customer changed mind / requested cancel. FRAUD = suspected fraud. INVENTORY = out of stock / can't fulfill. DECLINED = payment declined. STAFF = staff-initiated for non-customer reason. OTHER = catch-all.",
+      },
+      notifyCustomer: {
+        type: "boolean",
+        description:
+          "Whether Shopify emails the customer about the cancellation. Defaults to true. Pass false ONLY when the merchant explicitly says 'don't email them'.",
+      },
+      staffNote: {
+        type: "string",
+        description:
+          "Optional admin-only note attached to the cancel. Visible only to merchant in Shopify admin. Up to 500 chars.",
+      },
+    },
+    required: ["orderId", "reason"],
+  },
+};
+
+const refundOrderDeclaration: FunctionDeclaration = {
+  name: "refund_order",
+  description:
+    "Issue a refund on an order. **REQUIRES HUMAN APPROVAL. THIS REFUNDS REAL MONEY to the customer's payment method and EMAILS THE CUSTOMER** unless `notifyCustomer: false`. Highest-blast-radius write in the toolkit.\n\n**Triple-confirm pattern — read this carefully**:\n\n1. `confirmAmount` MUST exactly equal `amount` (Zod refine, 1¢ tolerance). This is a defensive gate against typos — if you read \"$5\" as \"$50\" anywhere in the chain, both fields would have to be wrong the same way to slip through. Always set `confirmAmount` to whatever you set `amount` to.\n\n2. `currencyCode` MUST match the order's currency. The handler refuses with a clean error if there's a mismatch (Shopify won't auto-convert). When in doubt, call `read_order_detail` first to get the order's currency.\n\n3. `amount` MUST be ≤ the order's outstanding-refundable amount (the snapshot's `totalRefundable` field). The handler refuses if you try to refund more than what's left.\n\n**Decimal string format** for `amount` and `confirmAmount`: positive value, up to 2 decimal places, e.g. `\"29.99\"`, `\"5\"`, `\"100.50\"`. No leading zeros, no negatives, no scientific notation.\n\n**Use ONLY when the merchant explicitly says refund / give them their money back / process a refund / return X dollars.** Never propose from inferred intent. If the merchant only complained about a delivery delay, that's not consent for a refund — they may want an apology, a discount on the next order, or just acknowledgment.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      orderId: {
+        type: "string",
+        description:
+          "Order GID, e.g. gid://shopify/Order/12345. Get this from a read_orders call first.",
+      },
+      amount: {
+        type: "string",
+        description:
+          "Decimal string in the order's currency, e.g. '29.99'. Must be positive, ≤ 2 decimal places, ≤ the order's outstanding-refundable amount.",
+      },
+      confirmAmount: {
+        type: "string",
+        description:
+          "Defensive duplicate of `amount`. MUST equal `amount` exactly (Zod refine, 1¢ tolerance). Set this to the same value you set `amount` to. If they differ, the refund refuses.",
+      },
+      currencyCode: {
+        type: "string",
+        description:
+          "ISO 4217 currency code (3 letters, e.g. 'USD', 'EUR', 'CAD'). Must match the order's currency. Call read_order_detail first if you don't know the order's currency.",
+      },
+      reason: {
+        type: "string",
+        description:
+          "Optional admin-only note attached to the refund record. e.g. 'damaged in shipping' / 'item out of stock' / 'customer changed mind'. Up to 500 chars.",
+      },
+      notifyCustomer: {
+        type: "boolean",
+        description:
+          "Whether Shopify emails the customer about the refund. Defaults to true. Pass false ONLY when the merchant explicitly says 'don't email them'.",
+      },
+    },
+    required: ["orderId", "amount", "confirmAmount", "currencyCode"],
+  },
+};
+
 const ORDERS_SPEC: DepartmentSpec = {
   id: "orders",
   label: "Orders",
   managerTitle: "Orders manager",
   description:
-    "Owns the order book — read order list (with Shopify search syntax for fulfillment / financial status / dates / customer / tags), read full single-order details (line items, shipping address, fulfillments with tracking, refunds, totals), edit admin-only metadata (note + tags — NOT visible to the customer), and FULFILL orders (with or without tracking — SENDS CUSTOMER A SHIPPING CONFIRMATION EMAIL). Future rounds will add cancel + refund (high-risk, money-moving).",
+    "Owns the order lifecycle end-to-end — read order list (with Shopify search syntax for fulfillment / financial status / dates / customer / tags), read full single-order details (line items, shipping address, fulfillments with tracking, refunds, totals), edit admin-only metadata (note + tags), FULFILL orders with or without tracking (sends customer a shipping confirmation email), CANCEL orders (voids payment, emails customer; does NOT refund — separate tool), and REFUND money to the customer's payment method (with confirmAmount + currency-match defensive gates).",
   systemPrompt: ORDERS_PROMPT,
   toolDeclarations: [
     readOrdersDeclaration,
@@ -187,6 +284,8 @@ const ORDERS_SPEC: DepartmentSpec = {
     updateOrderTagsDeclaration,
     markAsFulfilledDeclaration,
     fulfillOrderWithTrackingDeclaration,
+    cancelOrderDeclaration,
+    refundOrderDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["read_orders", readOrdersHandler],
@@ -195,6 +294,8 @@ const ORDERS_SPEC: DepartmentSpec = {
     ["update_order_tags", updateOrderTagsHandler],
     ["mark_as_fulfilled", markAsFulfilledHandler],
     ["fulfill_order_with_tracking", fulfillOrderWithTrackingHandler],
+    ["cancel_order", cancelOrderHandler],
+    ["refund_order", refundOrderHandler],
   ]),
   classification: {
     read: new Set(["read_orders", "read_order_detail"]),
@@ -203,6 +304,8 @@ const ORDERS_SPEC: DepartmentSpec = {
       "update_order_tags",
       "mark_as_fulfilled",
       "fulfill_order_with_tracking",
+      "cancel_order",
+      "refund_order",
     ]),
     inlineWrite: new Set(),
   },

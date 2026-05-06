@@ -592,13 +592,18 @@ export async function snapshotBefore(
       case "update_order_note":
       case "update_order_tags":
       case "mark_as_fulfilled":
-      case "fulfill_order_with_tracking": {
-        // V-Or-B + V-Or-C — All order writes share fetchOrderDetail.
-        // Same canonical-snapshot pattern as customers: one query, one
-        // shape, all order writes get the same OrderDetail before-state
-        // in their AuditLog row (capturing fulfillment status + tracking
-        // info that the write is about to mutate). Future Or-D cancel +
-        // refund tools will fall through this same case block.
+      case "fulfill_order_with_tracking":
+      case "cancel_order":
+      case "refund_order": {
+        // V-Or-B + V-Or-C + V-Or-D — All order writes share
+        // fetchOrderDetail. Same canonical-snapshot pattern as customers:
+        // one query, one shape, all order writes get the same
+        // OrderDetail before-state in their AuditLog row. For cancel +
+        // refund especially the before-state is legally meaningful: it
+        // captures totalPrice + totalRefunded + totalRefundable + the
+        // financial/fulfillment statuses that the mutation is about to
+        // change. The AuditLog row is the audit trail any payment-
+        // dispute review would consult.
         const orderId = String(toolInput.orderId ?? "");
         if (!orderId) return null;
         const r = await fetchOrderDetail(ctx.admin, orderId);
