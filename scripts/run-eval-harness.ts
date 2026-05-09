@@ -7,22 +7,15 @@ import {
   shouldFileSystemHealthFinding,
 } from "../app/lib/agent/system-health.server";
 import { recordEvalRun } from "../app/lib/eval/persistence.server";
+import { runEvalScenario } from "../app/lib/eval/runner.server";
+import { SCENARIOS } from "../app/lib/eval/scenarios";
 import type { EvalScenarioResult } from "../app/lib/eval/types";
 
-// V1 deliberately does NOT import the eval runner or scenarios — the
-// runner pulls in ceo-prompt.server.ts which uses Vite's `?raw`
-// syntax for embedding markdown prompts. That syntax only resolves
-// under Vite's bundler; tsx (which runs this script) sees `.md?raw`
-// and throws ERR_UNKNOWN_FILE_EXTENSION. Even a dynamic `await import`
-// path can fail under some tsx versions because the resolver may
-// pre-walk module graphs.
-//
-// When commit 3 lands curated scenarios, the right move is to provide
-// a tsx-compatible CEO-prompt assembler (read markdown via fs at
-// runtime instead of Vite at build time), then re-introduce the
-// runner here. For v1 the analyzer pass IS the value: it surfaces
-// router-tuning findings against real production TurnSignal data
-// without needing the runner at all.
+// Phase 8b — scenario pass re-enabled. The Vite `?raw` markdown
+// problem that blocked the runner is fixed: ceo-prompt.server.ts and
+// every department/index.ts now use loadRaw() (fs.readFileSync at
+// module-load time) instead of `?raw`, so tsx can resolve the import
+// chain cleanly.
 
 // Phase 8 — eval harness cron entrypoint. Invoked nightly by
 // .github/workflows/eval-harness.yml. Two passes:
@@ -52,17 +45,56 @@ const prisma = new PrismaClient();
 // the GitHub Action surfaces red.
 const MAX_RUN_MS = 5 * 60 * 1000;
 
-// V1 placeholder. Returns empty results — see top-of-file note. The
-// scenario-running path is not wired to the cron until commit 3
-// solves the tsx + Vite ?raw markdown problem.
 async function runScenarios(_now: Date): Promise<{
   results: EvalScenarioResult[];
   durationMs: number;
 }> {
-  console.log(
-    "[eval-harness] scenarios pass disabled in v1 (tsx ?raw incompat) — skipping",
-  );
-  return { results: [], durationMs: 0 };
+  const startedAt = Date.now();
+
+  if (SCENARIOS.length === 0) {
+    console.log("[eval-harness] no scenarios registered — skipping pass 1");
+    return { results: [], durationMs: Date.now() - startedAt };
+  }
+
+  console.log(`[eval-harness] running ${SCENARIOS.length} scenario(s)`);
+
+  // Pick the FIRST installed store as the harness context. The
+  // runner creates transient Conversation rows under
+  // userId="eval-harness:<scenarioId>" so they're auditable in
+  // the chat sidebar without confusing real merchant traffic.
+  const harnessStore = await prisma.store.findFirst({
+    where: { uninstalledAt: null },
+    orderBy: { installedAt: "asc" },
+    select: { id: true, shopDomain: true },
+  });
+  if (harnessStore === null) {
+    console.log("[eval-harness] no installed stores — skipping pass 1");
+    return { results: [], durationMs: Date.now() - startedAt };
+  }
+
+  const results: EvalScenarioResult[] = [];
+  for (const scenario of SCENARIOS) {
+    try {
+      const result = await runEvalScenario({
+        scenario,
+        storeId: harnessStore.id,
+        shopDomain: harnessStore.shopDomain,
+      });
+      results.push(result);
+      console.log(
+        `[eval-harness] ${scenario.id}: ${result.passed ? "PASS" : "FAIL"} (${result.durationMs}ms)`,
+      );
+      if (!result.passed) {
+        for (const f of result.failedExpectations) {
+          console.log(`[eval-harness]   ↳ ${f}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[eval-harness] scenario ${scenario.id} crashed`, err);
+    }
+  }
+
+  return { results, durationMs: Date.now() - startedAt };
 }
 
 async function runRouterAnalyzer(now: Date): Promise<{
