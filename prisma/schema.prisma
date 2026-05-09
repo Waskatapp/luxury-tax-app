@@ -502,3 +502,25 @@ model SystemHealthFinding {
   @@index([storeId, component, createdAt])
   @@index([storeId, acknowledgedAt])
 }
+
+// Phase 8 — Eval harness run summary. ONE row per nightly invocation
+// of the eval harness cron (.github/workflows/eval-harness.yml).
+// `summary` carries the full EvalScenarioResult[] JSON so the operator
+// UI at /app/settings/eval-runs can render a per-scenario breakdown
+// without joining to a separate per-scenario table.
+//
+// NOT tenant-scoped — the harness runs curated fixtures with fakeAdmin,
+// not against any specific store's data. The routing-analyzer that
+// emits per-store SystemHealthFinding rows is a SEPARATE artifact.
+model EvalRun {
+  id             String   @id @default(cuid())
+  runAt          DateTime
+  totalScenarios Int
+  passed         Int
+  failed         Int
+  durationMs     Int
+  summary        Json
+  createdAt      DateTime @default(now())
+
+  @@index([runAt])
+}
