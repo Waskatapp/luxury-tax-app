@@ -99,9 +99,17 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   // codebase: flips a boolean (whether Shopify counts stock for an
   // inventory item); no quantities change. Still gets an ApprovalCard
   // because the merchant should explicitly confirm the change in
-  // tracking semantics. Round B will add the quantity-mutating writes
-  // (adjust / set / transfer) here.
+  // tracking semantics.
   "set_inventory_tracking",
+  // V-Inv-B — Quantity mutations. adjust = relative delta (medium-risk;
+  // reversible by opposite-sign adjust). set = absolute write (high-risk;
+  // destructive — Zod-requires referenceDocumentUri for audit trail).
+  // transfer = atomic paired delta (one inventoryAdjustQuantities call
+  // with two changes — pre-flight from-quantity check in the handler
+  // refuses the mutation if it would drive the source location negative).
+  "adjust_inventory_quantity",
+  "set_inventory_quantity",
+  "transfer_inventory",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)

@@ -181,6 +181,9 @@ export const DEPARTMENTS: Department[] = [
       "read_locations",
       "read_inventory_levels",
       "set_inventory_tracking",
+      "adjust_inventory_quantity",
+      "set_inventory_quantity",
+      "transfer_inventory",
     ],
   },
 ];

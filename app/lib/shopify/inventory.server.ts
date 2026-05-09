@@ -90,6 +90,89 @@ export const SetInventoryTrackingInput = z.object({
   tracked: z.boolean(),
 });
 
+// V-Inv-B — Quantity mutations. Three writes covering the three real
+// merchant intents:
+//   - adjust_inventory_quantity: relative delta (+10 / -3) — most common
+//   - set_inventory_quantity: absolute set (cycle count) — audit-grade,
+//     requires referenceDocumentUri (Zod-required, non-empty)
+//   - transfer_inventory: paired delta between two locations — atomic
+//     single-call (one inventoryAdjustQuantities call with two change
+//     entries); pre-flight from-quantity check in the handler before
+//     the mutation fires
+//
+// Reason enums: each tool has its own subset of Shopify's documented
+// values. adjust accepts the broadest set (correction / cycle count /
+// damaged / received / movement-* / other); set is narrower (correction /
+// cycle count / received / other — set is more deliberate); transfer is
+// narrowest (movement_* / other — semantically a movement).
+
+const ADJUST_REASONS = [
+  "correction",
+  "cycle_count_available",
+  "damaged",
+  "received",
+  "movement_created",
+  "movement_updated",
+  "movement_received",
+  "movement_canceled",
+  "other",
+] as const;
+
+const SET_REASONS = [
+  "correction",
+  "cycle_count_available",
+  "received",
+  "other",
+] as const;
+
+const TRANSFER_REASONS = [
+  "movement_created",
+  "movement_updated",
+  "other",
+] as const;
+
+const REFERENCE_DOC_MAX = 255;
+
+export const AdjustInventoryQuantityInput = z.object({
+  inventoryItemId: z.string().min(1),
+  locationId: z.string().min(1),
+  // Integer delta. Reject 0 (no-op writes pollute the audit trail).
+  // Negative is allowed (writing off damaged stock, etc.).
+  delta: z
+    .number()
+    .int()
+    .refine((n) => n !== 0, { message: "delta must be non-zero" }),
+  reason: z.enum(ADJUST_REASONS).default("correction"),
+  referenceDocumentUri: z.string().min(1).max(REFERENCE_DOC_MAX).optional(),
+});
+
+export const SetInventoryQuantityInput = z.object({
+  inventoryItemId: z.string().min(1),
+  locationId: z.string().min(1),
+  quantity: z.number().int().min(0),
+  reason: z.enum(SET_REASONS),
+  // REQUIRED on set (audit trail non-negotiable; Shopify's API also
+  // requires it on inventorySetQuantities). The merchant must provide
+  // a meaningful identifier — internal cycle-count number, signed PDF
+  // URL, etc.
+  referenceDocumentUri: z.string().min(1).max(REFERENCE_DOC_MAX),
+});
+
+export const TransferInventoryInput = z
+  .object({
+    inventoryItemId: z.string().min(1),
+    fromLocationId: z.string().min(1),
+    toLocationId: z.string().min(1),
+    quantity: z.number().int().positive(),
+    reason: z.enum(TRANSFER_REASONS).default("movement_created"),
+    referenceDocumentUri: z.string().min(1).max(REFERENCE_DOC_MAX).optional(),
+  })
+  .refine((v) => v.fromLocationId !== v.toLocationId, {
+    message:
+      "fromLocationId and toLocationId must differ — to transfer in place is a no-op",
+    path: ["toLocationId"],
+  });
+
 // ----------------------------------------------------------------------------
 // GraphQL
 // ----------------------------------------------------------------------------
@@ -185,6 +268,38 @@ const INVENTORY_ITEM_UPDATE_MUTATION = `#graphql
   }
 `;
 
+// V-Inv-B — inventoryAdjustQuantities. Used by BOTH adjustInventoryQuantity
+// (one change entry) AND transferInventory (two change entries — one
+// negative delta on fromLocation, one positive delta on toLocation).
+// Atomic by design: Shopify processes the entire `changes` array as a
+// single transaction. Partial application is impossible.
+const INVENTORY_ADJUST_QUANTITIES_MUTATION = `#graphql
+  mutation InventoryAdjustQuantities($input: InventoryAdjustQuantitiesInput!) {
+    inventoryAdjustQuantities(input: $input) {
+      inventoryAdjustmentGroup { id }
+      userErrors { field message code }
+    }
+  }
+`;
+
+// V-Inv-B — inventorySetQuantities. Used by setInventoryQuantity for
+// absolute (cycle-count-style) writes. Shopify REQUIRES referenceDocumentUri
+// on this mutation; we Zod-require it on the input too.
+//
+// ignoreCompareQuantity: true skips Shopify's optional CAS check (which
+// would require us to pass compareQuantity = the prior value). v1 doesn't
+// do CAS — the snapshotBefore + ApprovalCard pattern already shows the
+// merchant the current state before approval, which is the human-in-the-
+// loop equivalent.
+const INVENTORY_SET_QUANTITIES_MUTATION = `#graphql
+  mutation InventorySetQuantities($input: InventorySetQuantitiesInput!) {
+    inventorySetQuantities(input: $input) {
+      inventoryAdjustmentGroup { id }
+      userErrors { field message code }
+    }
+  }
+`;
+
 // ----------------------------------------------------------------------------
 // GraphQL response types
 // ----------------------------------------------------------------------------
@@ -250,6 +365,20 @@ type InventoryItemUpdateResponse = {
   inventoryItemUpdate: {
     inventoryItem: { id: string; tracked: boolean; sku: string | null } | null;
     userErrors: Array<{ field?: string[]; message: string }>;
+  };
+};
+
+type InventoryAdjustQuantitiesResponse = {
+  inventoryAdjustQuantities: {
+    inventoryAdjustmentGroup: { id: string } | null;
+    userErrors: Array<{ field?: string[]; message: string; code?: string }>;
+  };
+};
+
+type InventorySetQuantitiesResponse = {
+  inventorySetQuantities: {
+    inventoryAdjustmentGroup: { id: string } | null;
+    userErrors: Array<{ field?: string[]; message: string; code?: string }>;
   };
 };
 
@@ -484,6 +613,218 @@ export async function setInventoryTracking(
 }
 
 // ----------------------------------------------------------------------------
+// V-Inv-B — adjustInventoryQuantity. Relative delta. The most-used
+// quantity write — "received 10 more" / "wrote off 3 damaged units" /
+// "correction: was off by 2." Returns the post-mutation snapshot via
+// fetchInventoryLevels so the result + AuditLog after-state share the
+// canonical VariantInventoryLevels shape.
+// ----------------------------------------------------------------------------
+
+export async function adjustInventoryQuantity(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<VariantInventoryLevels>> {
+  const parsed = AdjustInventoryQuantityInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const input: Record<string, unknown> = {
+    name: "available",
+    reason: parsed.data.reason,
+    changes: [
+      {
+        inventoryItemId: parsed.data.inventoryItemId,
+        locationId: parsed.data.locationId,
+        delta: parsed.data.delta,
+      },
+    ],
+  };
+  if (parsed.data.referenceDocumentUri !== undefined) {
+    input.referenceDocumentUri = parsed.data.referenceDocumentUri;
+  }
+
+  const result = await graphqlRequest<InventoryAdjustQuantitiesResponse>(
+    admin,
+    INVENTORY_ADJUST_QUANTITIES_MUTATION,
+    { input },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.inventoryAdjustQuantities.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  if (!result.data.inventoryAdjustQuantities.inventoryAdjustmentGroup) {
+    return {
+      ok: false,
+      error: "inventoryAdjustQuantities returned no adjustmentGroup",
+    };
+  }
+
+  return fetchInventoryLevels(admin, parsed.data.inventoryItemId);
+}
+
+// ----------------------------------------------------------------------------
+// V-Inv-B — setInventoryQuantity. Absolute (cycle-count) write. The
+// merchant just counted the shelf and wants the system to match. Higher
+// risk than adjust — destructive: any concurrent in-flight orders / stock
+// movements between the merchant's count and our mutation would be lost.
+//
+// Defensive design:
+//   - Zod requires non-empty referenceDocumentUri (audit trail). Shopify's
+//     API also requires it on inventorySetQuantities, but we enforce it
+//     pre-mutation so the merchant gets a clear error rather than a
+//     server-side rejection.
+//   - The CEO orchestrator pattern (snapshotBefore captures pre-state in
+//     AuditLog before approval) means the merchant sees current → new in
+//     the ApprovalCard before approving — they can reject if reality
+//     drifted from their mental model.
+//   - ignoreCompareQuantity: true skips CAS — we trust the merchant's
+//     human-in-the-loop confirmation as the equivalent gate.
+// ----------------------------------------------------------------------------
+
+export async function setInventoryQuantity(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<VariantInventoryLevels>> {
+  const parsed = SetInventoryQuantityInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const result = await graphqlRequest<InventorySetQuantitiesResponse>(
+    admin,
+    INVENTORY_SET_QUANTITIES_MUTATION,
+    {
+      input: {
+        name: "available",
+        reason: parsed.data.reason,
+        ignoreCompareQuantity: true,
+        quantities: [
+          {
+            inventoryItemId: parsed.data.inventoryItemId,
+            locationId: parsed.data.locationId,
+            quantity: parsed.data.quantity,
+          },
+        ],
+        referenceDocumentUri: parsed.data.referenceDocumentUri,
+      },
+    },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.inventorySetQuantities.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  if (!result.data.inventorySetQuantities.inventoryAdjustmentGroup) {
+    return {
+      ok: false,
+      error: "inventorySetQuantities returned no adjustmentGroup",
+    };
+  }
+
+  return fetchInventoryLevels(admin, parsed.data.inventoryItemId);
+}
+
+// ----------------------------------------------------------------------------
+// V-Inv-B — transferInventory. Move stock between two locations. Atomic
+// single-call: ONE inventoryAdjustQuantities call with TWO change entries
+// (one negative delta on `from`, one positive delta on `to`). Shopify
+// processes the changes array as a single transaction — partial transfer
+// is impossible by construction.
+//
+// Defensive pre-flight: handler fetches current state via
+// fetchInventoryLevels FIRST, verifies the `from` location has at least
+// `quantity` available, AND verifies the location actually exists for
+// this inventory item. Surfaces a clean local error before the mutation
+// fires — friendlier than letting Shopify return a generic "negative
+// quantity" error after the fact.
+// ----------------------------------------------------------------------------
+
+export async function transferInventory(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<VariantInventoryLevels>> {
+  const parsed = TransferInventoryInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  // Pre-flight gate — fetch current state, verify from-location validity
+  // + sufficient available quantity.
+  const snap = await fetchInventoryLevels(admin, parsed.data.inventoryItemId);
+  if (!snap.ok) return snap;
+
+  const fromLevel = snap.data.perLocation.find(
+    (l) => l.locationId === parsed.data.fromLocationId,
+  );
+  if (!fromLevel) {
+    return {
+      ok: false,
+      error: `from location ${parsed.data.fromLocationId} has no inventory level for this item — call read_inventory_levels first to confirm the location is valid`,
+    };
+  }
+  if (fromLevel.available < parsed.data.quantity) {
+    return {
+      ok: false,
+      error: `transfer would drive ${fromLevel.locationName} negative — current available: ${fromLevel.available}, requested transfer: ${parsed.data.quantity}`,
+    };
+  }
+
+  // Atomic single-call paired delta.
+  const input: Record<string, unknown> = {
+    name: "available",
+    reason: parsed.data.reason,
+    changes: [
+      {
+        inventoryItemId: parsed.data.inventoryItemId,
+        locationId: parsed.data.fromLocationId,
+        delta: -parsed.data.quantity,
+      },
+      {
+        inventoryItemId: parsed.data.inventoryItemId,
+        locationId: parsed.data.toLocationId,
+        delta: parsed.data.quantity,
+      },
+    ],
+  };
+  if (parsed.data.referenceDocumentUri !== undefined) {
+    input.referenceDocumentUri = parsed.data.referenceDocumentUri;
+  }
+
+  const result = await graphqlRequest<InventoryAdjustQuantitiesResponse>(
+    admin,
+    INVENTORY_ADJUST_QUANTITIES_MUTATION,
+    { input },
+  );
+  if (!result.ok) return { ok: false, error: result.error };
+
+  const errors = result.data.inventoryAdjustQuantities.userErrors;
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+    };
+  }
+  if (!result.data.inventoryAdjustQuantities.inventoryAdjustmentGroup) {
+    return {
+      ok: false,
+      error: "inventoryAdjustQuantities returned no adjustmentGroup",
+    };
+  }
+
+  return fetchInventoryLevels(admin, parsed.data.inventoryItemId);
+}
+
+// ----------------------------------------------------------------------------
 // Test seam — exported only for unit tests.
 // ----------------------------------------------------------------------------
 
@@ -492,4 +833,9 @@ export const _testing = {
   FETCH_VARIANT_INVENTORY_QUERY,
   FETCH_INVENTORY_BY_ITEM_QUERY,
   INVENTORY_ITEM_UPDATE_MUTATION,
+  INVENTORY_ADJUST_QUANTITIES_MUTATION,
+  INVENTORY_SET_QUANTITIES_MUTATION,
+  ADJUST_REASONS,
+  SET_REASONS,
+  TRANSFER_REASONS,
 };

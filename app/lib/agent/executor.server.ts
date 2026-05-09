@@ -620,16 +620,19 @@ export async function snapshotBefore(
         const r = await fetchProductMedia(ctx.admin, productId);
         return r.ok ? r.data : null;
       }
-      case "set_inventory_tracking": {
-        // V-Inv-A — Inventory writes share fetchInventoryLevels. The
-        // snapshot captures the inventory item's identity (sku, barcode),
-        // tracked flag, and per-location available quantities — even
-        // when the write only flips the tracked flag, the AuditLog
-        // before-state carries the full picture so a future regret
-        // ("we shouldn't have disabled tracking — what was the stock?")
-        // has the answer in the audit trail. Round B's quantity-mutating
-        // writes (adjust / set / transfer) will fall through this same
-        // case once they ship.
+      case "set_inventory_tracking":
+      case "adjust_inventory_quantity":
+      case "set_inventory_quantity":
+      case "transfer_inventory": {
+        // V-Inv-A + V-Inv-B — All four inventory writes share
+        // fetchInventoryLevels. The snapshot captures the inventory
+        // item's identity (sku, barcode), tracked flag, and per-location
+        // available quantities. For tracking flips, the snapshot
+        // preserves the pre-toggle stock context. For adjust / set, it
+        // shows the merchant the current per-location available count
+        // so the ApprovalCard can render current → new. For transfer,
+        // both source AND destination locations are in the same shape
+        // so the diff captures both ends of the move.
         const inventoryItemId = String(toolInput.inventoryItemId ?? "");
         if (!inventoryItemId) return null;
         const r = await fetchInventoryLevels(ctx.admin, inventoryItemId);

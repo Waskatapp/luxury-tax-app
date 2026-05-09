@@ -7,9 +7,12 @@
 // more pass-through write handlers here.
 
 import {
+  adjustInventoryQuantity,
   readInventoryLevels,
   readLocations,
+  setInventoryQuantity,
   setInventoryTracking,
+  transferInventory,
 } from "../../../shopify/inventory.server";
 import { readCacheGet, readCacheSet } from "../../read-cache.server";
 import type { HandlerContext, ToolHandler } from "../department-spec";
@@ -58,4 +61,31 @@ export const setInventoryTrackingHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return setInventoryTracking(ctx.admin, input);
+};
+
+// V-Inv-B — Quantity-mutating writes. All three are pass-through wrappers
+// (the underlying functions handle Zod, defensive gates, and the Shopify
+// mutation). snapshotBefore + readCacheInvalidate wiring lives in
+// executor.server.ts; the snapshot helper (fetchInventoryLevels) is
+// shared across all four inventory writes.
+
+export const adjustInventoryQuantityHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return adjustInventoryQuantity(ctx.admin, input);
+};
+
+export const setInventoryQuantityHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return setInventoryQuantity(ctx.admin, input);
+};
+
+export const transferInventoryHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return transferInventory(ctx.admin, input);
 };
