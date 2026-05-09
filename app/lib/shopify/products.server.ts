@@ -1796,3 +1796,648 @@ export async function reorderProductImages(
     },
   };
 }
+
+// ============================================================================
+// V-Bulk-A — Phase Bulk Operations Round A. Three product-level bulk-write
+// tools modeled byte-for-byte on bulk_update_prices in pricing.server.ts:
+//
+//   - bulk_update_titles  — XOR scope + transform { append | prepend | find_replace }
+//   - bulk_update_tags    — XOR scope + action { add | remove | replace } + tags[]
+//   - bulk_update_status  — XOR scope + status { DRAFT | ACTIVE | ARCHIVED }
+//
+// Shared design (mirroring bulk_update_prices):
+//   - XOR scope: collectionId | productIds (cap 50; collection-resolved
+//     products refused if > 50 — same per-call cap as bulk pricing)
+//   - One batched fetch up front to capture pre-state (title/tags/status
+//     per product) for the result.changes[] payload
+//   - Sequential per-product productUpdate mutations (rate-limit safe)
+//   - Partial-failure resilient: per-product errors aggregate into
+//     failures[]; the rest of the batch proceeds
+//   - Result shape: { totalUpdated, totalFailed, changes[], failures[] }
+//   - snapshotBefore in executor.server.ts returns null for these tools
+//     (matches bulk_update_prices short-circuit) — the result payload
+//     already carries the full per-item before/after diff
+// ============================================================================
+
+const MAX_PRODUCTS_BULK_OP = 50;
+const MAX_TAGS_PER_BULK_REQUEST = 50;
+
+const FETCH_BULK_PRODUCTS_QUERY = `#graphql
+  query FetchBulkProducts($first: Int!, $query: String) {
+    products(first: $first, query: $query) {
+      edges { node { id title tags status } }
+    }
+  }
+`;
+
+const FETCH_BULK_COLLECTION_PRODUCTS_QUERY = `#graphql
+  query FetchBulkCollectionProducts($id: ID!, $first: Int!) {
+    collection(id: $id) {
+      id
+      title
+      products(first: $first) {
+        edges { node { id title tags status } }
+      }
+    }
+  }
+`;
+
+// One shared mutation for all three bulk tools — accepts any subset of
+// {title, tags, status} on the input and returns all three on the output.
+// Each tool sends only its relevant field; the response carries the
+// after-state for the changes[] entry.
+const BULK_PRODUCT_FIELD_UPDATE_MUTATION = `#graphql
+  mutation BulkProductFieldUpdate($product: ProductUpdateInput!) {
+    productUpdate(product: $product) {
+      product { id title tags status updatedAt }
+      userErrors { field message }
+    }
+  }
+`;
+
+type BulkProductSnapshot = {
+  productId: string;
+  productTitle: string;
+  tags: string[];
+  status: string;
+};
+
+type FetchBulkProductsResponse = {
+  products: {
+    edges: Array<{
+      node: { id: string; title: string; tags: string[]; status: string };
+    }>;
+  };
+};
+
+type FetchBulkCollectionProductsResponse = {
+  collection: {
+    id: string;
+    title: string;
+    products: {
+      edges: Array<{
+        node: { id: string; title: string; tags: string[]; status: string };
+      }>;
+    };
+  } | null;
+};
+
+type BulkProductFieldUpdateResponse = {
+  productUpdate: {
+    product: {
+      id: string;
+      title: string;
+      tags: string[];
+      status: string;
+      updatedAt: string;
+    } | null;
+    userErrors: Array<{ field: string[] | null; message: string }>;
+  };
+};
+
+// Resolve the XOR scope to a list of BulkProductSnapshot. Either path
+// returns identical shape so downstream loops are uniform.
+async function resolveBulkProductScope(
+  admin: ShopifyAdmin,
+  scope: { collectionId?: string; productIds?: string[] },
+): Promise<ToolModuleResult<BulkProductSnapshot[]>> {
+  if (scope.collectionId) {
+    const r = await graphqlRequest<FetchBulkCollectionProductsResponse>(
+      admin,
+      FETCH_BULK_COLLECTION_PRODUCTS_QUERY,
+      { id: scope.collectionId, first: MAX_PRODUCTS_BULK_OP + 1 },
+    );
+    if (!r.ok) return { ok: false, error: r.error };
+    if (!r.data.collection) {
+      return {
+        ok: false,
+        error: `collection not found: ${scope.collectionId}`,
+      };
+    }
+    const edges = r.data.collection.products.edges;
+    if (edges.length > MAX_PRODUCTS_BULK_OP) {
+      return {
+        ok: false,
+        error: `collection has more than ${MAX_PRODUCTS_BULK_OP} products — too many for a single bulk update. Scope down (e.g. by status filter) or split into multiple operations.`,
+      };
+    }
+    return {
+      ok: true,
+      data: edges.map((e) => ({
+        productId: e.node.id,
+        productTitle: e.node.title,
+        tags: e.node.tags ?? [],
+        status: e.node.status,
+      })),
+    };
+  }
+
+  if (scope.productIds && scope.productIds.length > 0) {
+    // Build a Shopify search query: `id:GID OR id:GID OR ...`.
+    // GIDs don't contain spaces or quote characters, so they pass
+    // unescaped into the search syntax.
+    const queryStr = scope.productIds.map((id) => `id:${id}`).join(" OR ");
+    const r = await graphqlRequest<FetchBulkProductsResponse>(
+      admin,
+      FETCH_BULK_PRODUCTS_QUERY,
+      { first: scope.productIds.length, query: queryStr },
+    );
+    if (!r.ok) return { ok: false, error: r.error };
+    const found = new Map(
+      r.data.products.edges.map((e) => [e.node.id, e.node]),
+    );
+    const snapshots: BulkProductSnapshot[] = [];
+    for (const id of scope.productIds) {
+      const node = found.get(id);
+      if (!node) {
+        return { ok: false, error: `product not found: ${id}` };
+      }
+      snapshots.push({
+        productId: node.id,
+        productTitle: node.title,
+        tags: node.tags ?? [],
+        status: node.status,
+      });
+    }
+    return { ok: true, data: snapshots };
+  }
+
+  // Unreachable — Zod refinement guarantees one scope is set.
+  return { ok: false, error: "no scope set" };
+}
+
+// Shared XOR-scope refinement used across the three bulk schemas.
+const xorScopeRefine = (v: {
+  collectionId?: string;
+  productIds?: string[];
+}): boolean => {
+  const set = [
+    v.collectionId !== undefined,
+    v.productIds !== undefined,
+  ].filter(Boolean).length;
+  return set === 1;
+};
+const xorScopeMessage =
+  "exactly one of collectionId / productIds must be set";
+
+// ----------------------------------------------------------------------------
+// bulk_update_titles
+// ----------------------------------------------------------------------------
+
+export const BulkUpdateTitlesInput = z
+  .object({
+    collectionId: z.string().min(1).optional(),
+    productIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(MAX_PRODUCTS_BULK_OP)
+      .optional(),
+    transform: z.discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("append"),
+        text: z.string().min(1).max(255),
+      }),
+      z.object({
+        kind: z.literal("prepend"),
+        text: z.string().min(1).max(255),
+      }),
+      z.object({
+        kind: z.literal("find_replace"),
+        find: z.string().min(1).max(255),
+        // Empty replace is allowed (delete-substring semantics).
+        replace: z.string().max(255),
+      }),
+    ]),
+  })
+  .refine(xorScopeRefine, { message: xorScopeMessage });
+
+export type BulkTitleChange = {
+  productId: string;
+  oldTitle: string;
+  newTitle: string;
+};
+
+export type BulkUpdateTitlesResult = {
+  totalUpdated: number;
+  totalFailed: number;
+  changes: BulkTitleChange[];
+  failures: Array<{
+    productId: string;
+    productTitle: string;
+    error: string;
+  }>;
+};
+
+export async function bulkUpdateTitles(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<BulkUpdateTitlesResult>> {
+  const parsed = BulkUpdateTitlesInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const resolved = await resolveBulkProductScope(admin, parsed.data);
+  if (!resolved.ok) return resolved;
+  const products = resolved.data;
+  if (products.length === 0) {
+    return {
+      ok: false,
+      error: "scope resolved to 0 products — nothing to update",
+    };
+  }
+
+  // Compute new title per product
+  const transform = parsed.data.transform;
+  type Plan = { snap: BulkProductSnapshot; newTitle: string; invalid: boolean };
+  const plan: Plan[] = [];
+  for (const snap of products) {
+    let newTitle: string;
+    if (transform.kind === "append") {
+      newTitle = snap.productTitle + transform.text;
+    } else if (transform.kind === "prepend") {
+      newTitle = transform.text + snap.productTitle;
+    } else {
+      newTitle = snap.productTitle.split(transform.find).join(transform.replace);
+    }
+    if (newTitle === snap.productTitle) {
+      // No-op — skip silently to save rate-limit budget.
+      continue;
+    }
+    const invalid = newTitle.length === 0 || newTitle.length > 255;
+    plan.push({ snap, newTitle, invalid });
+  }
+
+  if (plan.length === 0) {
+    return {
+      ok: false,
+      error:
+        "transform produced no changes — every title already matches the desired output",
+    };
+  }
+
+  const changes: BulkTitleChange[] = [];
+  const failures: Array<{
+    productId: string;
+    productTitle: string;
+    error: string;
+  }> = [];
+
+  for (const p of plan) {
+    if (p.invalid) {
+      failures.push({
+        productId: p.snap.productId,
+        productTitle: p.snap.productTitle,
+        error:
+          "computed title would be empty or exceed 255 characters — skipped",
+      });
+      continue;
+    }
+    const r = await graphqlRequest<BulkProductFieldUpdateResponse>(
+      admin,
+      BULK_PRODUCT_FIELD_UPDATE_MUTATION,
+      { product: { id: p.snap.productId, title: p.newTitle } },
+    );
+    if (!r.ok) {
+      failures.push({
+        productId: p.snap.productId,
+        productTitle: p.snap.productTitle,
+        error: r.error,
+      });
+      continue;
+    }
+    const errors = r.data.productUpdate.userErrors;
+    if (errors.length > 0) {
+      failures.push({
+        productId: p.snap.productId,
+        productTitle: p.snap.productTitle,
+        error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+      });
+      continue;
+    }
+    const updated = r.data.productUpdate.product;
+    if (!updated) {
+      failures.push({
+        productId: p.snap.productId,
+        productTitle: p.snap.productTitle,
+        error: "productUpdate returned no product",
+      });
+      continue;
+    }
+    changes.push({
+      productId: updated.id,
+      oldTitle: p.snap.productTitle,
+      newTitle: updated.title,
+    });
+  }
+
+  return {
+    ok: true,
+    data: {
+      totalUpdated: changes.length,
+      totalFailed: failures.length,
+      changes,
+      failures,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// bulk_update_tags
+// ----------------------------------------------------------------------------
+
+export const BulkUpdateTagsInput = z
+  .object({
+    collectionId: z.string().min(1).optional(),
+    productIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(MAX_PRODUCTS_BULK_OP)
+      .optional(),
+    action: z.enum(["add", "remove", "replace"]),
+    tags: z
+      .array(z.string().min(1).max(255))
+      .min(1)
+      .max(MAX_TAGS_PER_BULK_REQUEST),
+  })
+  .refine(xorScopeRefine, { message: xorScopeMessage });
+
+export type BulkTagsChange = {
+  productId: string;
+  productTitle: string;
+  oldTags: string[];
+  newTags: string[];
+};
+
+export type BulkUpdateTagsResult = {
+  totalUpdated: number;
+  totalFailed: number;
+  changes: BulkTagsChange[];
+  failures: Array<{
+    productId: string;
+    productTitle: string;
+    error: string;
+  }>;
+};
+
+// Sorted-equality helper for tag-list comparison (no-op detection).
+function tagsEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  for (let i = 0; i < sa.length; i++) {
+    if (sa[i] !== sb[i]) return false;
+  }
+  return true;
+}
+
+export async function bulkUpdateTags(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<BulkUpdateTagsResult>> {
+  const parsed = BulkUpdateTagsInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const resolved = await resolveBulkProductScope(admin, parsed.data);
+  if (!resolved.ok) return resolved;
+  const products = resolved.data;
+  if (products.length === 0) {
+    return {
+      ok: false,
+      error: "scope resolved to 0 products — nothing to update",
+    };
+  }
+
+  const action = parsed.data.action;
+  const requestedTags = parsed.data.tags;
+
+  // Compute new tag list per product per action semantics.
+  type Plan = { snap: BulkProductSnapshot; newTags: string[] };
+  const plan: Plan[] = [];
+  for (const snap of products) {
+    let newTags: string[];
+    if (action === "replace") {
+      // Full replacement; de-dupe to be defensive.
+      newTags = Array.from(new Set(requestedTags));
+    } else if (action === "add") {
+      // Union (case-insensitive — Shopify normalizes anyway).
+      const existingLower = new Set(snap.tags.map((t) => t.toLowerCase()));
+      const merged = [...snap.tags];
+      for (const t of requestedTags) {
+        if (!existingLower.has(t.toLowerCase())) {
+          merged.push(t);
+          existingLower.add(t.toLowerCase());
+        }
+      }
+      newTags = merged;
+    } else {
+      // remove
+      const removeLower = new Set(requestedTags.map((t) => t.toLowerCase()));
+      newTags = snap.tags.filter((t) => !removeLower.has(t.toLowerCase()));
+    }
+
+    // Skip no-ops.
+    if (tagsEqual(snap.tags, newTags)) continue;
+
+    plan.push({ snap, newTags });
+  }
+
+  if (plan.length === 0) {
+    return {
+      ok: false,
+      error: `transform produced no changes — every product already matches the expected tag state for action "${action}"`,
+    };
+  }
+
+  const changes: BulkTagsChange[] = [];
+  const failures: Array<{
+    productId: string;
+    productTitle: string;
+    error: string;
+  }> = [];
+
+  for (const p of plan) {
+    const r = await graphqlRequest<BulkProductFieldUpdateResponse>(
+      admin,
+      BULK_PRODUCT_FIELD_UPDATE_MUTATION,
+      { product: { id: p.snap.productId, tags: p.newTags } },
+    );
+    if (!r.ok) {
+      failures.push({
+        productId: p.snap.productId,
+        productTitle: p.snap.productTitle,
+        error: r.error,
+      });
+      continue;
+    }
+    const errors = r.data.productUpdate.userErrors;
+    if (errors.length > 0) {
+      failures.push({
+        productId: p.snap.productId,
+        productTitle: p.snap.productTitle,
+        error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+      });
+      continue;
+    }
+    const updated = r.data.productUpdate.product;
+    if (!updated) {
+      failures.push({
+        productId: p.snap.productId,
+        productTitle: p.snap.productTitle,
+        error: "productUpdate returned no product",
+      });
+      continue;
+    }
+    changes.push({
+      productId: updated.id,
+      productTitle: updated.title,
+      oldTags: p.snap.tags,
+      newTags: updated.tags ?? [],
+    });
+  }
+
+  return {
+    ok: true,
+    data: {
+      totalUpdated: changes.length,
+      totalFailed: failures.length,
+      changes,
+      failures,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// bulk_update_status
+// ----------------------------------------------------------------------------
+
+export const BulkUpdateStatusInput = z
+  .object({
+    collectionId: z.string().min(1).optional(),
+    productIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(MAX_PRODUCTS_BULK_OP)
+      .optional(),
+    status: z.enum(["DRAFT", "ACTIVE", "ARCHIVED"]),
+  })
+  .refine(xorScopeRefine, { message: xorScopeMessage });
+
+export type BulkStatusChange = {
+  productId: string;
+  productTitle: string;
+  oldStatus: string;
+  newStatus: string;
+};
+
+export type BulkUpdateStatusResult = {
+  totalUpdated: number;
+  totalFailed: number;
+  changes: BulkStatusChange[];
+  failures: Array<{
+    productId: string;
+    productTitle: string;
+    error: string;
+  }>;
+};
+
+export async function bulkUpdateStatus(
+  admin: ShopifyAdmin,
+  rawInput: unknown,
+): Promise<ToolModuleResult<BulkUpdateStatusResult>> {
+  const parsed = BulkUpdateStatusInput.safeParse(rawInput);
+  if (!parsed.success) {
+    return { ok: false, error: `invalid input: ${parsed.error.message}` };
+  }
+
+  const resolved = await resolveBulkProductScope(admin, parsed.data);
+  if (!resolved.ok) return resolved;
+  const products = resolved.data;
+  if (products.length === 0) {
+    return {
+      ok: false,
+      error: "scope resolved to 0 products — nothing to update",
+    };
+  }
+
+  const newStatus = parsed.data.status;
+
+  // Skip no-ops (products already at the target status).
+  const plan = products.filter((p) => p.status !== newStatus);
+  if (plan.length === 0) {
+    return {
+      ok: false,
+      error: `every product is already ${newStatus} — nothing to change`,
+    };
+  }
+
+  const changes: BulkStatusChange[] = [];
+  const failures: Array<{
+    productId: string;
+    productTitle: string;
+    error: string;
+  }> = [];
+
+  for (const snap of plan) {
+    const r = await graphqlRequest<BulkProductFieldUpdateResponse>(
+      admin,
+      BULK_PRODUCT_FIELD_UPDATE_MUTATION,
+      { product: { id: snap.productId, status: newStatus } },
+    );
+    if (!r.ok) {
+      failures.push({
+        productId: snap.productId,
+        productTitle: snap.productTitle,
+        error: r.error,
+      });
+      continue;
+    }
+    const errors = r.data.productUpdate.userErrors;
+    if (errors.length > 0) {
+      failures.push({
+        productId: snap.productId,
+        productTitle: snap.productTitle,
+        error: `shopify userErrors: ${errors.map((e) => e.message).join("; ")}`,
+      });
+      continue;
+    }
+    const updated = r.data.productUpdate.product;
+    if (!updated) {
+      failures.push({
+        productId: snap.productId,
+        productTitle: snap.productTitle,
+        error: "productUpdate returned no product",
+      });
+      continue;
+    }
+    changes.push({
+      productId: updated.id,
+      productTitle: updated.title,
+      oldStatus: snap.status,
+      newStatus: updated.status,
+    });
+  }
+
+  return {
+    ok: true,
+    data: {
+      totalUpdated: changes.length,
+      totalFailed: failures.length,
+      changes,
+      failures,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------------
+// Test seam — exported only for unit tests (Zod schema introspection,
+// no-op equality helper).
+// ----------------------------------------------------------------------------
+
+export const _bulkTesting = {
+  MAX_PRODUCTS_BULK_OP,
+  MAX_TAGS_PER_BULK_REQUEST,
+  tagsEqual,
+};
