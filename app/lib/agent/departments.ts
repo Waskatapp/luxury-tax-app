@@ -20,7 +20,8 @@ export type DepartmentId =
   | "insights"
   | "marketing"
   | "customers"
-  | "orders";
+  | "orders"
+  | "inventory";
 
 export type Department = {
   id: DepartmentId;
@@ -163,6 +164,23 @@ export const DEPARTMENTS: Department[] = [
       "fulfill_order_with_tracking",
       "cancel_order",
       "refund_order",
+    ],
+  },
+  {
+    id: "inventory",
+    label: "Inventory",
+    managerTitle: "Inventory manager",
+    description:
+      "Owns multi-location stock state — listing fulfillment locations, " +
+      "reading per-variant stock across locations (with sku / barcode / " +
+      "tracked flag / inventoryItemId), and toggling whether Shopify " +
+      "tracks inventory for a given item. Round B will add quantity " +
+      "mutations: adjust (relative delta), set (absolute, audit-grade), " +
+      "and transfer (between two locations, atomic).",
+    toolNames: [
+      "read_locations",
+      "read_inventory_levels",
+      "set_inventory_tracking",
     ],
   },
 ];

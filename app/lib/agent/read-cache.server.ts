@@ -67,6 +67,14 @@ export const CACHEABLE_READ_TOOLS = new Set<string>([
   // "back to #1001" drill-in flow.
   "read_orders",
   "read_order_detail",
+  // V-Inv-A — Inventory reads. read_locations rarely changes within a
+  // 5-min conversation window; read_inventory_levels is the heavier
+  // call (per-variant productVariant query in parallel) and benefits
+  // most from caching when the merchant asks the same product question
+  // multiple ways. Both bust on any inventory write (set_tracking in
+  // Round A; adjust / set / transfer in Round B).
+  "read_locations",
+  "read_inventory_levels",
 ]);
 
 type CachedResult = {

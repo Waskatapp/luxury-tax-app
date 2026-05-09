@@ -126,6 +126,7 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
                   "marketing",
                   "customers",
                   "orders",
+                  "inventory",
                   "cross-cutting",
                 ],
                 description:

@@ -95,6 +95,13 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   // a per-call UUID to prevent double-charging on retry.
   "cancel_order",
   "refund_order",
+  // V-Inv-A — Inventory tracking flag. Lowest-risk write in the
+  // codebase: flips a boolean (whether Shopify counts stock for an
+  // inventory item); no quantities change. Still gets an ApprovalCard
+  // because the merchant should explicitly confirm the change in
+  // tracking semantics. Round B will add the quantity-mutating writes
+  // (adjust / set / transfer) here.
+  "set_inventory_tracking",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)

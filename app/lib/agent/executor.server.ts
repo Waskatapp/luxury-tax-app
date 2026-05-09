@@ -26,6 +26,7 @@ import { fetchArticle } from "../shopify/articles.server";
 import { fetchPage } from "../shopify/pages.server";
 import { fetchCustomerDetail } from "../shopify/customers.server";
 import { fetchOrderDetail } from "../shopify/orders.server";
+import { fetchInventoryLevels } from "../shopify/inventory.server";
 // V-Sub-2 — getAnalytics import removed: get_analytics migrated to the
 // Insights department (app/lib/agent/departments/insights/). The
 // underlying app/lib/shopify/analytics.server.ts module is unchanged;
@@ -619,6 +620,21 @@ export async function snapshotBefore(
         const r = await fetchProductMedia(ctx.admin, productId);
         return r.ok ? r.data : null;
       }
+      case "set_inventory_tracking": {
+        // V-Inv-A — Inventory writes share fetchInventoryLevels. The
+        // snapshot captures the inventory item's identity (sku, barcode),
+        // tracked flag, and per-location available quantities — even
+        // when the write only flips the tracked flag, the AuditLog
+        // before-state carries the full picture so a future regret
+        // ("we shouldn't have disabled tracking — what was the stock?")
+        // has the answer in the audit trail. Round B's quantity-mutating
+        // writes (adjust / set / transfer) will fall through this same
+        // case once they ship.
+        const inventoryItemId = String(toolInput.inventoryItemId ?? "");
+        if (!inventoryItemId) return null;
+        const r = await fetchInventoryLevels(ctx.admin, inventoryItemId);
+        return r.ok ? r.data : null;
+      }
       default:
         return null;
     }
@@ -718,6 +734,13 @@ export async function executeApprovedWrite(
         // #1001 again" returns fresh state.
         "read_orders",
         "read_order_detail",
+        // V-Inv-A — Inventory writes shift the tracked flag (and in
+        // Round B will shift quantities) that read_inventory_levels
+        // surfaces. Bust read_inventory_levels so a post-write "how
+        // much do I have now?" returns fresh state. read_locations
+        // is NOT busted — locations don't change from inventory
+        // writes.
+        "read_inventory_levels",
       ]);
     }
     return result;

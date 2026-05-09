@@ -23,3 +23,4 @@ import "./insights/index";
 import "./marketing/index";
 import "./customers/index";
 import "./orders/index";
+import "./inventory/index";

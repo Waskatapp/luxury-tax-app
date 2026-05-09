@@ -61,6 +61,7 @@ const DEPT_LABEL: Record<string, string> = {
   marketing: "Marketing",
   customers: "Customers",
   orders: "Orders",
+  inventory: "Inventory",
   "cross-cutting": "Cross-cutting",
 };
 
@@ -74,6 +75,7 @@ const DEPT_TONE: Record<
   marketing: "info",
   customers: "success",
   orders: "warning",
+  inventory: "info",
   "cross-cutting": "attention",
 };
 
