@@ -7,17 +7,22 @@ import {
   shouldFileSystemHealthFinding,
 } from "../app/lib/agent/system-health.server";
 import { recordEvalRun } from "../app/lib/eval/persistence.server";
-import { SCENARIOS } from "../app/lib/eval/scenarios";
 import type { EvalScenarioResult } from "../app/lib/eval/types";
 
-// runner.server.ts is dynamically imported below — it transitively
-// pulls in ceo-prompt.server.ts which uses Vite's `?raw` syntax to
-// embed markdown prompt files. That syntax only resolves under Vite;
-// tsx (which runs this script) sees `.md?raw` and throws
-// ERR_UNKNOWN_FILE_EXTENSION. Until commit 3 lands a tsx-compatible
-// path (likely a non-Vite CEO prompt assembler for the harness, or
-// an esbuild prebuild step), we lazy-import only when SCENARIOS has
-// entries. With SCENARIOS = [] the runner is never imported.
+// V1 deliberately does NOT import the eval runner or scenarios — the
+// runner pulls in ceo-prompt.server.ts which uses Vite's `?raw`
+// syntax for embedding markdown prompts. That syntax only resolves
+// under Vite's bundler; tsx (which runs this script) sees `.md?raw`
+// and throws ERR_UNKNOWN_FILE_EXTENSION. Even a dynamic `await import`
+// path can fail under some tsx versions because the resolver may
+// pre-walk module graphs.
+//
+// When commit 3 lands curated scenarios, the right move is to provide
+// a tsx-compatible CEO-prompt assembler (read markdown via fs at
+// runtime instead of Vite at build time), then re-introduce the
+// runner here. For v1 the analyzer pass IS the value: it surfaces
+// router-tuning findings against real production TurnSignal data
+// without needing the runner at all.
 
 // Phase 8 — eval harness cron entrypoint. Invoked nightly by
 // .github/workflows/eval-harness.yml. Two passes:
@@ -47,69 +52,17 @@ const prisma = new PrismaClient();
 // the GitHub Action surfaces red.
 const MAX_RUN_MS = 5 * 60 * 1000;
 
-async function runScenarios(now: Date): Promise<{
+// V1 placeholder. Returns empty results — see top-of-file note. The
+// scenario-running path is not wired to the cron until commit 3
+// solves the tsx + Vite ?raw markdown problem.
+async function runScenarios(_now: Date): Promise<{
   results: EvalScenarioResult[];
   durationMs: number;
 }> {
-  const startedAt = Date.now();
-
-  if (SCENARIOS.length === 0) {
-    console.log("[eval-harness] no scenarios registered — skipping pass 1");
-    return { results: [], durationMs: Date.now() - startedAt };
-  }
-
-  console.log(`[eval-harness] running ${SCENARIOS.length} scenario(s)`);
-
-  // Lazy-import — see top-of-file note. Pulls in ceo-prompt.server.ts
-  // which uses Vite ?raw imports. Until those are tsx-compatible this
-  // import will throw ERR_UNKNOWN_FILE_EXTENSION; we surface that as
-  // a clean infra error rather than a silent test-pass.
-  const { runEvalScenario } = await import("../app/lib/eval/runner.server");
-
-  // Scenarios run against a synthetic Conversation seeded under a
-  // dedicated harness store. We pick the FIRST installed store as
-  // the context; if none exist (fresh DB), skip pass 1 and log.
-  // The harness conversations leave a small audit trail in this
-  // store; that's intentional — the operator can scroll the chat
-  // UI to see what the agent did.
-  const harnessStore = await prisma.store.findFirst({
-    where: { uninstalledAt: null },
-    orderBy: { installedAt: "asc" },
-    select: { id: true, shopDomain: true },
-  });
-  if (harnessStore === null) {
-    console.log("[eval-harness] no installed stores — skipping pass 1");
-    return { results: [], durationMs: Date.now() - startedAt };
-  }
-
-  const results: EvalScenarioResult[] = [];
-  for (const scenario of SCENARIOS) {
-    try {
-      const result = await runEvalScenario({
-        scenario,
-        storeId: harnessStore.id,
-        shopDomain: harnessStore.shopDomain,
-      });
-      results.push(result);
-      console.log(
-        `[eval-harness] ${scenario.id}: ${result.passed ? "PASS" : "FAIL"} (${result.durationMs}ms)`,
-      );
-      if (!result.passed) {
-        for (const f of result.failedExpectations) {
-          console.log(`[eval-harness]   ↳ ${f}`);
-        }
-      }
-    } catch (err) {
-      console.error(`[eval-harness] scenario ${scenario.id} crashed`, err);
-      // Don't push a synthetic "passed: false" — the runner already
-      // catches loop errors and surfaces them via observation.loopError.
-      // A crash here means the runner ITSELF threw, which is rare
-      // but we don't want it to kill the whole pass.
-    }
-    void now;
-  }
-
-  return { results, durationMs: Date.now() - startedAt };
+  console.log(
+    "[eval-harness] scenarios pass disabled in v1 (tsx ?raw incompat) — skipping",
+  );
+  return { results: [], durationMs: 0 };
 }
 
 async function runRouterAnalyzer(now: Date): Promise<{
