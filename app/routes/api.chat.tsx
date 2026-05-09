@@ -3,23 +3,15 @@ import { z } from "zod";
 
 import prisma from "../db.server";
 import { requireStoreAccess } from "../lib/auth.server";
-import {
-  checkChatRateLimit,
-  checkGeminiRateLimit,
-} from "../lib/security/rate-limit.server";
+import { checkChatRateLimit } from "../lib/security/rate-limit.server";
 import { sanitizeUserInput } from "../lib/security/sanitize.server";
-import { GEMINI_CHAT_MODEL, getGeminiClient } from "../lib/agent/gemini.server";
+import { GEMINI_CHAT_MODEL } from "../lib/agent/gemini.server";
 import { buildCeoSystemInstruction } from "../lib/agent/ceo-prompt.server";
 import { getOrPopulateTimezone } from "../lib/agent/shop-timezone.server";
 import { loadWorkflowIndex } from "../lib/agent/workflow-loader.server";
-import { TOOL_DECLARATIONS } from "../lib/agent/tools";
-import {
-  isApprovalRequiredWrite,
-  isInlineWrite,
-  isReadTool,
-} from "../lib/agent/tool-classifier";
-import { executeTool } from "../lib/agent/executor.server";
+import { isApprovalRequiredWrite } from "../lib/agent/tool-classifier";
 import { pickModelTier } from "../lib/agent/model-router";
+import { runAgentLoop } from "../lib/agent/agent-loop.server";
 import { parseSlashCommand } from "../lib/agent/slash-commands";
 import {
   formatGuardrailsAsMarkdown,
@@ -52,21 +44,14 @@ import {
 import { reclassifyOnNewTurn } from "../lib/agent/turn-signals-reclassify.server";
 import { log } from "../lib/log.server";
 import {
-  AssistantTurnAccumulator,
-  bareToolCallUuid,
   collectProposeArtifactIds,
   compactAppliedArtifacts,
   compactOldToolResults,
   extractSearchText,
-  mintToolUseId,
-  toGeminiContent,
   toGeminiContents,
   type ContentBlock,
   type StoredMessage,
-  type ToolResultBlock,
-  type ToolUseBlock,
 } from "../lib/agent/translate.server";
-import type { SubAgentResult } from "../lib/agent/departments/department-spec";
 
 // `text` is optional: when absent, the request is a "continuation" triggered
 // by the client after an approve/reject roundtrip. The server then streams
@@ -78,8 +63,6 @@ const BodySchema = z.object({
 });
 
 const HISTORY_LIMIT = 40;
-const MAX_TURNS = 8;
-const MAX_OUTPUT_TOKENS = 4096;
 
 // Translate provider-thrown errors into friendly merchant-facing messages
 // instead of leaking raw JSON like
@@ -440,40 +423,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }
       };
 
-      // Accumulates every text_delta across the whole user→assistant cycle
-      // (multiple Gemini turns when tools run). Used to feed the post-stream
-      // memory extractor with the merchant's full reply context.
-      let assistantTextBuffer = "";
-
-      // V2.2 — TurnSignal accumulators. Tracked across the whole agent
-      // loop so we can record one signal at SSE done covering the entire
-      // user→assistant cycle (which can span multiple Gemini iterations).
-      let lastAssistantMessageId: string | null = null;
-      let lastAssistantContent: ContentBlock[] = [];
-      let totalToolCalls = 0;
-      let hadWriteTool = false;
-      let hadClarification = false;
-      let hadPlan = false;
-      // toolCallIds of approval-required writes minted in this turn — used
-      // by classifyTurnOutcome to look at terminal statuses (which at SSE
-      // done are still PENDING; tool-approve/reject promote later).
-      const writeToolCallIds: string[] = [];
-
-      // V6.5 — Phase 6 Hallucination Guard. Collects every grounding
-      // string available to verify the CEO's price claims against this
-      // request: the merchant's user text + every tool_result content
-      // produced during the agent loop. Used in the post-stream block
-      // by findHallucinations to flag any $-prefixed price in the
-      // assistant response that doesn't appear in the grounding set.
-      // V1 logs only — once we observe false-positive rate in
-      // production, we can promote to a hard TurnSignal signal.
-      const groundingTexts: string[] = [];
+      // V6.5 — Phase 6 Hallucination Guard. The merchant's user text
+      // seeds the grounding set; the agent loop pushes every tool_result
+      // content into a separate array we concatenate after the loop runs.
+      const userGrounding: string[] = [];
       if (typeof text === "string" && text.length > 0) {
-        groundingTexts.push(text);
+        userGrounding.push(text);
       }
 
       try {
-        const ai = getGeminiClient();
         // V2.5a — compact old tool_results before sending history to
         // Gemini. Tool_results outside the last 10 messages get
         // replaced with a one-line summary; the CEO can re-fetch via
@@ -483,430 +441,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         // tool calls in full.
         const contents = toGeminiContents(compactOldToolResults(stored));
 
-        for (let turn = 0; turn < MAX_TURNS; turn++) {
-          // Per-storeId Gemini RPM guard. Free-tier 2.5 Flash is 10 RPM;
-          // a single chat message can fan out to multiple Gemini calls when
-          // tools run, so we check on every loop iteration. Defense-in-depth
-          // for SDK-thrown 429s lives in the catch block below.
-          const geminiLimit = checkGeminiRateLimit(store.id);
-          if (!geminiLimit.ok) {
-            const seconds = Math.max(1, Math.ceil(geminiLimit.retryAfterMs / 1000));
-            emit("error", {
-              message: `Copilot is briefly resting — try again in ${seconds}s.`,
-            });
-            break;
-          }
+        // Phase 8 — agent loop extracted into agent-loop.server.ts so the
+        // eval harness can run it against a `fakeAdmin` and capture
+        // structured events instead of writing SSE. The route's `emit`
+        // callback forwards each event byte-identically to the original
+        // inline path; the SSE wrapper format hasn't changed.
+        const {
+          lastAssistantContent,
+          lastAssistantMessageId,
+          totalToolCalls,
+          hadWriteTool,
+          hadClarification,
+          hadPlan,
+          writeToolCallIds,
+          assistantTextBuffer,
+          groundingTexts: loopGrounding,
+        } = await runAgentLoop({
+          admin,
+          storeId: store.id,
+          conversationId,
+          systemInstruction,
+          router,
+          contents,
+          storedSize: stored.length,
+          emit,
+        });
+        const groundingTexts = [...userGrounding, ...loopGrounding];
 
-          const accumulator = new AssistantTurnAccumulator();
-
-          const responseStream = await ai.models.generateContentStream({
-            // V2.4 — tiered model routing. router.modelId is Flash for
-            // complex/planning turns and Flash-Lite for read-only summary
-            // turns. The router defaults to Flash so quality is the floor.
-            model: router.modelId,
-            contents,
-            config: {
-              systemInstruction,
-              tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
-              maxOutputTokens: MAX_OUTPUT_TOKENS,
-            },
-          });
-
-          let lastUsageMetadata: unknown = null;
-          for await (const chunk of responseStream) {
-            const candidate = chunk.candidates?.[0];
-            const delta = accumulator.consumeChunkParts(candidate?.content?.parts);
-            if (delta.length > 0) {
-              emit("text_delta", { delta });
-              assistantTextBuffer += delta;
-            }
-            if (chunk.usageMetadata) lastUsageMetadata = chunk.usageMetadata;
-          }
-
-          const assistantContent = accumulator.finalize();
-          lastAssistantContent = assistantContent;
-
-          // Persist assistant turn verbatim (CLAUDE.md rule #3 — internal shape).
-          const assistantRow = await prisma.message.create({
-            data: {
-              conversationId,
-              role: "assistant",
-              content: assistantContent as unknown as object,
-              searchText: extractSearchText(assistantContent),
-              model: router.modelId,
-              ...(lastUsageMetadata
-                ? { usage: lastUsageMetadata as unknown as object }
-                : {}),
-            },
-            select: { id: true },
-          });
-          lastAssistantMessageId = assistantRow.id;
-
-          // V2.5a — token-budget visibility. Already persisted to
-          // Message.usage above (queryable later); also log so we can
-          // see per-turn token counts in Railway logs in real time
-          // and verify the impact of the lazy-injection / compaction
-          // fixes without a Prisma round-trip.
-          if (lastUsageMetadata) {
-            const usage = lastUsageMetadata as {
-              promptTokenCount?: number;
-              candidatesTokenCount?: number;
-              totalTokenCount?: number;
-            };
-            log.info("ceo turn tokens", {
-              storeId: store.id,
-              conversationId,
-              messageId: assistantRow.id,
-              modelUsed: router.modelId,
-              modelTier: router.tier,
-              routerReason: router.reason,
-              promptTokens: usage.promptTokenCount ?? null,
-              outputTokens: usage.candidatesTokenCount ?? null,
-              totalTokens: usage.totalTokenCount ?? null,
-              historyMessages: stored.length,
-              loopTurn: turn,
-            });
-          }
-
-          // Push the assistant turn onto Gemini contents for any next loop.
-          contents.push(
-            toGeminiContent({ role: "assistant", content: assistantContent }),
-          );
-
-          const toolUses = assistantContent.filter(
-            (b): b is ToolUseBlock => b.type === "tool_use",
-          );
-          totalToolCalls += toolUses.length;
-          for (const tu of toolUses) {
-            if (isApprovalRequiredWrite(tu.name)) {
-              hadWriteTool = true;
-              writeToolCallIds.push(tu.id);
-            }
-            if (tu.name === "ask_clarifying_question") {
-              hadClarification = true;
-            }
-            if (tu.name === "propose_plan") {
-              hadPlan = true;
-            }
-          }
-
-          if (toolUses.length === 0) break;
-
-          // Two passes: first execute reads + inline-writes inline; collect
-          // approval-required writes for a batched approval gate. This change
-          // (V1.8): every write tool_use produces a real PendingAction row +
-          // tool_use_start SSE event before we break for approval, so when
-          // Gemini emits multiple writes in one turn the client sees them as
-          // ONE batched ApprovalCard with one Approve / one Reject. Earlier
-          // shape broke after the first write, leaving later writes without
-          // backing rows (404 on click) and dropping any read tool_results
-          // that had already executed.
-          const toolResults: ToolResultBlock[] = [];
-          const pendingWrites: ToolUseBlock[] = [];
-          // V2.2 — set when ask_clarifying_question fires; we still let the
-          // tool execute inline (its tool_result is needed in Gemini's
-          // history), but we break the agent loop afterward so the
-          // merchant can answer before Gemini speaks again.
-          let askedClarification = false;
-          // V2.3 — same pattern for propose_plan: persist the Plan row,
-          // emit the plan_proposed SSE so the client can show PlanCard,
-          // then break the agent loop until the merchant approves/rejects.
-          let proposedPlan = false;
-          // V2.5 — same pattern for propose_artifact: persist the
-          // Artifact row, emit the artifact_open SSE so the client opens
-          // the side panel, then break until the merchant approves /
-          // discards. The actual Shopify write fires later via
-          // api.artifact-approve.
-          let proposedArtifact = false;
-
-          for (const tu of toolUses) {
-            if (isApprovalRequiredWrite(tu.name)) {
-              pendingWrites.push(tu);
-              continue;
-            }
-            if (isReadTool(tu.name) || isInlineWrite(tu.name)) {
-              // Inline-execute path: reads + safe writes that don't mutate
-              // the store (e.g. update_store_memory, ask_clarifying_question).
-              // No approval card. Surface a "running" indicator so the
-              // merchant knows we're not frozen during the 1–3s Shopify call.
-              emit("tool_running", { tool_name: tu.name });
-              const result = await executeTool(tu.name, tu.input, {
-                admin,
-                storeId: store.id,
-                conversationId,
-                toolCallId: tu.id,
-              });
-              const trContent = JSON.stringify(
-                result.ok ? result.data : { error: result.error },
-              );
-              toolResults.push({
-                type: "tool_result",
-                tool_use_id: tu.id,
-                content: trContent,
-                is_error: !result.ok,
-              });
-              // V6.5 — feed grounding for the post-stream hallucination
-              // check. Push regardless of error status — error payloads
-              // sometimes contain prices the CEO might quote ("we tried
-              // to set $19.99 but Shopify rejected it").
-              groundingTexts.push(trContent);
-
-              // V2.2 — clarification: emit the inline-prompt SSE event so
-              // the client can render the question with option buttons.
-              // The merchant's reply becomes the next user turn via the
-              // existing chat flow; Gemini sees the persisted tool_result
-              // and continues from there.
-              if (tu.name === "ask_clarifying_question" && result.ok) {
-                const data = result.data as {
-                  question?: string;
-                  options?: string[];
-                };
-                emit("clarification_asked", {
-                  tool_call_id: tu.id,
-                  question: data.question ?? "",
-                  options: Array.isArray(data.options) ? data.options : [],
-                });
-                askedClarification = true;
-              }
-              // V2.3 — propose_plan: emit the SSE event so the client can
-              // render PlanCard during the stream. The persisted tool_use
-              // block on the assistant Message handles reload-time render.
-              if (tu.name === "propose_plan" && result.ok) {
-                const data = result.data as {
-                  planId?: string;
-                  summary?: string;
-                  steps?: unknown[];
-                };
-                emit("plan_proposed", {
-                  tool_call_id: tu.id,
-                  plan_id: data.planId ?? "",
-                  summary: data.summary ?? "",
-                  steps: Array.isArray(data.steps) ? data.steps : [],
-                });
-                proposedPlan = true;
-              }
-              // V2.5 — propose_artifact: emit artifact_open so the
-              // client opens the side panel with the draft. The full
-              // content travels through this event (the client needs
-              // it to render the editor); future kinds may need a
-              // different shape. Tool input is the canonical source of
-              // truth for productId / productTitle / content — we read
-              // it directly off the tool_use block rather than the
-              // (summarized) tool_result.
-              if (tu.name === "propose_artifact" && result.ok) {
-                const data = result.data as { artifactId?: string };
-                const input = tu.input as {
-                  kind?: string;
-                  productId?: string;
-                  productTitle?: string;
-                  content?: string;
-                };
-                emit("artifact_open", {
-                  tool_call_id: tu.id,
-                  artifact_id: data.artifactId ?? "",
-                  kind: input.kind ?? "description",
-                  product_id: input.productId ?? "",
-                  product_title: input.productTitle ?? "",
-                  content: input.content ?? "",
-                });
-                proposedArtifact = true;
-              }
-              // V-Sub-2 hotfix — surface sub-agent's internal read tool
-              // calls as synthetic tool_use + tool_result blocks at the
-              // CEO level. Without this, get_analytics calls dispatched
-              // through delegate_to_department don't render their
-              // AnalyticsCard (MessageBubble renders cards from
-              // persisted tool_result blocks whose tool_use_id starts
-              // with "<toolname>::"). The merchant sees the rich card UX
-              // exactly like before the migration, even though the call
-              // happened inside a sub-agent.
-              //
-              // Gemini history coherence: we append matching synthetic
-              // tool_use blocks to assistantContent (the sub-agent's
-              // internal calls become the CEO's apparent calls from
-              // history's POV). Doesn't confuse the model — the next
-              // turn just sees a coherent assistant(tool_uses) → user(tool_results)
-              // pair, exactly like a direct call.
-              if (tu.name === "delegate_to_department" && result.ok) {
-                const data = result.data as {
-                  department: string;
-                  result: SubAgentResult;
-                };
-                let appendedSyntheticBlocks = false;
-
-                // Sub-agent returned cleanly with reads only — surface
-                // each read as a synthetic tool_use+tool_result pair so
-                // the merchant's UI cards (AnalyticsCard etc.) render
-                // exactly like before the migration.
-                if (
-                  data.result.kind === "completed" &&
-                  data.result.readsExecuted.length > 0
-                ) {
-                  for (const read of data.result.readsExecuted) {
-                    const syntheticId = mintToolUseId(read.toolName);
-                    const syntheticToolUse: ToolUseBlock = {
-                      type: "tool_use",
-                      id: syntheticId,
-                      name: read.toolName,
-                      input: read.toolInput,
-                    };
-                    const syntheticResultContent = JSON.stringify(
-                      read.toolResult,
-                    );
-                    const syntheticToolResult: ToolResultBlock = {
-                      type: "tool_result",
-                      tool_use_id: syntheticId,
-                      content: syntheticResultContent,
-                      is_error: read.isError,
-                    };
-                    assistantContent.push(syntheticToolUse);
-                    toolResults.push(syntheticToolResult);
-                    // Feed grounding for the post-stream hallucination
-                    // check, same as we do for direct read tool results.
-                    groundingTexts.push(syntheticResultContent);
-                  }
-                  appendedSyntheticBlocks = true;
-                }
-
-                // V-Sub-3 — Sub-agent wants to mutate state. Lift each
-                // proposed write to a synthetic tool_use that the existing
-                // pendingWrites flow processes (creates PendingAction,
-                // emits tool_use_start SSE, halts agent loop for merchant
-                // approval). From the merchant's UI perspective, an
-                // ApprovalCard renders identically to a direct write
-                // tool call. The synthetic tool_use also carries reads
-                // executed by the sub-agent before it proposed the
-                // write, surfaced as completed-state synthetic blocks
-                // (same path as the "completed" branch above).
-                if (
-                  data.result.kind === "proposed_writes" &&
-                  data.result.writes.length > 0
-                ) {
-                  for (const write of data.result.writes) {
-                    const syntheticId = mintToolUseId(write.toolName);
-                    const syntheticToolUse: ToolUseBlock = {
-                      type: "tool_use",
-                      id: syntheticId,
-                      name: write.toolName,
-                      input: write.toolInput,
-                    };
-                    assistantContent.push(syntheticToolUse);
-                    pendingWrites.push(syntheticToolUse);
-                    hadWriteTool = true;
-                    writeToolCallIds.push(syntheticId);
-                  }
-                  appendedSyntheticBlocks = true;
-                }
-
-                if (appendedSyntheticBlocks) {
-                  // The assistant message was persisted at line ~528
-                  // BEFORE this dispatch ran, with the original
-                  // assistantContent (which lacked the synthetic blocks).
-                  // Update the persisted row so reload-time UI rendering
-                  // sees the synthetic tool_uses too.
-                  await prisma.message.update({
-                    where: { id: assistantRow.id },
-                    data: {
-                      content: assistantContent as unknown as object,
-                    },
-                  });
-                  // The contents array (Gemini history for next-iteration
-                  // calls) was also pushed BEFORE this dispatch. Replace
-                  // the last entry so subsequent generateContent calls
-                  // see the synthetic tool_uses paired with their results
-                  // (Gemini's function-calling API requires every
-                  // functionResponse to have a matching functionCall).
-                  contents[contents.length - 1] = toGeminiContent({
-                    role: "assistant",
-                    content: assistantContent,
-                  });
-                }
-              }
-              continue;
-            }
-            // Unknown / not-yet-wired
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: tu.id,
-              content: `Tool ${tu.name} is not registered.`,
-              is_error: true,
-            });
-          }
-
-          if (pendingWrites.length > 0) {
-            // Persist any reads we ran first — keeps Gemini's history
-            // well-formed across the approval gap (one model turn → one
-            // user turn with all functionResponses on continuation).
-            if (toolResults.length > 0) {
-              await prisma.message.create({
-                data: {
-                  conversationId,
-                  role: "user",
-                  content: toolResults as unknown as object,
-                },
-              });
-            }
-            // Upsert ALL pending writes + emit one tool_use_start each.
-            // toolCallId @unique is the dedupe key (idempotent).
-            for (const tu of pendingWrites) {
-              await prisma.pendingAction.upsert({
-                where: { toolCallId: tu.id },
-                create: {
-                  toolCallId: tu.id,
-                  toolName: tu.name,
-                  toolInput: tu.input as object,
-                  storeId: store.id,
-                  conversationId,
-                  status: "PENDING",
-                },
-                update: {},
-              });
-              emit("tool_use_start", {
-                tool_call_id: tu.id,
-                tool_name: tu.name,
-                tool_input: tu.input,
-              });
-            }
-            break; // wait for approval
-          }
-
-          if (toolResults.length === 0) break;
-
-          // Pure-reads turn: synthesize a user-turn with the tool_results
-          // and continue the agent loop. Filtered from the UI by api.messages.tsx.
-          await prisma.message.create({
-            data: {
-              conversationId,
-              role: "user",
-              content: toolResults as unknown as object,
-            },
-          });
-          contents.push(
-            toGeminiContent({ role: "user", content: toolResults }),
-          );
-
-          // V2.2 — clarification breaks the agent loop AFTER persisting the
-          // tool_result so Gemini's history is well-formed when the merchant
-          // responds. The CEO must wait for the answer before continuing.
-          if (askedClarification) break;
-
-          // V2.3 — same pattern for propose_plan: tool_result persists,
-          // then we break and wait for merchant approval. On continuation
-          // (POST /api/chat with no text), the synthesized tool_result
-          // generated by api.plan-approve / api.plan-reject tells Gemini
-          // whether the plan was approved.
-          if (proposedPlan) break;
-
-          // V2.5 — same pattern for propose_artifact: pause the agent
-          // loop until the merchant approves / discards in the panel.
-          // api.artifact-approve continues the chat with a synthesized
-          // tool_result describing what happened (approved + applied,
-          // or discarded).
-          if (proposedArtifact) break;
-
-          // continue loop
-          void bareToolCallUuid; // imported for future logging; suppress unused-warning
-        }
 
         emit("done", {});
 
