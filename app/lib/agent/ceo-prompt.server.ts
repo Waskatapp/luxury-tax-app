@@ -1,6 +1,8 @@
-import IDENTITY_MD from "./ceo-prompt/identity.md?raw";
-import DECISION_RULES_MD from "./ceo-prompt/decision-rules.md?raw";
-import OUTPUT_FORMAT_MD from "./ceo-prompt/output-format.md?raw";
+import { loadRaw } from "./load-raw.server";
+
+const IDENTITY_MD = loadRaw(import.meta.url, "./ceo-prompt/identity.md");
+const DECISION_RULES_MD = loadRaw(import.meta.url, "./ceo-prompt/decision-rules.md");
+const OUTPUT_FORMAT_MD = loadRaw(import.meta.url, "./ceo-prompt/output-format.md");
 
 import { DEPARTMENTS } from "./departments";
 // V-Sub-5 — registry-entrypoint import populates the registry on module

@@ -27,7 +27,8 @@ import {
   updateProductVendorHandler,
   updateVariantHandler,
 } from "./handlers";
-import PRODUCTS_PROMPT from "./prompt.md?raw";
+import { loadRaw } from "../../load-raw.server";
+const PRODUCTS_PROMPT = loadRaw(import.meta.url, "./prompt.md");
 
 // V-Sub-3 — Phase Sub-Agents Products department. Owns the product
 // catalog: searching products and collections, rewriting descriptions,

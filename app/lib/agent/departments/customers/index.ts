@@ -13,7 +13,8 @@ import {
   updateEmailMarketingConsentHandler,
   updateSmsMarketingConsentHandler,
 } from "./handlers";
-import CUSTOMERS_PROMPT from "./prompt.md?raw";
+import { loadRaw } from "../../load-raw.server";
+const CUSTOMERS_PROMPT = loadRaw(import.meta.url, "./prompt.md");
 
 // V-Cu-A — Phase Customers Round A. Fifth domain department after
 // Marketing (shipped 2026-05-02). Owns 6 tools today: read list +

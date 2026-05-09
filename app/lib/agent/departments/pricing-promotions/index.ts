@@ -18,7 +18,8 @@ import {
   updateDiscountHandler,
   updateProductPriceHandler,
 } from "./handlers";
-import PRICING_PROMPT from "./prompt.md?raw";
+import { loadRaw } from "../../load-raw.server";
+const PRICING_PROMPT = loadRaw(import.meta.url, "./prompt.md");
 
 // V-Sub-4 — Phase Sub-Agents Pricing & Promotions department. 2 write
 // tools. The simplest department; pure write surface (no reads). The
