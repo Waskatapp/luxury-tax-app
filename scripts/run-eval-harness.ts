@@ -7,9 +7,17 @@ import {
   shouldFileSystemHealthFinding,
 } from "../app/lib/agent/system-health.server";
 import { recordEvalRun } from "../app/lib/eval/persistence.server";
-import { runEvalScenario } from "../app/lib/eval/runner.server";
 import { SCENARIOS } from "../app/lib/eval/scenarios";
 import type { EvalScenarioResult } from "../app/lib/eval/types";
+
+// runner.server.ts is dynamically imported below — it transitively
+// pulls in ceo-prompt.server.ts which uses Vite's `?raw` syntax to
+// embed markdown prompt files. That syntax only resolves under Vite;
+// tsx (which runs this script) sees `.md?raw` and throws
+// ERR_UNKNOWN_FILE_EXTENSION. Until commit 3 lands a tsx-compatible
+// path (likely a non-Vite CEO prompt assembler for the harness, or
+// an esbuild prebuild step), we lazy-import only when SCENARIOS has
+// entries. With SCENARIOS = [] the runner is never imported.
 
 // Phase 8 — eval harness cron entrypoint. Invoked nightly by
 // .github/workflows/eval-harness.yml. Two passes:
@@ -51,6 +59,12 @@ async function runScenarios(now: Date): Promise<{
   }
 
   console.log(`[eval-harness] running ${SCENARIOS.length} scenario(s)`);
+
+  // Lazy-import — see top-of-file note. Pulls in ceo-prompt.server.ts
+  // which uses Vite ?raw imports. Until those are tsx-compatible this
+  // import will throw ERR_UNKNOWN_FILE_EXTENSION; we surface that as
+  // a clean infra error rather than a silent test-pass.
+  const { runEvalScenario } = await import("../app/lib/eval/runner.server");
 
   // Scenarios run against a synthetic Conversation seeded under a
   // dedicated harness store. We pick the FIRST installed store as
