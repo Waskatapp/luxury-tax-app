@@ -137,6 +137,7 @@ export type RecordTurnSignalInput = {
   hadPlan?: boolean;
   latencyMs?: number | null;
   modelUsed?: string | null;
+  routerReason?: string | null;
   ceoConfidence?: number | null;
 };
 
@@ -161,6 +162,7 @@ export async function recordTurnSignal(
         hadPlan: input.hadPlan ?? false,
         latencyMs: input.latencyMs ?? null,
         modelUsed: input.modelUsed ?? null,
+        routerReason: input.routerReason ?? null,
         ceoConfidence: input.ceoConfidence ?? null,
       },
       update: {

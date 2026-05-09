@@ -942,6 +942,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             hadPlan,
             latencyMs: Date.now() - requestStart,
             modelUsed: router.modelId,
+            // Phase 8 — analyzer groups abandoned turns by router reason
+            // to surface which heuristics under-serve production traffic.
+            routerReason: router.reason,
             // V6.2 — extract `Confidence: 0.X` tag from assistant text per
             // output-format.md. Null when the turn didn't warrant a tag
             // (greetings, lookups, confirmations) — that's the right
