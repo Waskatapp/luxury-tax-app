@@ -1,9 +1,22 @@
-// Phase 8 — curated scenario barrel. Empty in commit 5; populated in
-// commit 3 (deferred — needs the Gemini-mock pattern this phase
-// introduces). The harness is fully functional with zero scenarios:
-// it runs the routing-analyzer pass and persists an EvalRun row with
-// totalScenarios=0.
+// Phase 8b — curated scenario barrel. First batch focuses on
+// CEO prompt-level behavior (zero admin calls). Future commits add
+// scenarios that exercise tool flows + sub-agent delegation, which
+// require canned Shopify responses in adminResponses.
+//
+// These are NOT vitest tests — they're data fixtures consumed by
+// the cron-driven runner (scripts/run-eval-harness.ts → runEvalScenario).
+// Each runs against the real Gemini API; expect ~5-15s per scenario.
 
 import type { EvalScenario } from "../types";
 
-export const SCENARIOS: EvalScenario[] = [];
+import { ambiguousNeedsClarificationScenario } from "./ambiguous-needs-clarification";
+import { capabilityExplainScenario } from "./capability-explain";
+import { greetingNoToolsScenario } from "./greeting-no-tools";
+import { thanksAcknowledgmentScenario } from "./thanks-acknowledgment";
+
+export const SCENARIOS: EvalScenario[] = [
+  greetingNoToolsScenario,
+  thanksAcknowledgmentScenario,
+  capabilityExplainScenario,
+  ambiguousNeedsClarificationScenario,
+];
