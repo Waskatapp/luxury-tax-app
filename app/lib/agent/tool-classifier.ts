@@ -110,6 +110,15 @@ export const APPROVAL_REQUIRED_WRITE_TOOLS = new Set<string>([
   "adjust_inventory_quantity",
   "set_inventory_quantity",
   "transfer_inventory",
+  // V-Bulk-A — Per-entity bulk-write tools. Modeled byte-for-byte on the
+  // canonical bulk_update_prices exemplar (P&P): XOR scope (collectionId |
+  // productIds), per-product sequential mutations, partial-failure
+  // resilient, snapshot skipped (result carries the diff). Caps: 50
+  // products per call. bulk_update_status is HIGH-risk (DRAFT removes
+  // from storefront; ARCHIVED removes from search + storefront).
+  "bulk_update_titles",
+  "bulk_update_tags",
+  "bulk_update_status",
 ]);
 
 // update_store_memory is a write tool that executes inline (no approval card)

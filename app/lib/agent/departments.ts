@@ -61,6 +61,9 @@ export const DEPARTMENTS: Department[] = [
       "add_product_image",
       "remove_product_image",
       "reorder_product_images",
+      "bulk_update_titles",
+      "bulk_update_tags",
+      "bulk_update_status",
     ],
   },
   {

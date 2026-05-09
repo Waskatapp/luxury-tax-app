@@ -8,6 +8,9 @@ import type {
 
 import {
   addProductImageHandler,
+  bulkUpdateStatusHandler,
+  bulkUpdateTagsHandler,
+  bulkUpdateTitlesHandler,
   createCollectionHandler,
   createProductDraftHandler,
   duplicateProductHandler,
@@ -421,6 +424,147 @@ const reorderProductImagesDeclaration: FunctionDeclaration = {
   },
 };
 
+// ============================================================================
+// V-Bulk-A — Three product-level bulk-write tools modeled on the canonical
+// `bulk_update_prices` exemplar in Pricing & Promotions. XOR scope
+// (collectionId | productIds), per-product sequential mutations, partial-
+// failure resilient, snapshot skipped (result carries the diff). Caps:
+// 50 productIds, OR a collection that resolves to ≤ 50 products.
+// ============================================================================
+
+const bulkUpdateTitlesDeclaration: FunctionDeclaration = {
+  name: "bulk_update_titles",
+  description:
+    "Apply a title transform across many products in ONE operation. **REQUIRES HUMAN APPROVAL.** Use when the merchant says 'add X to all titles' / 'rename all my snowboards' / 'remove the old brand prefix from every product'. Three transform kinds:\n\n- `append` — add text at the end (e.g. `text: ' waskat'` turns 'Cat Food' into 'Cat Food waskat')\n- `prepend` — add text at the beginning\n- `find_replace` — find a substring and replace it (use `replace: ''` to delete the substring)\n\n**Scope is XOR — exactly one of:**\n- `collectionId` — apply to every product in a collection (cap: 50 products; refuses if larger)\n- `productIds` — explicit list of product GIDs (1–50)\n\nCAPS: 50 products max. Above that, fall back to Shopify admin → Products → Bulk edit (one-time merchant action). The result includes per-product before/after titles + a `failures[]` list for any per-product mutation errors.\n\n**Always preview in your chat reply before the approval card fires** — say e.g. 'About to rename 70 products: \"Cat Food\" → \"Cat Food waskat\", \"Dog Food\" → \"Dog Food waskat\", + 68 others. One approval card.' so the merchant sees the shape of the change before clicking.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      collectionId: {
+        type: "string",
+        description:
+          "Collection GID, e.g. gid://shopify/Collection/12345. Apply transform to every product in this collection. Refused if collection has > 50 products.",
+      },
+      productIds: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 50,
+        description:
+          "Explicit array of product GIDs (1–50). Use this when the merchant has named specific products or you've narrowed via read_products.",
+      },
+      transform: {
+        type: "object",
+        description:
+          "The title transform. Pick the kind that matches the merchant's words.",
+        oneOf: [
+          {
+            type: "object",
+            properties: {
+              kind: { type: "string", enum: ["append"] },
+              text: {
+                type: "string",
+                description:
+                  "Text appended to the end of each title. Include any leading space if you want it ('  waskat' → 'Cat Food waskat').",
+              },
+            },
+            required: ["kind", "text"],
+          },
+          {
+            type: "object",
+            properties: {
+              kind: { type: "string", enum: ["prepend"] },
+              text: {
+                type: "string",
+                description:
+                  "Text added to the beginning of each title. Include any trailing space.",
+              },
+            },
+            required: ["kind", "text"],
+          },
+          {
+            type: "object",
+            properties: {
+              kind: { type: "string", enum: ["find_replace"] },
+              find: {
+                type: "string",
+                description:
+                  "Substring to find in each title (case-sensitive). Skipped when not present.",
+              },
+              replace: {
+                type: "string",
+                description:
+                  "Replacement substring. Pass empty string to delete the `find` substring.",
+              },
+            },
+            required: ["kind", "find", "replace"],
+          },
+        ],
+      },
+    },
+    required: ["transform"],
+  },
+};
+
+const bulkUpdateTagsDeclaration: FunctionDeclaration = {
+  name: "bulk_update_tags",
+  description:
+    "Add, remove, or replace tags across many products in ONE operation. **REQUIRES HUMAN APPROVAL.** Use when the merchant says 'tag every snowboard as winter-2026' / 'remove the sale tag from all products' / 'set tags on the Hydrogen collection'. Three actions:\n\n- `add` — UNION with existing tags (idempotent; case-insensitive de-dup; doesn't drop pre-existing tags). Most-common merchant ask.\n- `remove` — drop the listed tags from each product's existing list (case-insensitive match). Other tags preserved.\n- `replace` — full replacement of each product's tag list with the supplied tags. Destructive — pre-existing tags are LOST.\n\n**Scope is XOR — exactly one of:** `collectionId` (cap 50 products) OR `productIds` (1–50 GIDs).\n\nCAPS: 50 products, 50 tags per request. Above that, fall back to Shopify admin Bulk Edit. The result includes per-product before/after tags + failures[]. Tags are admin-only metadata (customers don't see them); LOW-risk write.\n\n**Always preview in your chat reply before the approval card fires** — say which action, which tags, how many products. For `replace` ESPECIALLY, name the destructive intent: 'About to REPLACE tags on 70 products with [hydrogen, snowboard] — pre-existing tags will be lost. One approval card.'",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      collectionId: { type: "string", description: "Collection GID. Cap 50." },
+      productIds: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 50,
+        description: "1–50 product GIDs.",
+      },
+      action: {
+        type: "string",
+        enum: ["add", "remove", "replace"],
+        description:
+          "`add` (union — idempotent, doesn't drop existing); `remove` (subtract from existing); `replace` (full replacement — DESTRUCTIVE).",
+      },
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 50,
+        description:
+          "Tag list to add / remove / replace with. 1–50 tags, each ≤ 255 chars.",
+      },
+    },
+    required: ["action", "tags"],
+  },
+};
+
+const bulkUpdateStatusDeclaration: FunctionDeclaration = {
+  name: "bulk_update_status",
+  description:
+    "Set status (DRAFT / ACTIVE / ARCHIVED) across many products in ONE operation. **REQUIRES HUMAN APPROVAL. HIGH-RISK** — `DRAFT` removes products from the storefront; `ARCHIVED` removes from search + storefront and signals 'no longer sold'. Use ONLY when the merchant explicitly says 'archive / unpublish / publish at scale' — never propose from inferred intent like 'clean up my catalog' or 'archive the old stuff'. Those are clarification cases, not bulk-action cases.\n\n**Scope is XOR — exactly one of:** `collectionId` (cap 50 products) OR `productIds` (1–50 GIDs).\n\nCAP: 50 products. Above that, fall back to Shopify admin Bulk Edit. The result includes per-product oldStatus → newStatus + failures[].\n\n**Always preview in your chat reply before the approval card fires** — name the new status PROMINENTLY and the merchant-visible consequence: 'About to set 7 products to ARCHIVED — they'll be removed from your storefront and search. One approval card.' For DRAFT: 'About to set 12 products to DRAFT — they'll disappear from your storefront. One approval card.' Don't soft-pedal the consequence.",
+  parametersJsonSchema: {
+    type: "object",
+    properties: {
+      collectionId: { type: "string", description: "Collection GID. Cap 50." },
+      productIds: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 50,
+        description: "1–50 product GIDs.",
+      },
+      status: {
+        type: "string",
+        enum: ["DRAFT", "ACTIVE", "ARCHIVED"],
+        description:
+          "DRAFT = unpublished, not on storefront. ACTIVE = published. ARCHIVED = removed from search + storefront, signals 'no longer sold'.",
+      },
+    },
+    required: ["status"],
+  },
+};
+
 const PRODUCTS_SPEC: DepartmentSpec = {
   id: "products",
   label: "Products",
@@ -445,6 +589,9 @@ const PRODUCTS_SPEC: DepartmentSpec = {
     addProductImageDeclaration,
     removeProductImageDeclaration,
     reorderProductImagesDeclaration,
+    bulkUpdateTitlesDeclaration,
+    bulkUpdateTagsDeclaration,
+    bulkUpdateStatusDeclaration,
   ],
   handlers: new Map<string, ToolHandler>([
     ["read_products", readProductsHandler],
@@ -463,6 +610,9 @@ const PRODUCTS_SPEC: DepartmentSpec = {
     ["add_product_image", addProductImageHandler],
     ["remove_product_image", removeProductImageHandler],
     ["reorder_product_images", reorderProductImagesHandler],
+    ["bulk_update_titles", bulkUpdateTitlesHandler],
+    ["bulk_update_tags", bulkUpdateTagsHandler],
+    ["bulk_update_status", bulkUpdateStatusHandler],
   ]),
   classification: {
     read: new Set(["read_products", "read_collections"]),
@@ -481,6 +631,9 @@ const PRODUCTS_SPEC: DepartmentSpec = {
       "add_product_image",
       "remove_product_image",
       "reorder_product_images",
+      "bulk_update_titles",
+      "bulk_update_tags",
+      "bulk_update_status",
     ]),
     inlineWrite: new Set(),
   },

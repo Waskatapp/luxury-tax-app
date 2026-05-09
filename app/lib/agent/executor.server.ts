@@ -466,6 +466,11 @@ export async function snapshotBefore(
       // AuditLog's `after` field carries the full diff. Re-resolving
       // 50+ variants for a separate snapshot would double the read cost
       // for no extra value.
+      //
+      // V-Bulk-A — bulk_update_titles / bulk_update_tags / bulk_update_status
+      // follow the SAME pattern. Each result includes per-product
+      // {oldX, newX} in `changes[]`, so the AuditLog's after field carries
+      // the full per-item diff. Falling through to default → null.
       case "update_discount":
       case "set_discount_status":
       case "delete_discount": {

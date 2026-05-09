@@ -1,5 +1,8 @@
 import {
   addProductImage,
+  bulkUpdateStatus,
+  bulkUpdateTags,
+  bulkUpdateTitles,
   createProductDraft,
   duplicateProduct,
   readProducts,
@@ -180,4 +183,30 @@ export const reorderProductImagesHandler: ToolHandler = async (
   ctx: HandlerContext,
 ) => {
   return reorderProductImages(ctx.admin, input);
+};
+
+// V-Bulk-A — Bulk write handlers. Pass-through wrappers; the underlying
+// bulk* functions own Zod parsing, scope resolution, per-product loop,
+// and partial-failure aggregation. snapshotBefore returns null for these
+// (executor.server.ts) — the result payload's changes[] carries the diff.
+
+export const bulkUpdateTitlesHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return bulkUpdateTitles(ctx.admin, input);
+};
+
+export const bulkUpdateTagsHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return bulkUpdateTags(ctx.admin, input);
+};
+
+export const bulkUpdateStatusHandler: ToolHandler = async (
+  input: unknown,
+  ctx: HandlerContext,
+) => {
+  return bulkUpdateStatus(ctx.admin, input);
 };
