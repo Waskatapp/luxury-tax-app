@@ -16,7 +16,7 @@ import {
   updateProductSeoHandler,
 } from "./handlers";
 import { loadRaw } from "../../load-raw.server";
-const MARKETING_PROMPT = loadRaw(import.meta.url, "./prompt.md");
+const MARKETING_PROMPT = loadRaw("app/lib/agent/departments/marketing/prompt.md");
 
 // V-Mkt-A — Phase Marketing Round A. First new department since the
 // sub-agent architecture stabilized in Phase Sub-Agents (2026-05-02).

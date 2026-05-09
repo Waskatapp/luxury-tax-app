@@ -14,7 +14,7 @@ import {
   updateOrderTagsHandler,
 } from "./handlers";
 import { loadRaw } from "../../load-raw.server";
-const ORDERS_PROMPT = loadRaw(import.meta.url, "./prompt.md");
+const ORDERS_PROMPT = loadRaw("app/lib/agent/departments/orders/prompt.md");
 
 // V-Or-A — Phase Orders & Fulfillment Round A. Sixth domain department
 // after Customers (shipped 2026-05-03). Round A is read-only — 2 tools.

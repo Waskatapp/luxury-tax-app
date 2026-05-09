@@ -12,7 +12,7 @@ import {
   transferInventoryHandler,
 } from "./handlers";
 import { loadRaw } from "../../load-raw.server";
-const INVENTORY_PROMPT = loadRaw(import.meta.url, "./prompt.md");
+const INVENTORY_PROMPT = loadRaw("app/lib/agent/departments/inventory/prompt.md");
 
 // V-Inv-A — Phase Inventory & Operations Round A. Seventh domain
 // department after Orders (shipped 2026-05-04). Round A is reads + a

@@ -13,7 +13,7 @@ import {
   getTopPerformersHandler,
 } from "./handlers";
 import { loadRaw } from "../../load-raw.server";
-const INSIGHTS_PROMPT = loadRaw(import.meta.url, "./prompt.md");
+const INSIGHTS_PROMPT = loadRaw("app/lib/agent/departments/insights/prompt.md");
 
 // V-Sub-2 — Phase Sub-Agents Insights department. The first real
 // migration. Owns ONE tool today (get_analytics); future expansion
