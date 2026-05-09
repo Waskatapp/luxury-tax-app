@@ -23,7 +23,8 @@
     "stats:suggestions": "tsx scripts/suggestion-stats.ts",
     "tune:suggestions": "tsx scripts/auto-tune-suggestions.ts",
     "audit:tuning": "tsx scripts/tuning-audit-report.ts",
-    "run:evaluator": "tsx scripts/run-evaluator.ts"
+    "run:evaluator": "tsx scripts/run-evaluator.ts",
+    "run:eval-harness": "tsx scripts/run-eval-harness.ts"
   },
   "type": "module",
   "engines": {

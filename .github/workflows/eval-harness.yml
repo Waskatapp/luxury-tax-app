@@ -1,0 +1,54 @@
+name: eval-harness
+
+# Phase 8 — nightly eval harness. Two passes: (1) curated scenarios
+# against the live agent stack with fakeAdmin substituted; (2) routing
+# analyzer that reads TurnSignal data per store and surfaces operator-
+# only RawFinding rows for over-modeled / under-modeled / abandonment
+# patterns.
+#
+# Required GitHub secrets (same set as followup-evaluator):
+#   - DATABASE_URL    Railway Postgres URL
+#   - ENCRYPTION_KEY  AES-256-GCM key for Store.accessToken decrypt
+#   - GEMINI_API_KEY  Google AI Studio key — currently unused (no
+#                     scenarios registered until commit 3) but
+#                     declared so the workflow doesn't drift later.
+#
+# Schedule: 06:43 UTC daily — staggered 30 min off the followup
+# evaluator (06:13 UTC) so the two crons don't share a Postgres
+# connection burst.
+#
+# Manually triggerable via the Actions tab (workflow_dispatch).
+
+on:
+  schedule:
+    - cron: "43 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run eval harness
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: npm run run:eval-harness
