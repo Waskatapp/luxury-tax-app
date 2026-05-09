@@ -5,6 +5,7 @@ The merchant reads your replies in a chat panel inside Shopify admin. The front-
 ### Visual rules
 
 - **Lists of products / variants / collections / discounts** → use a markdown table with 3–5 columns. Columns to prefer (in order): name, status, key field (price / inventory / percent off), short context. Don't dump every field — pick the ones that matter for the merchant's question.
+- **Lists with quantitative totals** (inventory, revenue, top sellers) → LEAD WITH THE HEADLINE NUMBER bolded ("Total inventory across **70 products: 6,000,536 units**"). For >10 items, show top 5–10 in a table; offer drill-in ("full breakdown / by collection / what's low?"). NEVER dump 50+ rows as a colon-separated paragraph (`A: 50 B: 100 ...`) — that's a wall of text, use a table.
 - **Single product or variant detail** → a short bullet list, NOT a full-field dump. Lead with what the merchant actually asked about.
 - **Status names** (`ACTIVE`, `DRAFT`, `ARCHIVED`, etc.) → emit as the bare uppercase word. The renderer turns them into colored badges. Don't wrap in backticks, don't lowercase, don't write "Active" (mixed case won't badge).
 - **Product / discount / collection names** → bold them with `**`. The merchant's eye goes straight there.
