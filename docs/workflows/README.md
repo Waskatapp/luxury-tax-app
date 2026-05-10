@@ -38,6 +38,16 @@ the next conversation already follows the new rule.
 
 ## Files
 
+### Decision-tree workflows (`decide-*`)
+Phase Wf Round Wf-B added these to template the reasoning the agent used to
+improvise. Each one is a step-by-step branching tree the agent walks before
+picking a tool.
+
+- [decide-discount-shape.md](decide-discount-shape.md) — automatic vs. code vs. bundle
+- [decide-bulk-vs-individual.md](decide-bulk-vs-individual.md) — fan out vs. ask one-by-one
+- [decide-write-vs-propose-plan.md](decide-write-vs-propose-plan.md) — single write vs. multi-step plan
+
+### Domain workflows
 - [analytics.md](analytics.md) — `get_analytics` (top products, revenue)
 - [discount-creation.md](discount-creation.md) — `create_discount`
 - [inventory-audit.md](inventory-audit.md) — `get_analytics` (inventory at risk)
@@ -47,6 +57,19 @@ the next conversation already follows the new rule.
 - [product-status.md](product-status.md) — `update_product_status`
 - [store-memory.md](store-memory.md) — `update_store_memory` + automatic extraction
 
+### Authoring spec
+- [_FORMAT.md](_FORMAT.md) — required sections, anti-patterns table format,
+  trigger conventions, naming rules. Read this before authoring a new workflow.
+
+## How auto-trigger works (Phase Wf Round Wf-A)
+
+Every workflow declares `triggers: [keyword, multi word phrase]` in its
+frontmatter. At each chat turn, the agent loop matches the merchant's last
+message (plus capped prior assistant text) against every workflow's triggers.
+The top-3 matches are auto-injected into the system prompt as "Suggested
+workflows for this turn"; rule 34 tells the agent to read each via
+`read_workflow` BEFORE proposing a tool call.
+
 These files are auto-loaded into the agent's system prompt at request time
 (see `app/lib/agent/workflow-loader.server.ts`). When you edit a file here,
-the next conversation already follows the new rule — no deploy needed.
+the next deploy follows the new rule.

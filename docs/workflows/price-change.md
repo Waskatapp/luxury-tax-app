@@ -47,9 +47,19 @@ The merchant says things like:
   use the name," it means: stop asking and pick the unique match.
 - **New price equals current price:** no-op. Tell the merchant the price
   is already that and skip the approval card.
-- **Bulk price change** ("raise everything 10%"): not supported in v1.
-  Tell the merchant to do it one product at a time, or wait for Phase 6
-  bulk tools.
+- **Bulk price change** ("raise everything 10%"): use `bulk_update_prices`
+  via Pricing & Promotions — not 70 individual calls. Route via
+  `decide-bulk-vs-individual`.
+
+## Anti-patterns
+
+| Don't | Do instead |
+|---|---|
+| Ask the merchant for the variant ID. | Resolve via Products dept → `read_products` (rule 25). |
+| Propose `$19.999` or other > 2-decimal prices. | Round to 2 decimals before the approval card. |
+| Auto-archive a product after dropping its price to $0. | Confirm "make it free" intent first; price=0 is its own ApprovalCard, archive is separate. |
+| Loop `update_product_price` 70 times for "lower all prices 10%". | `bulk_update_prices` (route via `decide-bulk-vs-individual`). |
+| Apply a > 50% price swing without confirming. | Ask once before the approval card surfaces. |
 
 ## What approval means
 

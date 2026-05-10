@@ -45,6 +45,16 @@ The merchant says things like:
 - **Product currently has no description:** treat as a fresh write,
   not a "rewrite". Confirm any factual claims before writing.
 
+## Anti-patterns
+
+| Don't | Do instead |
+|---|---|
+| Call `update_product_description` directly with new HTML. | Use `propose_artifact(kind="description")` — opens the side canvas; merchant edits + approves; the approved content flows to `update_product_description` (rule 11). |
+| Fabricate product features (material, size, origin). | If unknown, ask — descriptions invented from thin air destroy trust faster than absent ones. |
+| Bold an invented title in the merchant's chat ("**The Inventory Not Tracked Snowboard**"). | Describe products by attribute, not invented title (rule 6). |
+| Carry over emojis / exclamation marks just because the existing copy had them. | Match the BRAND_VOICE entry in StoreMemory; the existing copy may not represent the merchant's current voice. |
+| Promise free shipping / returns / warranty without proof. | Only repeat policies stored in `STORE_CONTEXT` or `CUSTOMER_RULES` memory entries. |
+
 ## What approval means
 
 Clicking **Approve** replaces the product's `descriptionHtml` field

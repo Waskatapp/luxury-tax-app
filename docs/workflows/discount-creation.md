@@ -42,6 +42,16 @@ The merchant says things like:
 - **"Take $5 off":** v1 does not support fixed-amount discounts, only
   percent. Tell the merchant and offer the closest percentage.
 
+## Anti-patterns
+
+| Don't | Do instead |
+|---|---|
+| Pick a discount shape without consulting `decide-discount-shape.md`. | Read it FIRST — code vs. bundle vs. automatic is the most-missed call. |
+| Fabricate a discount code (`SUMMER25`) when the merchant said "code". | Ask once: "what code should customers type?" |
+| Run a 90% discount without surfacing the margin impact. | Refuse loud catastrophic discounts (rule 9 last paragraph); flag any > 50% before the approval card. |
+| Schedule two overlapping site-wide discounts silently. | Mention the conflict; ask to pause the existing one or confirm intentional stacking. |
+| Treat a recurring promo as a single discount. | If the merchant wants weekly Monday discounts, propose a recurring scheduler workflow — not one "Mon-Fri 30 days" discount. |
+
 ## What approval means
 
 Clicking **Approve** creates the discount as **ACTIVE** immediately —

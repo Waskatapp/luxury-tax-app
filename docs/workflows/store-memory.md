@@ -68,3 +68,13 @@ value for that store, so picking stable keys matters. Examples:
 The merchant can view, edit, and delete entries at `/app/settings/memory`.
 That UI is the source of truth — if they delete an entry, it's gone, and the
 Copilot will not see it on the next conversation.
+
+## Anti-patterns
+
+| Don't | Do instead |
+|---|---|
+| Save a transient request as memory ("lower X to $19.99" → memory entry). | Memory is for durable rules, not one-off ops. Just call the write tool. |
+| Use freeform keys (`tone_of_voice`, `voiceStyle`, `voice_style_v2`). | Canonical snake_case (`brand_voice`); upserts depend on stable keys. |
+| Save a fact you fabricated. | Only save what the merchant said in this turn. |
+| Store the Copilot's own name as `operator_name`. | OPERATOR_PREFS describes the MERCHANT, not the agent. Use `merchant_name`. |
+| Quote-strip the merchant's words ("they want it casual" → save "casual"). | Save the merchant's own phrasing — it preserves their voice for future surfacing. |

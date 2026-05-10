@@ -44,6 +44,16 @@ The merchant says things like:
 - **HTML in the description:** allowed; same rules as
   [product-description.md](product-description.md).
 
+## Anti-patterns
+
+| Don't | Do instead |
+|---|---|
+| Create as ACTIVE because "the merchant said publish it". | Always DRAFT first. Publishing is a separate `update_product_status` after the merchant reviews. |
+| Set the price during create (the create tool sets $0 default). | Create the draft, then propose `update_product_price` as a follow-up. Two cards = two intentional decisions. |
+| Auto-retry `create_product_draft` after a transient failure. | NEVER auto-retry — `create_*` is non-idempotent (Re-B: `IDEMPOTENT_TOOLS` excludes creates). Surface the failure; ask the merchant. |
+| Fabricate a product handle. | Let Shopify auto-generate from the title. The tool result returns the handle. |
+| Create the same draft twice when the merchant nudges "did that go through?". | Check via `read_products` for the title first; surface the existing draft if found. |
+
 ## What approval means
 
 Clicking **Approve** creates the product in Shopify with status

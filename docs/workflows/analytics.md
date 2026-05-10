@@ -54,6 +54,16 @@ The merchant says things like:
   the store had more than 250 orders in the window, mention the cap and
   suggest a shorter window.
 
+## Anti-patterns
+
+| Don't | Do instead |
+|---|---|
+| Quote a "$0 revenue" without context. | Say "no orders in the last 30 days" — different signal than $0 across some orders. |
+| Subtract refunds silently. | Call out that v1 revenue = gross (includes shipping + tax + refunded amounts). |
+| Pair "top products" with an auto-discount proposal. | Reads don't trigger writes. Surface the data; let the merchant decide. |
+| Bury the headline number under setup ("I queried the last 30 days of orders…"). | Lead with the number; context after. |
+| Use `delegate_parallel` for a single analytics question. | Single read = `delegate_to_department(insights)`. Parallel is for cross-dept aggregations. |
+
 ## What approval means
 
 Read-only — no approval card. Results stream directly into chat. Phase 9

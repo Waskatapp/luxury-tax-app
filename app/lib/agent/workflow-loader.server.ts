@@ -27,7 +27,8 @@ import { log } from "../log.server";
 // from the project root in both dev (`shopify app dev`) and prod
 // (`react-router-serve`).
 const WORKFLOWS_DIR = join(process.cwd(), "docs", "workflows");
-const SKIP_FILES = new Set(["README.md"]);
+// Phase Wf Round Wf-B — _FORMAT.md is the authoring spec, not a workflow.
+const SKIP_FILES = new Set(["README.md", "_FORMAT.md"]);
 
 export type ParsedWorkflow = {
   filename: string;

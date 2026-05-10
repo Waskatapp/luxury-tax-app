@@ -46,8 +46,18 @@ The merchant says things like:
 - **Going from ACTIVE → DRAFT mid-sale:** warn the merchant if there
   are any pending orders or active discounts that reference the
   product (Phase 6 will fetch this; for now, mention the risk).
-- **Bulk status change:** "archive all my old t-shirts" is a Phase 6
-  feature. For now, do them one at a time.
+- **Bulk status change:** route via `decide-bulk-vs-individual.md`. For
+  ≥ 3 products use `bulk_update_status`; for ≤ 2 use individual calls.
+
+## Anti-patterns
+
+| Don't | Do instead |
+|---|---|
+| Treat "archive 15 IDs" failure as silent success when all 15 came back missing. | Re-D partitions: surface `missing[]` count and ask (rule 31). |
+| Auto-republish an ARCHIVED product just because the merchant said "make it live". | Mention the prior archive + confirm — likely archived for a reason. |
+| Default "hide" to ARCHIVED. | Default to DRAFT — "hide" implies "I'm still working on it". ARCHIVE is for "I'm done with this product". |
+| Loop `update_product_status` across many products. | Use `bulk_update_status` for ≥ 3 — partial-failure resilient + one approval card. |
+| Set ACTIVE on a draft without a price > $0. | Surface the $0 price; the draft was created at $0 and a price write should land BEFORE the activation. |
 
 ## What approval means
 

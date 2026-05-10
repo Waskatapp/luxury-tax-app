@@ -53,6 +53,16 @@ true-stockouts and policy-overridden ones.
   warning.
 - **Threshold of 0:** valid — surfaces only true stockouts.
 
+## Anti-patterns
+
+| Don't | Do instead |
+|---|---|
+| Skip variants where `inventoryQuantity` is null. | Filter them BEFORE counting; null = untracked, not 0. |
+| List every untracked variant ("inventory is null!" 100 times). | Don't enumerate untracked items in an at-risk report — that's noise. |
+| Surface a 73-row list inline. | Cap at 50; tell the merchant the residual count. |
+| Treat negative quantity as 0. | Show negative numbers verbatim — they're MORE urgent than 0 (already oversold). |
+| Pair an audit with a silent "restock all" write. | Audit is read-only. Restocking is a separate write — propose explicitly. |
+
 ## What approval means
 
 This is a **read-only** tool — no approval card. Results stream straight
