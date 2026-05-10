@@ -20,7 +20,12 @@ import { log } from "../log.server";
 // later, the agent can ask "we still had step 3 pending — keep going?"
 // instead of restarting from scratch.
 
-export type PlanStatus = "PENDING" | "APPROVED" | "REJECTED";
+// Phase Re Round Re-C2 — EXPIRED is the terminal state for plans whose
+// last activity is older than the resume TTL (24h). Assigned lazily by
+// expireStalePlans() at agent-loop turn-start so we don't auto-resume
+// a 3-day-old half-executed plan when the merchant opens the app
+// Monday morning.
+export type PlanStatus = "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
 
 // Phase Re Round Re-C1 — per-step lifecycle. Step transitions:
 //   pending → in_progress (executor dispatches the tool for this step)
@@ -290,7 +295,12 @@ export function planAuditPayload(plan: PlanRow): Record<string, unknown> {
 }
 
 export function isPlanStatus(value: string): value is PlanStatus {
-  return value === "PENDING" || value === "APPROVED" || value === "REJECTED";
+  return (
+    value === "PENDING" ||
+    value === "APPROVED" ||
+    value === "REJECTED" ||
+    value === "EXPIRED"
+  );
 }
 
 // Best-effort convenience for the executor — never throws, logs and
@@ -330,8 +340,8 @@ export async function findPlanById(
 // conversation, if any. Active = APPROVED status + currentStepIndex
 // hasn't reached step count. Used by the executor to decide whether
 // a tool dispatch is part of a plan step (and which step). Returns
-// null when there's no plan, the plan is PENDING/REJECTED, or every
-// step is already completed/skipped.
+// null when there's no plan, the plan is PENDING/REJECTED/EXPIRED, or
+// every step is already completed/skipped.
 //
 // IMPORTANT: when multiple APPROVED plans exist on the same
 // conversation (e.g., merchant approved a replan after the original),
@@ -353,6 +363,95 @@ export async function findActivePlan(
     }
   }
   return null;
+}
+
+// Phase Re Round Re-C2 — resume TTL. Plans whose last activity is older
+// than this don't auto-resume — the merchant has presumably moved on.
+// 24 hours matches Re-C2's stop-condition criteria; if false-positive
+// resumes turn out to be a problem we drop this to 1h per the plan's
+// "stop conditions" section.
+export const PLAN_RESUME_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Mark APPROVED plans whose updatedAt is older than the resume TTL as
+// EXPIRED. Best-effort: any DB error is swallowed so a hiccup here can't
+// block the agent loop. Runs at agent-loop turn-start.
+export async function expireStalePlans(opts: {
+  storeId: string;
+  conversationId: string;
+  now: Date;
+}): Promise<number> {
+  const cutoff = new Date(opts.now.getTime() - PLAN_RESUME_TTL_MS);
+  try {
+    const result = await prisma.plan.updateMany({
+      where: {
+        storeId: opts.storeId,
+        conversationId: opts.conversationId,
+        status: "APPROVED",
+        updatedAt: { lt: cutoff },
+      },
+      data: { status: "EXPIRED" },
+    });
+    if (result.count > 0) {
+      log.info("expired stale APPROVED plans", {
+        storeId: opts.storeId,
+        conversationId: opts.conversationId,
+        count: result.count,
+        cutoffIso: cutoff.toISOString(),
+      });
+    }
+    return result.count;
+  } catch (err) {
+    log.error("expireStalePlans failed", {
+      storeId: opts.storeId,
+      conversationId: opts.conversationId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return 0;
+  }
+}
+
+// Phase Re Round Re-C2 — pure-function helper that crafts the resume
+// context blurb for the CEO's system instruction. Tested independently
+// of DB so the wording can evolve without integration-testing.
+//
+// Returns null when there's nothing to resume (no plan, all steps done,
+// or stale steps that should be ignored). Otherwise returns a single
+// short paragraph the agent-loop appends to the systemInstruction.
+export function buildResumeContext(opts: {
+  plan: PlanRow;
+}): string | null {
+  const plan = opts.plan;
+  if (plan.status !== "APPROVED") return null;
+  if (plan.currentStepIndex >= plan.steps.length) return null;
+  const step = plan.steps[plan.currentStepIndex];
+  const stepNum = plan.currentStepIndex + 1;
+  const totalSteps = plan.steps.length;
+
+  // Describe what the previous step did (if any) so the agent can frame
+  // the resume cleanly. Uses index-1 since the CURRENT step is what's
+  // pending, not what just happened.
+  let priorContext = "";
+  if (plan.currentStepIndex > 0) {
+    const prior = plan.steps[plan.currentStepIndex - 1];
+    if (prior.status === "failed") {
+      priorContext = ` The previous step (${plan.currentStepIndex} of ${totalSteps}) failed${
+        prior.failureCode ? ` (${prior.failureCode})` : ""
+      }.`;
+    } else if (prior.status === "completed") {
+      priorContext = ` Step ${plan.currentStepIndex} of ${totalSteps} just completed.`;
+    } else if (prior.status === "skipped") {
+      priorContext = ` Step ${plan.currentStepIndex} of ${totalSteps} was skipped.`;
+    }
+  }
+
+  return (
+    `Active plan: "${plan.summary}". Step ${stepNum} of ${totalSteps} is pending: ` +
+    `"${step.description}" (department: ${step.departmentId}).${priorContext} ` +
+    `If the merchant's current message clearly relates to this plan, ` +
+    `continue executing. If the merchant has shifted topic, briefly ` +
+    `surface the pending step ("we still have step ${stepNum} pending — ` +
+    `keep going or set this aside?") then follow their lead.`
+  );
 }
 
 // Phase Re Round Re-C1 — atomically advance a step to a new status.

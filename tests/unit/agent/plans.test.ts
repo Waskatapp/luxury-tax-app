@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildResumeContext,
   hasProposePlanCall,
   isPlanStatus,
   PlanStepSchema,
   planAuditPayload,
+  PLAN_RESUME_TTL_MS,
   ProposePlanInputSchema,
+  type PlanRow,
   type PlanStepStatus,
   type StoredPlanStep,
 } from "../../../app/lib/agent/plans.server";
@@ -182,6 +185,7 @@ describe("isPlanStatus", () => {
     ["PENDING", true],
     ["APPROVED", true],
     ["REJECTED", true],
+    ["EXPIRED", true], // Phase Re Round Re-C2 — staleness-based terminal state
     ["EXECUTED", false],
     ["pending", false], // case-sensitive
     ["", false],
@@ -312,5 +316,105 @@ describe("Re-C1 transition rules (documented behavior)", () => {
     };
     expect(after.status).toBe("skipped");
     expect(after.completedAt).toBeDefined();
+  });
+});
+
+// Phase Re Round Re-C2 — pure-function resume context builder.
+function makePlan(overrides: Partial<PlanRow> = {}): PlanRow {
+  return {
+    id: "plan_xyz",
+    storeId: "store_1",
+    conversationId: "conv_1",
+    toolCallId: "propose_plan::xyz",
+    parentPlanId: null,
+    summary: "Audit catalog and trim prices",
+    steps: [
+      { description: "List overpriced products", departmentId: "products", status: "completed", completedAt: "2026-05-10T09:00:00.000Z" },
+      { description: "Lower each by 10%", departmentId: "pricing-promotions", status: "pending" },
+      { description: "Notify customers", departmentId: "marketing", status: "pending" },
+    ],
+    status: "APPROVED",
+    currentStepIndex: 1,
+    lastStepFailureCode: null,
+    lastStepFailureAt: null,
+    createdAt: "2026-05-10T08:00:00.000Z",
+    updatedAt: "2026-05-10T09:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("buildResumeContext — Re-C2", () => {
+  it("returns null when plan is not APPROVED", () => {
+    expect(buildResumeContext({ plan: makePlan({ status: "PENDING" }) })).toBeNull();
+    expect(buildResumeContext({ plan: makePlan({ status: "REJECTED" }) })).toBeNull();
+    expect(buildResumeContext({ plan: makePlan({ status: "EXPIRED" }) })).toBeNull();
+  });
+
+  it("returns null when every step is done (currentStepIndex >= length)", () => {
+    expect(
+      buildResumeContext({ plan: makePlan({ currentStepIndex: 3 }) }),
+    ).toBeNull();
+  });
+
+  it("describes the pending step + total count", () => {
+    const out = buildResumeContext({ plan: makePlan() });
+    expect(out).not.toBeNull();
+    expect(out).toContain("Step 2 of 3");
+    expect(out).toContain("Lower each by 10%");
+    expect(out).toContain("pricing-promotions");
+  });
+
+  it("notes the prior step completed", () => {
+    const out = buildResumeContext({ plan: makePlan() });
+    expect(out).toContain("Step 1 of 3 just completed");
+  });
+
+  it("notes the prior step FAILED with failure code", () => {
+    const out = buildResumeContext({
+      plan: makePlan({
+        steps: [
+          {
+            description: "List overpriced products",
+            departmentId: "products",
+            status: "failed",
+            failureCode: "ID_NOT_FOUND",
+          },
+          { description: "Lower each by 10%", departmentId: "pricing-promotions", status: "pending" },
+          { description: "Notify customers", departmentId: "marketing", status: "pending" },
+        ],
+      }),
+    });
+    expect(out).toContain("failed");
+    expect(out).toContain("ID_NOT_FOUND");
+  });
+
+  it("instructs the agent to ask vs. continue based on merchant intent", () => {
+    const out = buildResumeContext({ plan: makePlan() });
+    // Merchants who shifted topic should get a brief acknowledgment, not a
+    // forced resume — the prompt language carries that constraint.
+    expect(out).toContain("set this aside");
+  });
+
+  it("handles index 0 (first step pending) without referring to a prior step", () => {
+    const out = buildResumeContext({
+      plan: makePlan({
+        currentStepIndex: 0,
+        steps: [
+          { description: "Run catalog audit", departmentId: "products", status: "pending" },
+          { description: "Trim prices", departmentId: "pricing-promotions", status: "pending" },
+        ],
+      }),
+    });
+    expect(out).not.toBeNull();
+    expect(out).toContain("Step 1 of 2");
+    // No prior-step language at index 0
+    expect(out).not.toContain("just completed");
+    expect(out).not.toContain("was skipped");
+  });
+});
+
+describe("PLAN_RESUME_TTL_MS — Re-C2", () => {
+  it("is 24 hours in milliseconds", () => {
+    expect(PLAN_RESUME_TTL_MS).toBe(24 * 60 * 60 * 1000);
   });
 });

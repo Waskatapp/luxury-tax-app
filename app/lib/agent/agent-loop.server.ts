@@ -24,6 +24,11 @@ import {
 } from "./tool-classifier";
 import { executeTool, withRetry } from "./executor.server";
 import { classifyError } from "./error-codes";
+import {
+  buildResumeContext,
+  expireStalePlans,
+  findActivePlan,
+} from "./plans.server";
 import type { ModelRouterDecision } from "./model-router";
 import { checkGeminiRateLimit } from "../security/rate-limit.server";
 import { log } from "../log.server";
@@ -101,6 +106,46 @@ export async function runAgentLoop(
 
   const ai = getGeminiClient();
 
+  // Phase Re Round Re-C2 — resume detection. At the START of the
+  // outermost turn (before any Gemini call), check if this conversation
+  // has a stale APPROVED plan that should expire, and whether there's
+  // an active plan with pending steps the agent should know about. If
+  // so, append a single short context blurb to the systemInstruction so
+  // the agent surfaces the pending step naturally instead of restarting
+  // the conversation from scratch.
+  //
+  // Best-effort: any DB error here is swallowed so a hiccup never
+  // blocks the loop. The CEO works fine without resume context — the
+  // merchant just sees a worse experience for that one turn.
+  let effectiveSystemInstruction = systemInstruction;
+  try {
+    await expireStalePlans({
+      storeId,
+      conversationId,
+      now: new Date(),
+    });
+    const activePlan = await findActivePlan(storeId, conversationId);
+    if (activePlan) {
+      const resumeBlurb = buildResumeContext({ plan: activePlan });
+      if (resumeBlurb) {
+        effectiveSystemInstruction = `${systemInstruction}\n\n## Active plan (Re-C2 resume context)\n\n${resumeBlurb}`;
+        log.info("agent-loop: injecting resume context for active plan", {
+          storeId,
+          conversationId,
+          planId: activePlan.id,
+          currentStepIndex: activePlan.currentStepIndex,
+          totalSteps: activePlan.steps.length,
+        });
+      }
+    }
+  } catch (err) {
+    log.error("agent-loop: resume detection failed (continuing without)", {
+      storeId,
+      conversationId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // Per-storeId Gemini RPM guard. Free-tier 2.5 Flash is 10 RPM;
     // a single chat message can fan out to multiple Gemini calls when
@@ -130,7 +175,7 @@ export async function runAgentLoop(
         model: router.modelId,
         contents,
         config: {
-          systemInstruction,
+          systemInstruction: effectiveSystemInstruction,
           tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
           maxOutputTokens: MAX_OUTPUT_TOKENS,
         },
@@ -167,7 +212,7 @@ export async function runAgentLoop(
             model: router.modelId,
             contents,
             config: {
-              systemInstruction,
+              systemInstruction: effectiveSystemInstruction,
               tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
               maxOutputTokens: MAX_OUTPUT_TOKENS,
             },

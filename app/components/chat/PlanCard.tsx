@@ -14,13 +14,30 @@ import {
 // and a passive checklist: one Approve / one Reject for the whole plan,
 // then the CEO walks the merchant through the steps one at a time.
 
+// Phase Re Round Re-C1 — per-step state machine. Plans now track which
+// step the agent is on and what state each step is in. Re-C2 surfaces
+// the per-step status visually (green check on completed, red on
+// failed, blue on in_progress, grey on pending/skipped).
+export type PlanStepStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "skipped";
+
 export type PlanStep = {
   description: string;
   departmentId: string;
   estimatedTool?: string | undefined;
+  status?: PlanStepStatus | undefined;
+  completedAt?: string | undefined;
+  failureCode?: string | undefined;
 };
 
-export type PlanStatus = "PENDING" | "APPROVED" | "REJECTED";
+// Phase Re Round Re-C2 — Plan.status gains EXPIRED for plans whose
+// last activity is older than the resume TTL (24h). Expired plans
+// don't auto-resume; the merchant has to start fresh.
+export type PlanStatus = "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
 
 // Pure helper exported for unit testing. Decides whether the plan card
 // should render at all, given what the message bubble knows: the
@@ -81,16 +98,32 @@ const DEPT_TONE: Record<
 
 function statusTone(
   status: PlanStatus,
-): "warning" | "success" | "attention" {
+): "warning" | "success" | "attention" | "info" {
   if (status === "PENDING") return "warning";
   if (status === "APPROVED") return "success";
+  if (status === "EXPIRED") return "info";
   return "attention"; // REJECTED
 }
 
 function statusLabel(status: PlanStatus): string {
   if (status === "PENDING") return "Awaiting your approval";
   if (status === "APPROVED") return "Plan approved";
+  if (status === "EXPIRED") return "Plan expired";
   return "Plan rejected";
+}
+
+// Phase Re Round Re-C2 — per-step badge. Five-state visual mapping:
+// pending = subdued; in_progress = info pulse (handled by Polaris
+// Spinner upstream); completed = green check; failed = red; skipped =
+// strikethrough subdued.
+function stepStatusBadge(
+  status: PlanStepStatus,
+): { tone: "info" | "success" | "warning" | "critical" | undefined; label: string } {
+  if (status === "in_progress") return { tone: "info", label: "in progress" };
+  if (status === "completed") return { tone: "success", label: "done" };
+  if (status === "failed") return { tone: "critical", label: "failed" };
+  if (status === "skipped") return { tone: undefined, label: "skipped" };
+  return { tone: undefined, label: "pending" };
 }
 
 export function PlanCard({
@@ -150,35 +183,58 @@ export function PlanCard({
         </Text>
 
         <BlockStack gap="200">
-          {steps.map((step, idx) => (
-            <InlineStack
-              key={`${toolCallId}-${idx}`}
-              gap="200"
-              blockAlign="start"
-              wrap={false}
-            >
-              <Box minWidth="22px">
-                <Text as="span" variant="bodyMd" fontWeight="semibold" tone="subdued">
-                  {idx + 1}.
-                </Text>
-              </Box>
-              <BlockStack gap="050">
-                <Text as="p" variant="bodyMd">
-                  {step.description}
-                </Text>
-                <InlineStack gap="100" blockAlign="center">
-                  <Badge tone={DEPT_TONE[step.departmentId] ?? "info"}>
-                    {DEPT_LABEL[step.departmentId] ?? step.departmentId}
-                  </Badge>
-                  {step.estimatedTool ? (
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      {step.estimatedTool}
-                    </Text>
-                  ) : null}
-                </InlineStack>
-              </BlockStack>
-            </InlineStack>
-          ))}
+          {steps.map((step, idx) => {
+            const stepStatus: PlanStepStatus = step.status ?? "pending";
+            const sb = stepStatusBadge(stepStatus);
+            const isFailed = stepStatus === "failed";
+            const isSkipped = stepStatus === "skipped";
+            return (
+              <InlineStack
+                key={`${toolCallId}-${idx}`}
+                gap="200"
+                blockAlign="start"
+                wrap={false}
+              >
+                <Box minWidth="22px">
+                  <Text
+                    as="span"
+                    variant="bodyMd"
+                    fontWeight="semibold"
+                    tone="subdued"
+                    textDecorationLine={isSkipped ? "line-through" : undefined}
+                  >
+                    {idx + 1}.
+                  </Text>
+                </Box>
+                <BlockStack gap="050">
+                  <Text
+                    as="p"
+                    variant="bodyMd"
+                    textDecorationLine={isSkipped ? "line-through" : undefined}
+                    tone={isSkipped ? "subdued" : undefined}
+                  >
+                    {step.description}
+                  </Text>
+                  <InlineStack gap="100" blockAlign="center">
+                    <Badge tone={DEPT_TONE[step.departmentId] ?? "info"}>
+                      {DEPT_LABEL[step.departmentId] ?? step.departmentId}
+                    </Badge>
+                    <Badge tone={sb.tone}>{sb.label}</Badge>
+                    {isFailed && step.failureCode ? (
+                      <Text as="span" variant="bodySm" tone="critical">
+                        ({step.failureCode})
+                      </Text>
+                    ) : null}
+                    {step.estimatedTool ? (
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        {step.estimatedTool}
+                      </Text>
+                    ) : null}
+                  </InlineStack>
+                </BlockStack>
+              </InlineStack>
+            );
+          })}
         </BlockStack>
 
         {isPending ? (

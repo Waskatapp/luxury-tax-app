@@ -57,13 +57,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // `planByToolCallId[toolCallId]` to know whether to show Approve/Reject
   // buttons (status === "PENDING") or a terminal status badge.
   const plans = await listPlansForConversation(store.id, conversationId);
+  // Phase Re Round Re-C2 — extended sidecar shape carries per-step status
+  // + currentStepIndex so PlanCard renders the live progress on reload.
+  // Re-C1 already populated the underlying fields; this just exposes them.
   const planByToolCallId: Record<
     string,
     {
       id: string;
       summary: string;
-      steps: { description: string; departmentId: string; estimatedTool?: string | undefined }[];
-      status: "PENDING" | "APPROVED" | "REJECTED";
+      steps: {
+        description: string;
+        departmentId: string;
+        estimatedTool?: string | undefined;
+        status?: string | undefined;
+        completedAt?: string | undefined;
+        failureCode?: string | undefined;
+      }[];
+      status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
+      currentStepIndex: number;
+      lastStepFailureCode: string | null;
+      lastStepFailureAt: string | null;
     }
   > = {};
   for (const p of plans) {
@@ -72,6 +85,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       summary: p.summary,
       steps: p.steps,
       status: p.status,
+      currentStepIndex: p.currentStepIndex,
+      lastStepFailureCode: p.lastStepFailureCode,
+      lastStepFailureAt: p.lastStepFailureAt,
     };
   }
 
