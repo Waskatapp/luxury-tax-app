@@ -353,4 +353,51 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["department", "task"],
     },
   },
+  {
+    // Phase Wf Round Wf-D — parallel sub-tasking for reads.
+    //
+    // Fan out 2-5 read-only delegations across departments concurrently.
+    // Use for catalog-wide aggregations where the merchant's question
+    // crosses departments AND no delegation depends on another's output.
+    // Example: "audit all my products' SEO" — Insights + Products in
+    // parallel. Each sub-agent runs in READ-ONLY mode (write tools
+    // filtered out at the boundary; structural guarantee).
+    //
+    // For chained dependencies (B needs A's output), use sequential
+    // delegate_to_department instead.
+    name: "delegate_parallel",
+    description:
+      "Run 2-5 sub-agent delegations IN PARALLEL across departments, all in read-only mode. Use for catalog-wide audits / aggregations where the question crosses departments AND no delegation depends on another's output. Each delegation's tool list is filtered to read-only tools — no writes can be proposed from this path. For chained work (B needs A's data), use sequential delegate_to_department. Caps: 2 minimum, 5 maximum delegations per call.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        delegations: {
+          type: "array",
+          minItems: 2,
+          maxItems: 5,
+          description:
+            "Array of 2-5 read-only delegations. Each has the same shape as delegate_to_department's input. Order is informational only (all run concurrently).",
+          items: {
+            type: "object",
+            properties: {
+              department: {
+                type: "string",
+                description: "Department manager id (matches the Departments section of your prompt).",
+              },
+              task: {
+                type: "string",
+                description: "Plain-English read-only task. Asking for writes here will fail — write tools are filtered out before the manager sees them.",
+              },
+              conversationContext: {
+                type: "string",
+                description: "Optional. Brief 1-2 sentence context from the merchant's conversation.",
+              },
+            },
+            required: ["department", "task"],
+          },
+        },
+      },
+      required: ["delegations"],
+    },
+  },
 ];

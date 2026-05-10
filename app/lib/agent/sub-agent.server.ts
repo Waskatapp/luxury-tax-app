@@ -47,6 +47,14 @@ export type RunSubAgentOptions = {
   // task (e.g., merchant said "the cat food I edited yesterday" — the
   // sub-agent needs to know which product).
   conversationContext?: string;
+  // Phase Wf Round Wf-D — when true, the sub-agent's tool declarations
+  // are filtered to ONLY classification.read entries. Used by the CEO's
+  // `delegate_parallel` meta-tool to enforce a structural read-only
+  // guarantee — the model never sees a write tool, so the parallel
+  // dispatch can never accidentally race write paths against the
+  // approval flow. If the filtered list is empty for the requested
+  // department, runSubAgent returns kind:"error" immediately.
+  allowOnlyReadOnly?: boolean;
 };
 
 export async function runSubAgent(
@@ -62,10 +70,32 @@ export async function runSubAgent(
     };
   }
 
-  // Build the user message: task + optional context.
-  const userMessage = opts.conversationContext
-    ? `${opts.task}\n\n---\nContext from the merchant's main conversation:\n${opts.conversationContext}`
-    : opts.task;
+  // Phase Wf Round Wf-D — when invoked under read-only mode, filter the
+  // tool declarations to ONLY classification.read entries. Structural
+  // guarantee: the model never sees a write tool, so it can't propose one.
+  const effectiveDeclarations = opts.allowOnlyReadOnly
+    ? spec.toolDeclarations.filter((d) =>
+        spec.classification.read.has(d.name ?? ""),
+      )
+    : spec.toolDeclarations;
+  if (opts.allowOnlyReadOnly && effectiveDeclarations.length === 0) {
+    return {
+      kind: "error",
+      reason: `Department '${spec.id}' has no read-only tools — cannot run under delegate_parallel. Use sequential delegate_to_department for departments without reads.`,
+      code: "INVALID_INPUT",
+      retryable: false,
+    };
+  }
+
+  // Build the user message: task + optional context. Under read-only mode,
+  // append a note so the sub-agent's prompt frames the constraint.
+  const readOnlyNote = opts.allowOnlyReadOnly
+    ? "\n\n---\nNOTE: You are running in READ-ONLY mode for this delegation (parallel dispatch). Only read tools are available; do not propose any writes."
+    : "";
+  const userMessage =
+    (opts.conversationContext
+      ? `${opts.task}\n\n---\nContext from the merchant's main conversation:\n${opts.conversationContext}`
+      : opts.task) + readOnlyNote;
 
   // History accumulates across internal rounds so each call sees the
   // model's prior tool calls + their results.
@@ -98,7 +128,7 @@ export async function runSubAgent(
         contents: history,
         config: {
           systemInstruction: spec.systemPrompt,
-          tools: [{ functionDeclarations: spec.toolDeclarations }],
+          tools: [{ functionDeclarations: effectiveDeclarations }],
           maxOutputTokens: MAX_OUTPUT_TOKENS,
         },
       });
@@ -121,7 +151,7 @@ export async function runSubAgent(
             contents: history,
             config: {
               systemInstruction: spec.systemPrompt,
-              tools: [{ functionDeclarations: spec.toolDeclarations }],
+              tools: [{ functionDeclarations: effectiveDeclarations }],
               maxOutputTokens: MAX_OUTPUT_TOKENS,
             },
           });

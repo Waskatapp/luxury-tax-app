@@ -163,6 +163,11 @@ export const INLINE_WRITE_TOOLS = new Set<string>([
   "propose_artifact",
   "propose_followup",
   "delegate_to_department",
+  // Phase Wf Round Wf-D — parallel read-only dispatch. Inline (no
+  // approval card) because the call itself proposes nothing — each
+  // sub-agent is locked to read-only tools and returns aggregated
+  // summaries the CEO surfaces back to the merchant.
+  "delegate_parallel",
 ]);
 
 // Phase Re Round Re-B — idempotency registry for the auto-retry harness.

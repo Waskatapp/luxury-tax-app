@@ -124,6 +124,16 @@ const DelegateToDepartmentInput = z.object({
   conversationContext: z.string().max(2000).optional(),
 });
 
+// Phase Wf Round Wf-D — delegate_parallel input. 2-5 read-only
+// delegations executed concurrently via Promise.all. Each delegation
+// reuses the DelegateToDepartmentInput shape.
+const DelegateParallelInput = z.object({
+  delegations: z
+    .array(DelegateToDepartmentInput)
+    .min(2)
+    .max(5),
+});
+
 // Phase Re Round Re-A — failure case carries a typed { code, retryable }
 // pair so the agent + downstream retry harness know how to react. See
 // app/lib/agent/error-codes.ts for the enum + classifier.
@@ -636,6 +646,47 @@ export async function executeTool(
           result: stepResult,
         });
         return toolResult;
+      }
+
+      case "delegate_parallel": {
+        // Phase Wf Round Wf-D — fan out 2-5 read-only delegations
+        // concurrently. Each sub-agent's tool list is filtered to
+        // classification.read entries (allowOnlyReadOnly=true) — write
+        // tools never reach the model, so this path can never race
+        // against the approval flow. Result aggregates per-delegation
+        // status; partial failures are surfaced rather than masked.
+        const parsed = DelegateParallelInput.safeParse(input);
+        if (!parsed.success) {
+          return fail(`invalid input: ${parsed.error.message}`, {
+            code: "INVALID_INPUT",
+            retryable: false,
+          });
+        }
+        const delegations = parsed.data.delegations;
+        const results = await Promise.all(
+          delegations.map(async (d) => {
+            const r = await runSubAgent({
+              departmentId: d.department,
+              task: d.task,
+              conversationContext: d.conversationContext,
+              context: {
+                storeId: ctx.storeId,
+                admin: ctx.admin,
+                conversationId: ctx.conversationId,
+              },
+              allowOnlyReadOnly: true,
+            });
+            return { department: d.department, task: d.task, result: r };
+          }),
+        );
+        return {
+          ok: true,
+          data: {
+            mode: "parallel-read-only",
+            count: results.length,
+            results,
+          },
+        };
       }
 
       default:
