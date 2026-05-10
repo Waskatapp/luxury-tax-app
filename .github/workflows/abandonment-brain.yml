@@ -1,0 +1,60 @@
+name: abandonment-brain
+
+# Phase Ab Round Ab-A — nightly Abandonment Brain pass.
+#
+# Per-store pipeline:
+#   1. Pull last 30 days of TurnSignal where outcome IN
+#      ('abandoned', 'clarified')
+#   2. Pair each TurnSignal with its prompting user message
+#   3. Embed user messages via gemini-embedding-001
+#   4. DBSCAN cluster (eps=0.15, minPts=3)
+#   5. Persist as one ClusterRun + N AbandonmentCluster rows
+#
+# Garbage collection: deletes ClusterRun rows older than 14 days at
+# the top of every run.
+#
+# Required GitHub secrets (same set as the other crons):
+#   - DATABASE_URL    Railway Postgres URL
+#   - ENCRYPTION_KEY  AES-256-GCM key (declared for parity; not used
+#                     in Ab-A but Ab-B/C/D may need it)
+#   - GEMINI_API_KEY  Google AI Studio key (for embeddings — uses
+#                     gemini-embedding-001, separate quota bucket
+#                     from chat-mode generation)
+#
+# Schedule: 07:13 UTC daily — staggered after the existing
+# 06:13 (followup-evaluator) and 06:43 (eval-harness) jobs.
+# Manually triggerable via the Actions tab (workflow_dispatch).
+
+on:
+  schedule:
+    - cron: "13 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run abandonment brain
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: npm run run:ab-brain

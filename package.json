@@ -24,7 +24,8 @@
     "tune:suggestions": "tsx scripts/auto-tune-suggestions.ts",
     "audit:tuning": "tsx scripts/tuning-audit-report.ts",
     "run:evaluator": "tsx scripts/run-evaluator.ts",
-    "run:eval-harness": "tsx scripts/run-eval-harness.ts"
+    "run:eval-harness": "tsx scripts/run-eval-harness.ts",
+    "run:ab-brain": "tsx scripts/run-abandonment-brain.ts"
   },
   "type": "module",
   "engines": {

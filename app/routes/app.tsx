@@ -43,6 +43,7 @@ export default function App() {
           <Link to="/app/settings/turn-signals">Turn signals</Link>
           <Link to="/app/settings/system-health">System health</Link>
           <Link to="/app/settings/eval-runs">Eval runs</Link>
+          <Link to="/app/settings/abandonment-diagnoses">Abandonment</Link>
         </NavMenu>
         <Outlet />
       </PolarisAppProvider>
