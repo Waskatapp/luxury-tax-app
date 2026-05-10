@@ -9,6 +9,11 @@ import {
   snapshotBefore,
   withRetry,
 } from "../lib/agent/executor.server";
+import { classifyError } from "../lib/agent/error-codes";
+import {
+  pruneOldFailures,
+  recordFailure,
+} from "../lib/agent/conversation-failures.server";
 import {
   buildApproveToolResults,
   processApproveBatch,
@@ -104,6 +109,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
 
   const toolResultBlocks = buildApproveToolResults(processed);
+
+  // Phase Wf Round Wf-C — record approved-write failures so the next chat
+  // turn's failureLessonsAugmenter surfaces them. Best-effort. The
+  // approval-batch API doesn't carry the structured ErrorCode through, so
+  // we re-classify the error string here. Same dedupe + prune pattern as
+  // the inline-tool path in agent-loop.server.ts.
+  for (const p of processed) {
+    if (p.skip || !p.error) continue;
+    const classified = classifyError(p.error);
+    await recordFailure({
+      storeId: store.id,
+      conversationId,
+      toolName: p.toolName,
+      code: classified.code,
+      errorMessage: p.error,
+    });
+  }
+  if (processed.some((p) => !p.skip && p.error)) {
+    await pruneOldFailures(conversationId);
+  }
 
   // ONE transaction containing every per-row update + per-row audit entry +
   // the consolidated synth Message + the conversation timestamp bump.

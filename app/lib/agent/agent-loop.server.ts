@@ -30,6 +30,12 @@ import {
   formatTriggerSuggestionsBlock,
   matchTriggers,
 } from "./workflow-matcher.server";
+import {
+  formatLessonsBlock,
+  pruneOldFailures,
+  recentFailures,
+  recordFailure,
+} from "./conversation-failures.server";
 import type { ModelRouterDecision } from "./model-router";
 import { checkGeminiRateLimit } from "../security/rate-limit.server";
 import { log } from "../log.server";
@@ -136,6 +142,26 @@ const triggerSuggestionAugmenter: SystemInstructionAugmenter = async (ctx) => {
   });
   return {
     heading: "Suggested workflows for this turn (Wf-A)",
+    body,
+  };
+};
+
+// Phase Wf Round Wf-C augmenter — surfaces recent ConversationFailure
+// rows so the agent stops re-attempting the same blocked path. Pulls
+// most-recent distinct-code failures for this conversation; formats as
+// a "Failures recorded in this conversation" block.
+const failureLessonsAugmenter: SystemInstructionAugmenter = async (ctx) => {
+  const failures = await recentFailures(ctx.storeId, ctx.conversationId);
+  if (failures.length === 0) return null;
+  const body = formatLessonsBlock(failures);
+  if (!body) return null;
+  log.info("agent-loop: injecting conversation failure lessons", {
+    storeId: ctx.storeId,
+    conversationId: ctx.conversationId,
+    distinctCodes: failures.length,
+  });
+  return {
+    heading: "Lessons from this conversation so far (Wf-C)",
     body,
   };
 };
@@ -252,7 +278,11 @@ export async function runAgentLoop(
   };
   const effectiveSystemInstruction = await runAugmenters(
     systemInstruction,
-    [resumePlanAugmenter, triggerSuggestionAugmenter],
+    [
+      resumePlanAugmenter, // Re-C2 — active plan resume context
+      triggerSuggestionAugmenter, // Wf-A — workflow auto-trigger
+      failureLessonsAugmenter, // Wf-C — failures recorded in this conversation
+    ],
     augmenterCtx,
   );
 
@@ -479,6 +509,21 @@ export async function runAgentLoop(
           is_error: !result.ok,
         });
         groundingTexts.push(trContent);
+
+        // Phase Wf Round Wf-C — record tool failures so the next turn's
+        // failureLessonsAugmenter can surface them. Best-effort, deduped
+        // 60s window (toolName + code + errorMessage).
+        if (!result.ok) {
+          await recordFailure({
+            storeId,
+            conversationId,
+            toolName: tu.name,
+            code: result.code,
+            errorMessage: result.error,
+          });
+          // Opportunistic prune so the table stays small per conversation.
+          await pruneOldFailures(conversationId);
+        }
 
         if (tu.name === "ask_clarifying_question" && result.ok) {
           const data = result.data as {

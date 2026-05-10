@@ -89,6 +89,7 @@ model Store {
   systemHealthFindings SystemHealthFinding[]
   clusterRuns          ClusterRun[]
   abandonmentClusters  AbandonmentCluster[]
+  conversationFailures ConversationFailure[]
 }
 
 // ---- Chat thread per store+user ----
@@ -102,12 +103,13 @@ model Conversation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  store           Store            @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  messages        Message[]
-  turnSignals     TurnSignal[]
-  plans           Plan[]
-  artifacts       Artifact[]
-  actionFollowups ActionFollowup[]
+  store                Store                 @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  messages             Message[]
+  turnSignals          TurnSignal[]
+  plans                Plan[]
+  artifacts            Artifact[]
+  actionFollowups      ActionFollowup[]
+  conversationFailures ConversationFailure[]
 
   @@index([storeId])
   @@index([storeId, userId])
@@ -597,4 +599,30 @@ model AbandonmentCluster {
   @@index([storeId, createdAt])
   @@index([clusterRunId])
   @@index([storeId, fingerprint])
+}
+
+// Phase Wf Round Wf-C — in-conversation failure scratchpad. When a tool
+// fails with a structured error code (Re-A), record one row here. At the
+// next turn-start, the failureLessonsAugmenter pulls the most recent
+// distinct-code rows and surfaces them as "Lessons from this conversation
+// so far" in the system instruction so the agent doesn't repeat the same
+// blocked path.
+//
+// Bounded retention: keep last 20 per conversation; older auto-pruned
+// opportunistically. 60s dedupe on (toolName + code + errorMessage)
+// prevents runaway loops from bloating the table.
+model ConversationFailure {
+  id             String   @id @default(cuid())
+  storeId        String
+  conversationId String
+  toolName       String
+  code           String
+  errorMessage   String
+  createdAt      DateTime @default(now())
+
+  store        Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt(sort: Desc)])
+  @@index([storeId])
 }
