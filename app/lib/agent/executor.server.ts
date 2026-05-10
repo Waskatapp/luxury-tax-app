@@ -72,6 +72,7 @@ import {
   errorMessage,
   type ErrorCode,
 } from "./error-codes";
+import { isIdempotent } from "./tool-classifier";
 
 const UpdateStoreMemoryInput = z.object({
   category: z.enum([
@@ -155,6 +156,104 @@ export function coerceHandlerResult(
 ): ToolResult {
   if (result.ok) return result;
   return fail(result.error);
+}
+
+// Phase Re Round Re-B — auto-retry harness. Wraps a tool-execution thunk
+// with a single retry on transient errors when the tool is idempotent.
+// Cap on total wallclock is 90s by default. The caller passes a
+// notifier callback that can emit an SSE `tool_retry_pending` event so
+// the client can show a "retrying in Ns…" banner instead of silence.
+//
+// Decision logic:
+//   1. Run attempt 1. If OK, return.
+//   2. If !retryable OR !idempotent OR remaining-wallclock < delayMs,
+//      return the attempt-1 failure unchanged.
+//   3. Sleep with backoff (RATE_LIMITED_BURST: 30s, NETWORK: 5s) ±20%
+//      jitter, then run attempt 2. Return attempt-2 result.
+//
+// Constitutional guarantees:
+//   - Fail-soft: any thrown exception inside the retry harness is wrapped
+//     via fail(). Bugs in the harness never block the underlying tool.
+//   - Approval flow untouched: this only retries the EXECUTION, never the
+//     approval. Caller passes the same args both attempts.
+//   - Idempotency-gated: only tools in IDEMPOTENT_TOOLS get attempt 2.
+type RetryNotifier = (info: {
+  toolName: string;
+  delaySeconds: number;
+  reasonCode: ErrorCode;
+  attemptNumber: number;
+}) => void;
+
+const RETRY_BACKOFF_MS: Record<string, number> = {
+  RATE_LIMITED_BURST: 30_000,
+  NETWORK: 5_000,
+};
+const DEFAULT_RETRY_BACKOFF_MS = 5_000;
+const RETRY_WALLCLOCK_BUDGET_MS = 90_000;
+const JITTER_FRACTION = 0.2;
+
+export async function withRetry(
+  toolName: string,
+  attempt: () => Promise<ToolResult>,
+  options?: {
+    notify?: RetryNotifier;
+    maxWallclockMs?: number;
+    sleepFn?: (ms: number) => Promise<void>;
+  },
+): Promise<ToolResult> {
+  const maxMs = options?.maxWallclockMs ?? RETRY_WALLCLOCK_BUDGET_MS;
+  const sleepFn =
+    options?.sleepFn ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const start = Date.now();
+
+  let first: ToolResult;
+  try {
+    first = await attempt();
+  } catch (err) {
+    return fail(err);
+  }
+
+  if (first.ok) return first;
+  if (!first.retryable) return first;
+
+  // Idempotency check uses the lazy import below to avoid a cycle: the
+  // tool-classifier has its own zero-deps module, but tests import
+  // executor.server.ts which imports it transitively. Cleanest path is
+  // the static import at the top of this file.
+  if (!isIdempotent(toolName)) return first;
+
+  const baseDelay =
+    RETRY_BACKOFF_MS[first.code] ?? DEFAULT_RETRY_BACKOFF_MS;
+  const jitter = (Math.random() * 2 - 1) * JITTER_FRACTION * baseDelay;
+  const delayMs = Math.max(1_000, Math.floor(baseDelay + jitter));
+
+  if (Date.now() - start + delayMs > maxMs) {
+    // Not enough wallclock budget left to retry; surface attempt-1 failure
+    // as `errored_unrecovered` to the caller.
+    return first;
+  }
+
+  if (options?.notify) {
+    try {
+      options.notify({
+        toolName,
+        delaySeconds: Math.ceil(delayMs / 1000),
+        reasonCode: first.code,
+        attemptNumber: 2,
+      });
+    } catch {
+      // Notifier is best-effort; never let it bubble.
+    }
+  }
+
+  await sleepFn(delayMs);
+
+  try {
+    return await attempt();
+  } catch (err) {
+    return fail(err);
+  }
 }
 
 export type ToolContext = {

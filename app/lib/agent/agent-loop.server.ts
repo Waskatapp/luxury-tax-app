@@ -22,7 +22,8 @@ import {
   isInlineWrite,
   isReadTool,
 } from "./tool-classifier";
-import { executeTool } from "./executor.server";
+import { executeTool, withRetry } from "./executor.server";
+import { classifyError } from "./error-codes";
 import type { ModelRouterDecision } from "./model-router";
 import { checkGeminiRateLimit } from "../security/rate-limit.server";
 import { log } from "../log.server";
@@ -116,18 +117,77 @@ export async function runAgentLoop(
 
     const accumulator = new AssistantTurnAccumulator();
 
-    const responseStream = await ai.models.generateContentStream({
-      // V2.4 — tiered model routing. router.modelId is Flash for
-      // complex/planning turns and Flash-Lite for read-only summary
-      // turns. The router defaults to Flash so quality is the floor.
-      model: router.modelId,
-      contents,
-      config: {
-        systemInstruction,
-        tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-      },
-    });
+    // Phase Re Round Re-B — Gemini RPM 429 retry at the loop level.
+    // Wrap the stream-creation call in a try/catch; on classified
+    // RATE_LIMITED_BURST, sleep 60s + retry once. RPD → no retry, surface
+    // a clean message to the merchant. Any other error → bubble.
+    let responseStream;
+    try {
+      responseStream = await ai.models.generateContentStream({
+        // V2.4 — tiered model routing. router.modelId is Flash for
+        // complex/planning turns and Flash-Lite for read-only summary
+        // turns. The router defaults to Flash so quality is the floor.
+        model: router.modelId,
+        contents,
+        config: {
+          systemInstruction,
+          tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+        },
+      });
+    } catch (err) {
+      const c = classifyError(err);
+      if (c.code === "RATE_LIMITED_DAILY") {
+        emit("error", {
+          message:
+            "Daily AI quota reached — we'll resume tomorrow at 06:00 UTC.",
+          code: c.code,
+        });
+        rateLimitedEarly = true;
+        break;
+      }
+      if (c.code === "RATE_LIMITED_BURST" || c.code === "NETWORK") {
+        const delayMs = c.code === "RATE_LIMITED_BURST" ? 60_000 : 5_000;
+        emit("tool_retry_pending", {
+          tool_call_id: "",
+          tool_name: "gemini",
+          delay_seconds: Math.ceil(delayMs / 1000),
+          reason_code: c.code,
+        });
+        log.warn("agent-loop: Gemini stream failed, retrying once", {
+          storeId,
+          conversationId,
+          turn,
+          code: c.code,
+          delayMs,
+        });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        try {
+          responseStream = await ai.models.generateContentStream({
+            model: router.modelId,
+            contents,
+            config: {
+              systemInstruction,
+              tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+              maxOutputTokens: MAX_OUTPUT_TOKENS,
+            },
+          });
+        } catch (retryErr) {
+          const c2 = classifyError(retryErr);
+          emit("error", {
+            message:
+              c2.code === "RATE_LIMITED_DAILY"
+                ? "Daily AI quota reached — we'll resume tomorrow at 06:00 UTC."
+                : "AI is unavailable right now — try again in a moment.",
+            code: c2.code,
+          });
+          rateLimitedEarly = true;
+          break;
+        }
+      } else {
+        throw err;
+      }
+    }
 
     let lastUsageMetadata: unknown = null;
     for await (const chunk of responseStream) {
@@ -220,12 +280,30 @@ export async function runAgentLoop(
       }
       if (isReadTool(tu.name) || isInlineWrite(tu.name)) {
         emit("tool_running", { tool_name: tu.name });
-        const result = await executeTool(tu.name, tu.input, {
-          admin,
-          storeId,
-          conversationId,
-          toolCallId: tu.id,
-        });
+        // Phase Re Round Re-B — auto-retry on transient errors when the
+        // tool is in IDEMPOTENT_TOOLS. The notify callback emits a
+        // `tool_retry_pending` SSE event so the UI can show "retrying
+        // in Ns…" instead of silence during the backoff window.
+        const result = await withRetry(
+          tu.name,
+          () =>
+            executeTool(tu.name, tu.input, {
+              admin,
+              storeId,
+              conversationId,
+              toolCallId: tu.id,
+            }),
+          {
+            notify: ({ delaySeconds, reasonCode }) => {
+              emit("tool_retry_pending", {
+                tool_call_id: tu.id,
+                tool_name: tu.name,
+                delay_seconds: delaySeconds,
+                reason_code: reasonCode,
+              });
+            },
+          },
+        );
         const trContent = JSON.stringify(
           result.ok
             ? result.data

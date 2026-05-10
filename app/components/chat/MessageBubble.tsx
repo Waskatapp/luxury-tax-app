@@ -11,6 +11,7 @@ import { MarkdownContent } from "./MarkdownContent";
 import type { PlanStatus, PlanStep } from "./PlanCard";
 import { PlanCard, shouldRenderPlanCard } from "./PlanCard";
 import { ToolRunningPill } from "./ToolRunningPill";
+import { RetryBanner } from "./RetryBanner";
 
 export type PlanSnapshot = {
   id: string;
@@ -28,6 +29,11 @@ type Props = {
   planByToolCallId: Record<string, PlanSnapshot>;
   runningTool: string | null;
   runningDepartment: DepartmentId | null;
+  // Phase Re Round Re-B — set when the server is in a retry-backoff
+  // window for a transient tool failure. Renders a subtle "retrying in
+  // Ns…" banner inline with the streaming bubble so the merchant
+  // doesn't experience silence during the wait.
+  retryPending: { delaySeconds: number; reasonCode: string; toolName: string } | null;
   // V2.3 — passed through to MarkdownContent for citation link
   // resolution (`product:<gid>` schemes need it to build admin URLs).
   shopDomain?: string | null | undefined;
@@ -120,6 +126,7 @@ export function MessageBubble({
   planByToolCallId,
   runningTool,
   runningDepartment,
+  retryPending,
   shopDomain,
   answered,
   onApprove,
@@ -188,6 +195,8 @@ export function MessageBubble({
 
   const showRunningPill =
     !isUser && message.status === "streaming" && runningTool !== null;
+  const showRetryBanner =
+    !isUser && message.status === "streaming" && retryPending !== null;
 
   // V3.3 — Hide tool-only assistant turns that have nothing merchant-facing
   // to render. Many turns in the agent loop emit only internal plumbing —
@@ -251,6 +260,12 @@ export function MessageBubble({
             ) : null}
             {showRunningPill ? (
               <ToolRunningPill toolName={runningTool} departmentId={runningDepartment} />
+            ) : null}
+            {showRetryBanner && retryPending !== null ? (
+              <RetryBanner
+                delaySeconds={retryPending.delaySeconds}
+                reasonCode={retryPending.reasonCode}
+              />
             ) : null}
             {toolUses.length > 0 ? (
               // V1.8: ALL approval-required writes from one assistant turn

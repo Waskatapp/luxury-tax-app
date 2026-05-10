@@ -7,6 +7,7 @@ import { requireStoreAccess } from "../lib/auth.server";
 import {
   executeApprovedWrite,
   snapshotBefore,
+  withRetry,
 } from "../lib/agent/executor.server";
 import {
   buildApproveToolResults,
@@ -89,11 +90,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // V2.4 — thread conversationId so executeApprovedWrite can
       // invalidate this conversation's read cache after a successful
       // mutation.
-      executeApprovedWrite(toolName, toolInput, {
-        admin,
-        storeId: store.id,
-        conversationId,
-      }),
+      // Phase Re Round Re-B — wrap in withRetry so transient failures
+      // (Shopify 429, network) on idempotent tools auto-recover before
+      // returning a failure to the merchant. This route is non-streaming
+      // so no SSE notifier — retry happens silently within the request.
+      withRetry(toolName, () =>
+        executeApprovedWrite(toolName, toolInput, {
+          admin,
+          storeId: store.id,
+          conversationId,
+        }),
+      ),
   });
 
   const toolResultBlocks = buildApproveToolResults(processed);

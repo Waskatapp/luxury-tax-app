@@ -165,6 +165,105 @@ export const INLINE_WRITE_TOOLS = new Set<string>([
   "delegate_to_department",
 ]);
 
+// Phase Re Round Re-B — idempotency registry for the auto-retry harness.
+// A tool is idempotent when re-running it with the same inputs yields the
+// same end state (NOT necessarily the same return value). Idempotent
+// tools are safe to auto-retry on transient errors (RATE_LIMITED_BURST,
+// NETWORK). Non-idempotent tools (creates) bail to merchant on transient
+// failure — auto-retry could create a duplicate if the first call
+// actually succeeded but the response was lost.
+//
+// Rules of thumb for adding a tool to this set:
+//   - Updates / sets / archives — YES (re-setting the same value is a no-op)
+//   - Creates — NO (each call creates a NEW entity)
+//   - Refunds / cancels — NO (Shopify's idempotency-key pattern is
+//     out-of-scope for v1; treat as non-idempotent until we wire it).
+//   - Reads — implicitly idempotent; this set covers WRITES only since
+//     reads don't go through the approval flow.
+//
+// IMPORTANT: a tool here being marked idempotent does NOT mean it auto-
+// retries — the retry harness ALSO requires `result.retryable === true`
+// (which means the error code says it was transient, not permanent).
+// Both must be true.
+export const IDEMPOTENT_TOOLS = new Set<string>([
+  // Reads (covered for completeness — read tools may be retried inline).
+  "read_workflow",
+  "read_products",
+  "read_collections",
+  "get_analytics",
+  "get_product_performance",
+  "compare_periods",
+  "get_top_performers",
+  "read_discounts",
+  "read_articles",
+  "read_pages",
+  "read_customers",
+  "read_customer_detail",
+  "read_segments",
+  "read_segment_members",
+  "read_orders",
+  "read_order_detail",
+  "read_inventory_levels",
+  "read_locations",
+  // Updates / sets — re-setting the same value is a no-op at Shopify.
+  "update_product_price",
+  "update_product_description",
+  "update_product_status",
+  "update_product_title",
+  "update_product_tags",
+  "update_product_vendor",
+  "update_product_type",
+  "update_variant",
+  "update_compare_at_price",
+  "update_collection",
+  "update_discount",
+  "set_discount_status",
+  "update_product_seo",
+  "update_collection_seo",
+  "update_article",
+  "update_page",
+  "update_customer",
+  "update_customer_tags",
+  "update_email_marketing_consent",
+  "update_sms_marketing_consent",
+  "update_order_note",
+  "update_order_tags",
+  "set_inventory_tracking",
+  // Bulk updates — inner loop is partial-failure resilient and re-applying
+  // an already-applied state is a no-op per product.
+  "bulk_update_titles",
+  "bulk_update_tags",
+  "bulk_update_status",
+  "bulk_update_prices",
+  // Memory / orchestration writes — pure DB upsert, idempotent.
+  "update_store_memory",
+]);
+
+// Explicitly NON-idempotent (listed for clarity; not actually checked at
+// runtime — anything missing from IDEMPOTENT_TOOLS is treated as such):
+//   - create_product_draft, create_collection, create_discount,
+//     create_discount_code, create_bundle_discount, duplicate_product
+//   - create_article, create_page
+//   - mark_as_fulfilled, fulfill_order_with_tracking
+//   - cancel_order, refund_order (high-risk; NEVER auto-retry)
+//   - adjust_inventory_quantity (relative delta — re-applying doubles!)
+//   - set_inventory_quantity (theoretically idempotent but Zod requires
+//     referenceDocumentUri — re-running re-references the same doc; we
+//     err on the side of NOT retrying to keep the audit trail clean).
+//   - transfer_inventory (paired delta — same reason as adjust)
+//   - delete_article, delete_page, delete_discount (delete-then-redelete
+//     surfaces "not found" the second time — surface to the merchant).
+//   - add_product_image, remove_product_image, reorder_product_images
+//     (image-list mutations carry positional semantics; safer to skip).
+//   - propose_plan / propose_artifact / propose_followup (each call
+//     creates a fresh row).
+//   - delegate_to_department, ask_clarifying_question (no mutation, but
+//     re-running triggers another sub-agent or another card).
+
+export function isIdempotent(name: string): boolean {
+  return IDEMPOTENT_TOOLS.has(name);
+}
+
 export function isReadTool(name: string): boolean {
   return READ_TOOLS.has(name);
 }

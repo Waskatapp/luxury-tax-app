@@ -1206,6 +1206,7 @@ export default function CopilotPage() {
                             planByToolCallId={planByToolCallId}
                             runningTool={state.runningTool}
                             runningDepartment={state.runningDepartment}
+                            retryPending={state.retryPending}
                             shopDomain={shopDomain}
                             answered={!isLastAssistant}
                             onApprove={handleApprove}

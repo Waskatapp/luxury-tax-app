@@ -205,6 +205,8 @@ function handleFrame(
     product_id?: string;
     product_title?: string;
     content?: string;
+    delay_seconds?: number;
+    reason_code?: string;
   };
   try {
     data = JSON.parse(dataStr);
@@ -234,6 +236,17 @@ function handleFrame(
         type: "TOOL_RUNNING",
         toolName,
         departmentId: departmentForTool(toolName),
+      });
+      return;
+    }
+    case "tool_retry_pending": {
+      // Phase Re Round Re-B — server is auto-retrying a transient tool
+      // failure after backoff. Surface a subtle banner instead of silence.
+      dispatch({
+        type: "TOOL_RETRY_PENDING",
+        toolName: String(data.tool_name ?? ""),
+        delaySeconds: Number(data.delay_seconds ?? 30),
+        reasonCode: String(data.reason_code ?? "UNKNOWN"),
       });
       return;
     }

@@ -50,6 +50,12 @@ export type ChatState = {
   // unrecognized. Same lifetime as runningTool. Drives the "Asking the
   // [manager]…" routing pill.
   runningDepartment: DepartmentId | null;
+  // Phase Re Round Re-B — set when the server emits `tool_retry_pending`
+  // (transient tool failure being auto-retried after backoff). Cleared on
+  // next TEXT_DELTA / TOOL_RUNNING / DONE / ERROR / RESET / LOAD. Drives a
+  // subtle "retrying in Ns…" banner in the chat UI so the merchant
+  // doesn't experience silence during the backoff window.
+  retryPending: { delaySeconds: number; reasonCode: string; toolName: string } | null;
 };
 
 export type ChatAction =
@@ -70,6 +76,12 @@ export type ChatAction =
       departmentId: DepartmentId | null;
     }
   | { type: "TOOL_RUNNING"; toolName: string; departmentId: DepartmentId | null }
+  | {
+      type: "TOOL_RETRY_PENDING";
+      toolName: string;
+      delaySeconds: number;
+      reasonCode: string;
+    }
   | { type: "DONE"; messageId: string }
   | { type: "ERROR"; error: string }
   | {
@@ -86,6 +98,7 @@ export const INITIAL_CHAT_STATE: ChatState = {
   error: null,
   runningTool: null,
   runningDepartment: null,
+  retryPending: null,
 };
 
 function appendTextDelta(message: ChatMessage, delta: string): ChatMessage {
@@ -108,6 +121,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         error: null,
         runningTool: null,
         runningDepartment: null,
+        retryPending: null,
       };
 
     case "SEND_START": {
@@ -146,6 +160,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // Text resuming means whichever read tool was running has finished.
         runningTool: null,
         runningDepartment: null,
+        retryPending: null,
         messages: state.messages.map((m) =>
           m.id === action.messageId ? appendTextDelta(m, action.delta) : m,
         ),
@@ -156,6 +171,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         runningTool: action.toolName,
         runningDepartment: action.departmentId,
+        retryPending: null,
+      };
+
+    case "TOOL_RETRY_PENDING":
+      return {
+        ...state,
+        retryPending: {
+          toolName: action.toolName,
+          delaySeconds: action.delaySeconds,
+          reasonCode: action.reasonCode,
+        },
       };
 
     case "TOOL_USE_START":
@@ -195,6 +221,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         phase: state.phase === "awaitingApproval" ? "awaitingApproval" : "idle",
         runningTool: null,
         runningDepartment: null,
+        retryPending: null,
         messages: state.messages.map((m) =>
           m.id === action.messageId ? { ...m, status: "complete" } : m,
         ),
@@ -219,6 +246,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         phase: "error",
         runningTool: null,
         runningDepartment: null,
+        retryPending: null,
         messages: state.messages.map((m) =>
           m.status === "streaming" ? { ...m, status: "error" } : m,
         ),

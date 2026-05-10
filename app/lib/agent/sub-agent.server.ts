@@ -103,20 +103,58 @@ export async function runSubAgent(
         },
       });
     } catch (err) {
-      log.warn("sub-agent: Gemini call failed", {
-        departmentId: spec.id,
-        round,
-        err: err instanceof Error ? err.message : String(err),
-      });
-      const message =
-        err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? err.message : String(err);
       const classified = classifyError(message);
-      return {
-        kind: "error",
-        reason: `Sub-agent LLM call failed: ${message}`,
-        code: classified.code,
-        retryable: classified.retryable,
-      };
+      // Phase Re Round Re-B — Gemini RPM retry inside the sub-agent. On
+      // RATE_LIMITED_BURST, sleep 30s + retry once. RPD or any other
+      // permanent error → bail with the typed error shape from Re-A.
+      if (classified.code === "RATE_LIMITED_BURST") {
+        log.warn("sub-agent: Gemini RPM 429, retrying once after 30s", {
+          departmentId: spec.id,
+          round,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 30_000));
+        try {
+          const ai = getGeminiClient();
+          response = await ai.models.generateContent({
+            model: GEMINI_CHAT_MODEL,
+            contents: history,
+            config: {
+              systemInstruction: spec.systemPrompt,
+              tools: [{ functionDeclarations: spec.toolDeclarations }],
+              maxOutputTokens: MAX_OUTPUT_TOKENS,
+            },
+          });
+        } catch (retryErr) {
+          const retryMessage =
+            retryErr instanceof Error ? retryErr.message : String(retryErr);
+          const retryClassified = classifyError(retryMessage);
+          log.warn("sub-agent: Gemini retry also failed", {
+            departmentId: spec.id,
+            round,
+            err: retryMessage,
+          });
+          return {
+            kind: "error",
+            reason: `Sub-agent LLM call failed after retry: ${retryMessage}`,
+            code: retryClassified.code,
+            retryable: retryClassified.retryable,
+          };
+        }
+      } else {
+        log.warn("sub-agent: Gemini call failed", {
+          departmentId: spec.id,
+          round,
+          err: message,
+          code: classified.code,
+        });
+        return {
+          kind: "error",
+          reason: `Sub-agent LLM call failed: ${message}`,
+          code: classified.code,
+          retryable: classified.retryable,
+        };
+      }
     }
 
     const candidate = response.candidates?.[0];
