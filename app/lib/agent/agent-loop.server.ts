@@ -227,7 +227,17 @@ export async function runAgentLoop(
           toolCallId: tu.id,
         });
         const trContent = JSON.stringify(
-          result.ok ? result.data : { error: result.error },
+          result.ok
+            ? result.data
+            : {
+                // Phase Re Round Re-A — surface code + retryable to the
+                // agent. Decision-rules.md teaches it how to react per
+                // code (don't confabulate on RATE_LIMITED_BURST, don't
+                // pivot on ID_NOT_FOUND, etc.).
+                error: result.error,
+                code: result.code,
+                retryable: result.retryable,
+              },
         );
         toolResults.push({
           type: "tool_result",

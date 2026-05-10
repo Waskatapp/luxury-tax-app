@@ -11,6 +11,7 @@ import type {
   SubAgentResult,
 } from "./departments/department-spec";
 import type { DepartmentId } from "./departments";
+import { classifyError } from "./error-codes";
 
 // V-Sub-1 — Phase Sub-Agents dispatcher. Runs a focused Gemini turn for
 // a single department. Loaded only that department's tools — the CEO's
@@ -56,6 +57,8 @@ export async function runSubAgent(
     return {
       kind: "error",
       reason: `Unknown department: ${opts.departmentId}. Available: ${getKnownDepartments().join(", ")}.`,
+      code: "ID_NOT_FOUND",
+      retryable: false,
     };
   }
 
@@ -105,9 +108,14 @@ export async function runSubAgent(
         round,
         err: err instanceof Error ? err.message : String(err),
       });
+      const message =
+        err instanceof Error ? err.message : String(err);
+      const classified = classifyError(message);
       return {
         kind: "error",
-        reason: `Sub-agent LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
+        reason: `Sub-agent LLM call failed: ${message}`,
+        code: classified.code,
+        retryable: classified.retryable,
       };
     }
 
@@ -116,6 +124,8 @@ export async function runSubAgent(
       return {
         kind: "error",
         reason: "Sub-agent produced no candidate content",
+        code: "UPSTREAM_ERROR",
+        retryable: true,
       };
     }
 
@@ -321,6 +331,8 @@ export async function runSubAgent(
   return {
     kind: "error",
     reason: `Sub-agent did not finish within ${MAX_ROUNDS} rounds.`,
+    code: "UNKNOWN",
+    retryable: false,
   };
 }
 

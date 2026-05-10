@@ -67,6 +67,11 @@ import {
 } from "./read-cache.server";
 import type { MemoryCategory } from "@prisma/client";
 import { z } from "zod";
+import {
+  classifyError,
+  errorMessage,
+  type ErrorCode,
+} from "./error-codes";
 
 const UpdateStoreMemoryInput = z.object({
   category: z.enum([
@@ -115,7 +120,42 @@ const DelegateToDepartmentInput = z.object({
   conversationContext: z.string().max(2000).optional(),
 });
 
-export type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
+// Phase Re Round Re-A — failure case carries a typed { code, retryable }
+// pair so the agent + downstream retry harness know how to react. See
+// app/lib/agent/error-codes.ts for the enum + classifier.
+export type ToolResult =
+  | { ok: true; data: unknown }
+  | { ok: false; error: string; code: ErrorCode; retryable: boolean };
+
+// Helper: build a typed failure ToolResult. Auto-classifies the error
+// string via classifyError unless the caller passes an explicit override.
+// Use this everywhere we previously returned `{ ok: false, error: "..." }`
+// — keeps the typed contract consistent without re-typing the same
+// boilerplate at every callsite.
+export function fail(
+  error: string | unknown,
+  override?: Partial<{ code: ErrorCode; retryable: boolean }>,
+): { ok: false; error: string; code: ErrorCode; retryable: boolean } {
+  const message = typeof error === "string" ? error : errorMessage(error);
+  const classified = classifyError(message);
+  return {
+    ok: false,
+    error: message,
+    code: override?.code ?? classified.code,
+    retryable: override?.retryable ?? classified.retryable,
+  };
+}
+
+// Coerce a department handler's loose return shape into the strict
+// ToolResult. Success cases pass through; failure cases get classified.
+// This is the boundary where we decide "is this retryable?" for the
+// downstream Re-B retry harness.
+export function coerceHandlerResult(
+  result: { ok: true; data: unknown } | { ok: false; error: string },
+): ToolResult {
+  if (result.ok) return result;
+  return fail(result.error);
+}
 
 export type ToolContext = {
   admin: ShopifyAdmin;
@@ -173,17 +213,17 @@ export async function executeTool(
           })
           .safeParse(input);
         if (!parsed.success) {
-          return {
-            ok: false,
-            error: `invalid input: ${parsed.error.message}`,
-          };
+          return fail(`invalid input: ${parsed.error.message}`, {
+            code: "INVALID_INPUT",
+            retryable: false,
+          });
         }
         const body = loadWorkflowBodyByName(parsed.data.name);
         if (body === null) {
-          return {
-            ok: false,
-            error: `unknown workflow: '${parsed.data.name}'. Check the workflow index in your system prompt for valid names.`,
-          };
+          return fail(
+            `unknown workflow: '${parsed.data.name}'. Check the workflow index in your system prompt for valid names.`,
+            { code: "ID_NOT_FOUND", retryable: false },
+          );
         }
         const result = {
           ok: true as const,
@@ -197,15 +237,14 @@ export async function executeTool(
 
       case "propose_plan": {
         if (!ctx.conversationId || !ctx.toolCallId) {
-          return {
-            ok: false,
-            error:
-              "propose_plan requires conversationId + toolCallId in context — this is an internal wiring bug, not a tool input issue",
-          };
+          return fail(
+            "propose_plan requires conversationId + toolCallId in context — this is an internal wiring bug, not a tool input issue",
+            { code: "UNKNOWN", retryable: false },
+          );
         }
         const parsed = ProposePlanInputSchema.safeParse(input);
         if (!parsed.success) {
-          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+          return fail(`invalid input: ${parsed.error.message}`, { code: "INVALID_INPUT", retryable: false });
         }
         // V5.3 — when parentPlanId is set, this is a replan. Verify the
         // claimed parent exists in THIS store BEFORE persisting; otherwise
@@ -221,10 +260,10 @@ export async function executeTool(
             parsed.data.parentPlanId,
           );
           if (!parent) {
-            return {
-              ok: false,
-              error: `parentPlanId '${parsed.data.parentPlanId}' not found in this store. If you're replanning, double-check the original plan's id from the prior tool_result. Otherwise, omit parentPlanId for a fresh plan.`,
-            };
+            return fail(
+              `parentPlanId '${parsed.data.parentPlanId}' not found in this store. If you're replanning, double-check the original plan's id from the prior tool_result. Otherwise, omit parentPlanId for a fresh plan.`,
+              { code: "ID_NOT_FOUND", retryable: false },
+            );
           }
           parentPlanId = parent.id;
         }
@@ -237,11 +276,10 @@ export async function executeTool(
           parentPlanId,
         });
         if (!plan) {
-          return {
-            ok: false,
-            error:
-              "could not persist the plan; if this happens again, ask the merchant to retry the request",
-          };
+          return fail(
+            "could not persist the plan; if this happens again, ask the merchant to retry the request",
+            { code: "UPSTREAM_ERROR", retryable: true },
+          );
         }
         // Tool result echoes the plan + initial PENDING status. Gemini
         // sees this on continuation and knows to wait for the merchant's
@@ -265,15 +303,14 @@ export async function executeTool(
 
       case "propose_artifact": {
         if (!ctx.conversationId || !ctx.toolCallId) {
-          return {
-            ok: false,
-            error:
-              "propose_artifact requires conversationId + toolCallId in context — this is an internal wiring bug, not a tool input issue",
-          };
+          return fail(
+            "propose_artifact requires conversationId + toolCallId in context — this is an internal wiring bug, not a tool input issue",
+            { code: "UNKNOWN", retryable: false },
+          );
         }
         const parsed = ProposeArtifactInputSchema.safeParse(input);
         if (!parsed.success) {
-          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+          return fail(`invalid input: ${parsed.error.message}`, { code: "INVALID_INPUT", retryable: false });
         }
         const artifact = await safeCreateArtifact({
           storeId: ctx.storeId,
@@ -287,11 +324,10 @@ export async function executeTool(
           },
         });
         if (!artifact) {
-          return {
-            ok: false,
-            error:
-              "could not persist the artifact; if this happens again, ask the merchant to retry the request",
-          };
+          return fail(
+            "could not persist the artifact; if this happens again, ask the merchant to retry the request",
+            { code: "UPSTREAM_ERROR", retryable: true },
+          );
         }
         // The chat route emits an `artifact_open` SSE event from this
         // result and breaks the agent loop so the merchant can edit and
@@ -317,7 +353,7 @@ export async function executeTool(
         // continues the turn (often with a confirmation message).
         const parsed = ProposeFollowupInputSchema.safeParse(input);
         if (!parsed.success) {
-          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+          return fail(`invalid input: ${parsed.error.message}`, { code: "INVALID_INPUT", retryable: false });
         }
         const followup = await safeCreateFollowup({
           storeId: ctx.storeId,
@@ -331,11 +367,10 @@ export async function executeTool(
           },
         });
         if (!followup) {
-          return {
-            ok: false,
-            error:
-              "could not persist the followup; if this happens again, ask the merchant to retry the request",
-          };
+          return fail(
+            "could not persist the followup; if this happens again, ask the merchant to retry the request",
+            { code: "UPSTREAM_ERROR", retryable: true },
+          );
         }
         return {
           ok: true,
@@ -349,7 +384,7 @@ export async function executeTool(
       case "ask_clarifying_question": {
         const parsed = AskClarifyingQuestionInput.safeParse(input);
         if (!parsed.success) {
-          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+          return fail(`invalid input: ${parsed.error.message}`, { code: "INVALID_INPUT", retryable: false });
         }
         // No store mutation — just echoes the question/options back. The
         // chat route emits a `clarification_asked` SSE event from this
@@ -366,7 +401,7 @@ export async function executeTool(
       case "update_store_memory": {
         const parsed = UpdateStoreMemoryInput.safeParse(input);
         if (!parsed.success) {
-          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+          return fail(`invalid input: ${parsed.error.message}`, { code: "INVALID_INPUT", retryable: false });
         }
         const saved = await upsertMemory(
           ctx.storeId,
@@ -406,7 +441,7 @@ export async function executeTool(
         // Products migrates.
         const parsed = DelegateToDepartmentInput.safeParse(input);
         if (!parsed.success) {
-          return { ok: false, error: `invalid input: ${parsed.error.message}` };
+          return fail(`invalid input: ${parsed.error.message}`, { code: "INVALID_INPUT", retryable: false });
         }
         const result = await runSubAgent({
           departmentId: parsed.data.department,
@@ -431,13 +466,13 @@ export async function executeTool(
       }
 
       default:
-        return { ok: false, error: `unknown tool: ${name}` };
+        return fail(`unknown tool: ${name}`, {
+          code: "ID_NOT_FOUND",
+          retryable: false,
+        });
     }
   } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
+    return fail(err);
   }
 }
 
@@ -670,22 +705,22 @@ export async function executeApprovedWrite(
       const spec = getDepartmentSpec(ownerDepartmentId);
       const handler = spec?.handlers.get(name);
       if (!spec || !handler) {
-        return {
-          ok: false,
-          error: `Tool '${name}' is owned by department '${ownerDepartmentId}' but no handler is registered. Registry inconsistency.`,
-        };
+        return fail(
+          `Tool '${name}' is owned by department '${ownerDepartmentId}' but no handler is registered. Registry inconsistency.`,
+          { code: "UNKNOWN", retryable: false },
+        );
       }
-      result = await handler(input, ctx);
+      result = coerceHandlerResult(await handler(input, ctx));
     } else {
       // V-Sub-5 — every write tool is department-owned. If we reach this
       // branch it means departmentForTool returned null for `name`, which
       // can only happen if Gemini hallucinated a tool name OR a department
       // module wasn't imported in registry-entrypoint.server.ts. Both are
       // bugs upstream; surface a clear error so they're easy to diagnose.
-      return {
-        ok: false,
-        error: `unknown write tool: ${name}. No department in the registry owns it. Either the model hallucinated the name or the department module isn't imported in registry-entrypoint.server.ts.`,
-      };
+      return fail(
+        `unknown write tool: ${name}. No department in the registry owns it. Either the model hallucinated the name or the department module isn't imported in registry-entrypoint.server.ts.`,
+        { code: "ID_NOT_FOUND", retryable: false },
+      );
     }
 
     // V2.4 — invalidate the read cache after any successful write so
@@ -753,9 +788,6 @@ export async function executeApprovedWrite(
     }
     return result;
   } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
+    return fail(err);
   }
 }

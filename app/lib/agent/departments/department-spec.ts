@@ -1,7 +1,6 @@
 import type { FunctionDeclaration } from "@google/genai";
 
 import type { ShopifyAdmin } from "../../shopify/graphql-client.server";
-import type { ToolResult } from "../executor.server";
 import type { DepartmentId } from "../departments";
 
 // V-Sub-1 — Phase Sub-Agents. Shared types for the department-scoped
@@ -17,13 +16,21 @@ import type { DepartmentId } from "../departments";
 
 // ----- Tool handlers -----
 
-// Identical contract to executor.server.ts → executeTool's per-tool
-// switch arms. Same input/output types so existing handlers can be
-// lifted into department modules with no signature change.
+// Phase Re Round Re-A — handlers return the legacy "loose" shape
+// ({ok:true,data} | {ok:false,error}). The executor boundary
+// (executeApprovedWrite + sub-agent read dispatch) coerces the failure
+// case into the strict ToolResult that carries { code, retryable } via
+// `coerceHandlerResult` in error-codes.server. This keeps department
+// handlers simple pass-throughs over the shopify modules; only the
+// agent-facing surface enforces typed errors.
+export type HandlerResult =
+  | { ok: true; data: unknown }
+  | { ok: false; error: string };
+
 export type ToolHandler = (
   input: unknown,
   ctx: HandlerContext,
-) => Promise<ToolResult>;
+) => Promise<HandlerResult>;
 
 // Subset of executor.server.ts's ToolContext — everything a domain
 // handler needs. Note: conversationId/toolCallId optional because some
@@ -118,6 +125,10 @@ export type SubAgentResult =
   | {
       kind: "error";
       reason: string;
+      // Phase Re Round Re-A — typed error fields. CEO + downstream retry
+      // harness read these; missing on legacy callers (default UNKNOWN).
+      code?: string;
+      retryable?: boolean;
     };
 
 // One read tool call the sub-agent executed during its turn. Bubbled up

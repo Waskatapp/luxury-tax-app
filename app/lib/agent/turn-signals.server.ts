@@ -20,7 +20,15 @@ export type TurnOutcome =
   | "clarified" // CEO called ask_clarifying_question
   | "rephrased" // (deferred) next user turn within 60s started with "no", "actually", "I meant", …
   | "abandoned" // (deferred) no next user turn within 24h AND no terminal write
-  | "informational"; // pure read / question-answer turn
+  | "informational" // pure read / question-answer turn
+  // Phase Re Round Re-A — typed error-shape outcomes. Re-A only adds
+  // them to the type union; the classifier produces them once Re-B's
+  // retry harness can distinguish recovered from unrecovered, and
+  // rate_limited from generic errors. Until then the existing
+  // "informational" outcome covers errored turns (no behavior change).
+  | "errored_recovered" // (Re-B) tool failed transiently, retry succeeded
+  | "errored_unrecovered" // (Re-B) tool failed, retry exhausted or non-retryable
+  | "rate_limited_resumed"; // (Re-B) Gemini RPM 429, sleep + resume
 
 export type ClassifierInput = {
   assistantContent: ContentBlock[];
