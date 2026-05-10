@@ -363,3 +363,140 @@ describe("bulkUpdateStatus — edge cases", () => {
     expect(result.data.failures[0].error).toContain("active subscriptions");
   });
 });
+
+describe("bulkUpdateStatus — stale ID partitioning (Phase Re Round Re-D)", () => {
+  it("partial-resolve: 2 of 3 IDs found — archives the 2, surfaces missing 1", async () => {
+    const admin = fakeAdmin([
+      {
+        kind: "data",
+        body: {
+          products: {
+            edges: [
+              {
+                node: bulkProductNode(
+                  "gid://shopify/Product/1",
+                  "Cat Food",
+                  "ACTIVE",
+                ),
+              },
+              {
+                node: bulkProductNode(
+                  "gid://shopify/Product/3",
+                  "Bird Food",
+                  "ACTIVE",
+                ),
+              },
+            ],
+          },
+        },
+      },
+      productUpdateOk("gid://shopify/Product/1", "Cat Food", "ARCHIVED"),
+      productUpdateOk("gid://shopify/Product/3", "Bird Food", "ARCHIVED"),
+    ]);
+    const result = await bulkUpdateStatus(admin, {
+      productIds: [
+        "gid://shopify/Product/1",
+        "gid://shopify/Product/2",
+        "gid://shopify/Product/3",
+      ],
+      status: "ARCHIVED",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.totalUpdated).toBe(2);
+    expect(result.data.totalMissing).toBe(1);
+    expect(result.data.missing).toEqual(["gid://shopify/Product/2"]);
+    // Confirm only mutations for the resolvable IDs fired (not the missing one).
+    expect(admin.calls).toHaveLength(3); // 1 fetch + 2 mutations
+  });
+
+  it("all-missing: every requested ID is gone — returns error citing the IDs (not silent success)", async () => {
+    const admin = fakeAdmin([
+      {
+        kind: "data",
+        body: {
+          products: {
+            edges: [], // none found
+          },
+        },
+      },
+    ]);
+    const result = await bulkUpdateStatus(admin, {
+      productIds: [
+        "gid://shopify/Product/99",
+        "gid://shopify/Product/100",
+      ],
+      status: "ARCHIVED",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("every requested productId is missing");
+    expect(result.error).toContain("gid://shopify/Product/99");
+    expect(result.error).toContain("gid://shopify/Product/100");
+    // Only the fetch ran; no mutations.
+    expect(admin.calls).toHaveLength(1);
+  });
+
+  it("all-missing-but-no-ops-too: every resolved item already at target — error mentions missing IDs", async () => {
+    const admin = fakeAdmin([
+      {
+        kind: "data",
+        body: {
+          products: {
+            edges: [
+              {
+                node: bulkProductNode(
+                  "gid://shopify/Product/1",
+                  "Already Archived",
+                  "ARCHIVED",
+                ),
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const result = await bulkUpdateStatus(admin, {
+      productIds: [
+        "gid://shopify/Product/1",
+        "gid://shopify/Product/404",
+      ],
+      status: "ARCHIVED",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("already ARCHIVED");
+    expect(result.error).toContain("missing");
+    expect(result.error).toContain("gid://shopify/Product/404");
+  });
+
+  it("all-found: missing[] is empty array, totalMissing 0", async () => {
+    const admin = fakeAdmin([
+      {
+        kind: "data",
+        body: {
+          products: {
+            edges: [
+              {
+                node: bulkProductNode(
+                  "gid://shopify/Product/1",
+                  "Cat Food",
+                  "ACTIVE",
+                ),
+              },
+            ],
+          },
+        },
+      },
+      productUpdateOk("gid://shopify/Product/1", "Cat Food", "ARCHIVED"),
+    ]);
+    const result = await bulkUpdateStatus(admin, {
+      productIds: ["gid://shopify/Product/1"],
+      status: "ARCHIVED",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.totalMissing).toBe(0);
+    expect(result.data.missing).toEqual([]);
+  });
+});

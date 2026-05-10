@@ -1895,12 +1895,23 @@ type BulkProductFieldUpdateResponse = {
   };
 };
 
-// Resolve the XOR scope to a list of BulkProductSnapshot. Either path
-// returns identical shape so downstream loops are uniform.
+// Resolve the XOR scope to {found, missing} so callers can mutate what
+// resolves and surface the rest. Phase Re Round Re-D — the previous
+// behavior failed the WHOLE operation if any one productId was missing,
+// which silently lost data when stale IDs reached the executor (ID list
+// generated minutes earlier, products deleted in admin during the gap).
+// Now: partition. The downstream bulk-update loops mutate `found[]`
+// and pass `missing[]` through unchanged so the agent can ask the
+// merchant.
+type ResolveBulkScope = {
+  found: BulkProductSnapshot[];
+  missing: string[];
+};
+
 async function resolveBulkProductScope(
   admin: ShopifyAdmin,
   scope: { collectionId?: string; productIds?: string[] },
-): Promise<ToolModuleResult<BulkProductSnapshot[]>> {
+): Promise<ToolModuleResult<ResolveBulkScope>> {
   if (scope.collectionId) {
     const r = await graphqlRequest<FetchBulkCollectionProductsResponse>(
       admin,
@@ -1923,12 +1934,15 @@ async function resolveBulkProductScope(
     }
     return {
       ok: true,
-      data: edges.map((e) => ({
-        productId: e.node.id,
-        productTitle: e.node.title,
-        tags: e.node.tags ?? [],
-        status: e.node.status,
-      })),
+      data: {
+        found: edges.map((e) => ({
+          productId: e.node.id,
+          productTitle: e.node.title,
+          tags: e.node.tags ?? [],
+          status: e.node.status,
+        })),
+        missing: [],
+      },
     };
   }
 
@@ -1943,23 +1957,25 @@ async function resolveBulkProductScope(
       { first: scope.productIds.length, query: queryStr },
     );
     if (!r.ok) return { ok: false, error: r.error };
-    const found = new Map(
+    const lookup = new Map(
       r.data.products.edges.map((e) => [e.node.id, e.node]),
     );
-    const snapshots: BulkProductSnapshot[] = [];
+    const found: BulkProductSnapshot[] = [];
+    const missing: string[] = [];
     for (const id of scope.productIds) {
-      const node = found.get(id);
+      const node = lookup.get(id);
       if (!node) {
-        return { ok: false, error: `product not found: ${id}` };
+        missing.push(id);
+        continue;
       }
-      snapshots.push({
+      found.push({
         productId: node.id,
         productTitle: node.title,
         tags: node.tags ?? [],
         status: node.status,
       });
     }
-    return { ok: true, data: snapshots };
+    return { ok: true, data: { found, missing } };
   }
 
   // Unreachable — Zod refinement guarantees one scope is set.
@@ -2020,12 +2036,14 @@ export type BulkTitleChange = {
 export type BulkUpdateTitlesResult = {
   totalUpdated: number;
   totalFailed: number;
+  totalMissing: number;
   changes: BulkTitleChange[];
   failures: Array<{
     productId: string;
     productTitle: string;
     error: string;
   }>;
+  missing: string[];
 };
 
 export async function bulkUpdateTitles(
@@ -2039,11 +2057,15 @@ export async function bulkUpdateTitles(
 
   const resolved = await resolveBulkProductScope(admin, parsed.data);
   if (!resolved.ok) return resolved;
-  const products = resolved.data;
+  const products = resolved.data.found;
+  const missing = resolved.data.missing;
   if (products.length === 0) {
     return {
       ok: false,
-      error: "scope resolved to 0 products — nothing to update",
+      error:
+        missing.length > 0
+          ? `scope resolved to 0 products — every requested productId is missing (likely deleted between propose-time and execute-time): ${missing.join(", ")}`
+          : "scope resolved to 0 products — nothing to update",
     };
   }
 
@@ -2136,8 +2158,10 @@ export async function bulkUpdateTitles(
     data: {
       totalUpdated: changes.length,
       totalFailed: failures.length,
+      totalMissing: missing.length,
       changes,
       failures,
+      missing,
     },
   };
 }
@@ -2172,12 +2196,14 @@ export type BulkTagsChange = {
 export type BulkUpdateTagsResult = {
   totalUpdated: number;
   totalFailed: number;
+  totalMissing: number;
   changes: BulkTagsChange[];
   failures: Array<{
     productId: string;
     productTitle: string;
     error: string;
   }>;
+  missing: string[];
 };
 
 // Sorted-equality helper for tag-list comparison (no-op detection).
@@ -2202,11 +2228,15 @@ export async function bulkUpdateTags(
 
   const resolved = await resolveBulkProductScope(admin, parsed.data);
   if (!resolved.ok) return resolved;
-  const products = resolved.data;
+  const products = resolved.data.found;
+  const missing = resolved.data.missing;
   if (products.length === 0) {
     return {
       ok: false,
-      error: "scope resolved to 0 products — nothing to update",
+      error:
+        missing.length > 0
+          ? `scope resolved to 0 products — every requested productId is missing (likely deleted between propose-time and execute-time): ${missing.join(", ")}`
+          : "scope resolved to 0 products — nothing to update",
     };
   }
 
@@ -2303,8 +2333,10 @@ export async function bulkUpdateTags(
     data: {
       totalUpdated: changes.length,
       totalFailed: failures.length,
+      totalMissing: missing.length,
       changes,
       failures,
+      missing,
     },
   };
 }
@@ -2335,12 +2367,14 @@ export type BulkStatusChange = {
 export type BulkUpdateStatusResult = {
   totalUpdated: number;
   totalFailed: number;
+  totalMissing: number;
   changes: BulkStatusChange[];
   failures: Array<{
     productId: string;
     productTitle: string;
     error: string;
   }>;
+  missing: string[];
 };
 
 export async function bulkUpdateStatus(
@@ -2354,11 +2388,15 @@ export async function bulkUpdateStatus(
 
   const resolved = await resolveBulkProductScope(admin, parsed.data);
   if (!resolved.ok) return resolved;
-  const products = resolved.data;
+  const products = resolved.data.found;
+  const missing = resolved.data.missing;
   if (products.length === 0) {
     return {
       ok: false,
-      error: "scope resolved to 0 products — nothing to update",
+      error:
+        missing.length > 0
+          ? `scope resolved to 0 products — every requested productId is missing (likely deleted between propose-time and execute-time): ${missing.join(", ")}`
+          : "scope resolved to 0 products — nothing to update",
     };
   }
 
@@ -2369,7 +2407,10 @@ export async function bulkUpdateStatus(
   if (plan.length === 0) {
     return {
       ok: false,
-      error: `every product is already ${newStatus} — nothing to change`,
+      error:
+        missing.length > 0
+          ? `every resolvable product is already ${newStatus} — nothing to change. ${missing.length} requested productId(s) were missing: ${missing.join(", ")}`
+          : `every product is already ${newStatus} — nothing to change`,
     };
   }
 
@@ -2425,8 +2466,10 @@ export async function bulkUpdateStatus(
     data: {
       totalUpdated: changes.length,
       totalFailed: failures.length,
+      totalMissing: missing.length,
       changes,
       failures,
+      missing,
     },
   };
 }

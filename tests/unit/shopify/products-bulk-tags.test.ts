@@ -500,3 +500,40 @@ describe("bulkUpdateTags — failure surfacing", () => {
     expect(result.data.failures[0].error).toContain("Tag is too long");
   });
 });
+
+describe("bulkUpdateTags — stale ID partitioning (Phase Re Round Re-D)", () => {
+  it("partial-resolve: tags the 1 of 2 IDs that still exists, surfaces the other in missing[]", async () => {
+    const admin = fakeAdmin([
+      {
+        kind: "data",
+        body: {
+          products: {
+            edges: [
+              {
+                node: bulkProductNode(
+                  "gid://shopify/Product/1",
+                  "Cat Food",
+                  [],
+                ),
+              },
+            ],
+          },
+        },
+      },
+      productUpdateOk("gid://shopify/Product/1", "Cat Food", ["new"]),
+    ]);
+    const result = await bulkUpdateTags(admin, {
+      productIds: [
+        "gid://shopify/Product/1",
+        "gid://shopify/Product/9999", // deleted between propose-time and execute-time
+      ],
+      action: "add",
+      tags: ["new"],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.totalUpdated).toBe(1);
+    expect(result.data.totalMissing).toBe(1);
+    expect(result.data.missing).toEqual(["gid://shopify/Product/9999"]);
+  });
+});

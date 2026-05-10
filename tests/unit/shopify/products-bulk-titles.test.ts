@@ -345,30 +345,6 @@ describe("bulkUpdateTitles — edge cases", () => {
     expect(result.error).toContain("collection not found");
   });
 
-  it("missing product in batched fetch returns clean error", async () => {
-    const admin = fakeAdmin([
-      {
-        kind: "data",
-        body: {
-          products: {
-            edges: [
-              { node: bulkProductNode("gid://shopify/Product/1", "Cat Food") },
-              // Product/2 missing — query returned only Product/1
-            ],
-          },
-        },
-      },
-    ]);
-    const result = await bulkUpdateTitles(admin, {
-      productIds: ["gid://shopify/Product/1", "gid://shopify/Product/2"],
-      transform: { kind: "append", text: " waskat" },
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain("product not found");
-    expect(result.error).toContain("gid://shopify/Product/2");
-  });
-
   it("partial failure — one product update fails, others succeed", async () => {
     const admin = fakeAdmin([
       {
@@ -446,5 +422,37 @@ describe("bulkUpdateTitles — edge cases", () => {
     // Only ONE mutation should have fired (for product 2). Total calls = 1
     // fetch + 1 mutation = 2.
     expect(admin.calls).toHaveLength(2);
+  });
+});
+
+describe("bulkUpdateTitles — stale ID partitioning (Phase Re Round Re-D)", () => {
+  it("partial-resolve: appends to the 1 of 2 IDs that still exists, surfaces the other in missing[]", async () => {
+    const admin = fakeAdmin([
+      {
+        kind: "data",
+        body: {
+          products: {
+            edges: [
+              {
+                node: bulkProductNode("gid://shopify/Product/1", "Cat Food"),
+              },
+            ],
+          },
+        },
+      },
+      productUpdateOk("gid://shopify/Product/1", "Cat Food waskat"),
+    ]);
+    const result = await bulkUpdateTitles(admin, {
+      productIds: [
+        "gid://shopify/Product/1",
+        "gid://shopify/Product/2", // deleted between propose-time and execute-time
+      ],
+      transform: { kind: "append", text: " waskat" },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.totalUpdated).toBe(1);
+    expect(result.data.totalMissing).toBe(1);
+    expect(result.data.missing).toEqual(["gid://shopify/Product/2"]);
   });
 });

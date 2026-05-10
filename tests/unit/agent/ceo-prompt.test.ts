@@ -248,9 +248,12 @@ describe("buildCeoSystemInstruction", () => {
       }),
     );
     // V5.3 target: prompt should be ≥ 32k (cache-eligible) but well under
-    // 60k (room for retrieved decisions/insights/observations on top).
+    // 62k (room for retrieved decisions/insights/observations on top).
+    // Cap bumped 60k→62k 2026-05-10 (Phase Re Round Re-D) for the
+    // bulk-missing-IDs decision rule — load-bearing for Phase Re's
+    // anti-confabulation thesis.
     expect(out.length).toBeGreaterThanOrEqual(32_000);
-    expect(out.length).toBeLessThan(60_000);
+    expect(out.length).toBeLessThan(62_000);
   });
 });
 
