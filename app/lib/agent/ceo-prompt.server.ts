@@ -236,5 +236,11 @@ export function buildDepartmentsSection(
 
 function formatIndexLine(e: WorkflowIndexEntry): string {
   const tool = e.toolName ? `; tool: \`${e.toolName}\`` : "";
-  return `- \`${e.name}\` — ${e.summary}${tool}`;
+  // Phase Wf Round Wf-A — append triggers as a hint so the CEO can match
+  // on its own when the auto-trigger augmenter misses (synonyms, etc.).
+  const triggers =
+    e.triggers && e.triggers.length > 0
+      ? `; triggers: ${e.triggers.join(", ")}`
+      : "";
+  return `- \`${e.name}\` — ${e.summary}${tool}${triggers}`;
 }

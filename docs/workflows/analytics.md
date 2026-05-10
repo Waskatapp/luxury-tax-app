@@ -1,6 +1,8 @@
 ---
 department: insights
 summary: Reading store sales analytics — revenue, top products, inventory at risk
+triggers: [revenue, top sellers, best sellers, sales report, analytics]
+priority: 5
 ---
 
 # Workflow: Sales analytics

@@ -1,6 +1,8 @@
 ---
 department: products
 summary: Inventory audit — flagging variants below a stock threshold
+triggers: [inventory audit, low stock, stock level, out of stock, restock]
+priority: 5
 ---
 
 # Workflow: Inventory audit & at-risk reporting

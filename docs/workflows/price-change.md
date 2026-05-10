@@ -1,6 +1,8 @@
 ---
 department: pricing-promotions
 summary: Changing a product variant's price (with margin and rounding rules)
+triggers: [price, repricing, change price, lower price, raise price]
+priority: 7
 ---
 
 # Workflow: Changing a product's price

@@ -1,6 +1,8 @@
 ---
 department: products
 summary: Creating a new product in DRAFT status for the merchant to review
+triggers: [new product, create product, add product, draft product, list a product]
+priority: 5
 ---
 
 # Workflow: Creating a new product (DRAFT)

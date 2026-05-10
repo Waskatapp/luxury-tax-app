@@ -39,6 +39,14 @@ export type ParsedWorkflow = {
   // comes from a top-of-body `Tool: \`<name>\`` reference if present.
   summary: string;
   toolName: string | null;
+  // Phase Wf Round Wf-A — auto-trigger metadata. The matcher tokenizes the
+  // merchant's last user message + last assistant message and fires this
+  // workflow as a suggestion when any trigger matches as a whole token /
+  // adjacent token sequence. Cap at 5 triggers per file (Zod-style guard at
+  // parse time; extra entries truncated). priority breaks ties when
+  // multiple workflows fire (default 5; range 1-10, higher wins).
+  triggers: string[];
+  priority: number;
 };
 
 export type WorkflowIndexEntry = {
@@ -49,7 +57,17 @@ export type WorkflowIndexEntry = {
   department: string | null;
   summary: string;
   toolName: string | null;
+  // Phase Wf Round Wf-A.
+  triggers: string[];
+  priority: number;
 };
+
+// Phase Wf Round Wf-A — caps. Defined as constants so unit tests can read
+// them without depending on internal magic numbers.
+export const MAX_TRIGGERS_PER_WORKFLOW = 5;
+export const DEFAULT_WORKFLOW_PRIORITY = 5;
+export const MIN_WORKFLOW_PRIORITY = 1;
+export const MAX_WORKFLOW_PRIORITY = 10;
 
 type Cache = {
   flat: string;
@@ -108,6 +126,8 @@ export function parseWorkflowFile(
       body,
       summary: deriveSummary(filename, null, body),
       toolName: extractToolName(body),
+      triggers: [],
+      priority: DEFAULT_WORKFLOW_PRIORITY,
     };
   }
 
@@ -127,12 +147,16 @@ export function parseWorkflowFile(
       body,
       summary: deriveSummary(filename, null, body),
       toolName: extractToolName(body),
+      triggers: [],
+      priority: DEFAULT_WORKFLOW_PRIORITY,
     };
   }
 
   const fmLines = lines.slice(1, endIdx);
   let department: string | null = null;
   let frontmatterSummary: string | null = null;
+  let triggers: string[] = [];
+  let priority: number = DEFAULT_WORKFLOW_PRIORITY;
   for (const line of fmLines) {
     // Tolerate leading whitespace, padding around `:`, and trailing
     // whitespace on the value.
@@ -144,6 +168,20 @@ export function parseWorkflowFile(
       department = value;
     } else if (key === "summary" && value.length > 0) {
       frontmatterSummary = value;
+    } else if (key === "triggers" && value.length > 0) {
+      // Phase Wf Round Wf-A — accept inline JSON-like array form
+      // `[discount, "promo code", sale]`. Tolerant: strips brackets,
+      // splits on commas, strips wrapping quotes, lowercases, drops
+      // empties, caps at MAX_TRIGGERS_PER_WORKFLOW.
+      triggers = parseTriggersValue(value);
+    } else if (key === "priority" && value.length > 0) {
+      const n = Number.parseInt(value, 10);
+      if (Number.isFinite(n)) {
+        priority = Math.max(
+          MIN_WORKFLOW_PRIORITY,
+          Math.min(MAX_WORKFLOW_PRIORITY, n),
+        );
+      }
     }
   }
 
@@ -154,7 +192,35 @@ export function parseWorkflowFile(
     body,
     summary: deriveSummary(filename, frontmatterSummary, body),
     toolName: extractToolName(body),
+    triggers,
+    priority,
   };
+}
+
+// Phase Wf Round Wf-A — parse a `triggers:` value into a normalized array.
+// Tolerant input shapes:
+//   triggers: [discount, promo code, sale]
+//   triggers: discount, promo code, sale
+//   triggers: ["bundle", 'storefront']
+// Strips outer brackets, splits on commas, strips wrapping quotes, lowercases,
+// trims, drops empties, dedupes, caps at MAX_TRIGGERS_PER_WORKFLOW.
+function parseTriggersValue(raw: string): string[] {
+  const inner = raw.replace(/^\s*\[/, "").replace(/\]\s*$/, "");
+  const parts = inner.split(",");
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    let t = part.trim();
+    // Strip wrapping quotes (single or double).
+    t = t.replace(/^["']/, "").replace(/["']$/, "");
+    t = t.trim().toLowerCase();
+    if (t.length === 0) continue;
+    if (seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+    if (out.length >= MAX_TRIGGERS_PER_WORKFLOW) break;
+  }
+  return out;
 }
 
 // V2.5a — the index needs a 1-line description per workflow. Source order:
@@ -226,6 +292,8 @@ export function loadWorkflowIndex(): WorkflowIndexEntry[] {
     department: wf.department,
     summary: wf.summary,
     toolName: wf.toolName,
+    triggers: wf.triggers,
+    priority: wf.priority,
   }));
 }
 

@@ -1,6 +1,8 @@
 ---
 department: cross-cutting
 summary: When and how to save durable facts about the merchant's store, brand, rules
+triggers: [remember this, remember that, save this rule, brand voice, store rule]
+priority: 4
 ---
 
 # Store memory

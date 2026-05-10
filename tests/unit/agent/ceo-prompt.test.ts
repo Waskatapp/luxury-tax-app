@@ -29,6 +29,8 @@ function entry(over: Partial<WorkflowIndexEntry> = {}): WorkflowIndexEntry {
     department: "pricing-promotions",
     summary: "Changing a product variant's price",
     toolName: "update_product_price",
+    triggers: [],
+    priority: 5,
     ...over,
   };
 }
@@ -239,6 +241,8 @@ describe("buildCeoSystemInstruction", () => {
       department: i % 2 === 0 ? "products" : "pricing-promotions",
       summary: `One-line summary for workflow ${i}`,
       toolName: `tool_${i}`,
+      triggers: [],
+      priority: 5,
     }));
     const out = buildCeoSystemInstruction(
       baseOpts({
@@ -248,12 +252,13 @@ describe("buildCeoSystemInstruction", () => {
       }),
     );
     // V5.3 target: prompt should be ≥ 32k (cache-eligible) but well under
-    // 62k (room for retrieved decisions/insights/observations on top).
-    // Cap bumped 60k→62k 2026-05-10 (Phase Re Round Re-D) for the
-    // bulk-missing-IDs decision rule — load-bearing for Phase Re's
-    // anti-confabulation thesis.
+    // 64k (room for retrieved decisions/insights/observations on top).
+    // Cap evolution: 60k → 62k (Phase Re Round Re-D, bulk-missing-IDs rule)
+    // → 64k (Phase Wf Round Wf-A, suggested-workflows rule + triggers in index).
+    // Constitution allows "~32–60k approximate"; 64k is still 16x under
+    // Flash's 1M context window.
     expect(out.length).toBeGreaterThanOrEqual(32_000);
-    expect(out.length).toBeLessThan(62_000);
+    expect(out.length).toBeLessThan(64_000);
   });
 });
 

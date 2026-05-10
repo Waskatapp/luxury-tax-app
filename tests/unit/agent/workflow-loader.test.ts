@@ -163,3 +163,102 @@ describe("loadWorkflowBodyByName", () => {
     expect(loadWorkflowBodyByName("Price-Change")).toBeNull();
   });
 });
+
+// Phase Wf Round Wf-A — triggers + priority parsing.
+describe("parseWorkflowFile (Wf-A — triggers + priority)", () => {
+  it("parses a bracketed triggers array", () => {
+    const raw =
+      "---\ndepartment: pricing-promotions\ntriggers: [discount, promo, sale]\n---\n\nbody";
+    const r = parseWorkflowFile("discount-creation.md", raw);
+    expect(r.triggers).toEqual(["discount", "promo", "sale"]);
+  });
+
+  it("parses an unbracketed comma-separated triggers list", () => {
+    const raw = "---\ntriggers: discount, promo, sale\n---\n\nbody";
+    const r = parseWorkflowFile("x.md", raw);
+    expect(r.triggers).toEqual(["discount", "promo", "sale"]);
+  });
+
+  it("strips wrapping quotes from trigger entries", () => {
+    const raw = `---\ntriggers: ["bundle", 'storefront']\n---\n\nbody`;
+    const r = parseWorkflowFile("x.md", raw);
+    expect(r.triggers).toEqual(["bundle", "storefront"]);
+  });
+
+  it("lowercases triggers", () => {
+    const raw = "---\ntriggers: [DISCOUNT, Promo]\n---\n\nbody";
+    const r = parseWorkflowFile("x.md", raw);
+    expect(r.triggers).toEqual(["discount", "promo"]);
+  });
+
+  it("dedupes triggers", () => {
+    const raw = "---\ntriggers: [discount, DISCOUNT, discount]\n---\n\nbody";
+    const r = parseWorkflowFile("x.md", raw);
+    expect(r.triggers).toEqual(["discount"]);
+  });
+
+  it("caps at MAX_TRIGGERS_PER_WORKFLOW (5)", () => {
+    const raw = "---\ntriggers: [a, b, c, d, e, f, g]\n---\n\nbody";
+    const r = parseWorkflowFile("x.md", raw);
+    expect(r.triggers).toHaveLength(5);
+    expect(r.triggers).toEqual(["a", "b", "c", "d", "e"]);
+  });
+
+  it("defaults priority to 5 when missing", () => {
+    const raw = "---\ndepartment: products\n---\n\nbody";
+    const r = parseWorkflowFile("x.md", raw);
+    expect(r.priority).toBe(5);
+  });
+
+  it("parses an explicit priority value", () => {
+    const raw = "---\npriority: 8\n---\n\nbody";
+    const r = parseWorkflowFile("x.md", raw);
+    expect(r.priority).toBe(8);
+  });
+
+  it("clamps priority to range [1, 10]", () => {
+    const tooHigh = parseWorkflowFile(
+      "x.md",
+      "---\npriority: 99\n---\n\nbody",
+    );
+    expect(tooHigh.priority).toBe(10);
+    const tooLow = parseWorkflowFile(
+      "x.md",
+      "---\npriority: -3\n---\n\nbody",
+    );
+    expect(tooLow.priority).toBe(1);
+  });
+
+  it("ignores non-numeric priority values", () => {
+    const r = parseWorkflowFile(
+      "x.md",
+      "---\npriority: high\n---\n\nbody",
+    );
+    expect(r.priority).toBe(5); // default
+  });
+
+  it("returns empty triggers array when frontmatter is missing", () => {
+    const r = parseWorkflowFile("x.md", "# Plain workflow\n\nno frontmatter");
+    expect(r.triggers).toEqual([]);
+    expect(r.priority).toBe(5);
+  });
+});
+
+describe("loadWorkflowIndex (Wf-A — index includes triggers + priority)", () => {
+  it("propagates triggers and priority from parsed workflows", () => {
+    const idx = loadWorkflowIndex();
+    expect(idx.length).toBeGreaterThan(0);
+    // Every entry must have a triggers array (even if empty) and a priority.
+    for (const entry of idx) {
+      expect(Array.isArray(entry.triggers)).toBe(true);
+      expect(typeof entry.priority).toBe("number");
+      expect(entry.priority).toBeGreaterThanOrEqual(1);
+      expect(entry.priority).toBeLessThanOrEqual(10);
+    }
+    // The discount-creation workflow we updated should have triggers.
+    const discount = idx.find((e) => e.name === "discount-creation");
+    if (discount) {
+      expect(discount.triggers.length).toBeGreaterThan(0);
+    }
+  });
+});

@@ -1,6 +1,8 @@
 ---
 department: pricing-promotions
 summary: Creating a percentage-off automatic discount with title, percent, dates
+triggers: [discount, promo, sale, deal, coupon]
+priority: 6
 ---
 
 # Workflow: Creating a discount

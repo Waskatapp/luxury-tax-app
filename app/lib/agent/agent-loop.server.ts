@@ -24,11 +24,12 @@ import {
 } from "./tool-classifier";
 import { executeTool, withRetry } from "./executor.server";
 import { classifyError } from "./error-codes";
+import { buildResumeContext, expireStalePlans, findActivePlan } from "./plans.server";
+import { loadWorkflowIndex } from "./workflow-loader.server";
 import {
-  buildResumeContext,
-  expireStalePlans,
-  findActivePlan,
-} from "./plans.server";
+  formatTriggerSuggestionsBlock,
+  matchTriggers,
+} from "./workflow-matcher.server";
 import type { ModelRouterDecision } from "./model-router";
 import { checkGeminiRateLimit } from "../security/rate-limit.server";
 import { log } from "../log.server";
@@ -47,6 +48,130 @@ import type { ShopifyAdmin } from "../shopify/graphql-client.server";
 
 const MAX_TURNS = 8;
 const MAX_OUTPUT_TOKENS = 4096;
+
+// Phase Wf Round Wf-A — system instruction augmenter pipeline.
+//
+// Multiple rounds inject labeled context blocks into the systemInstruction
+// at turn-start (Re-C2 resume context, Wf-A workflow triggers, Wf-C
+// lessons in a future round). Defining this once + registering augmenters
+// in explicit order avoids the bug class where one round's string-concat
+// quietly clobbers another's. Each augmenter is best-effort: a thrown
+// error or null return is silently skipped.
+
+type AugmenterCtx = {
+  storeId: string;
+  conversationId: string;
+  now: Date;
+  lastUserText: string;
+  lastAssistantText: string;
+};
+
+type SystemInstructionAugmenter = (
+  ctx: AugmenterCtx,
+) => Promise<{ heading: string; body: string } | null>;
+
+async function runAugmenters(
+  baseSystemInstruction: string,
+  augmenters: SystemInstructionAugmenter[],
+  ctx: AugmenterCtx,
+): Promise<string> {
+  let out = baseSystemInstruction;
+  for (const aug of augmenters) {
+    try {
+      const result = await aug(ctx);
+      if (result === null) continue;
+      out = `${out}\n\n## ${result.heading}\n\n${result.body}`;
+    } catch (err) {
+      log.error("agent-loop: augmenter failed (continuing without)", {
+        storeId: ctx.storeId,
+        conversationId: ctx.conversationId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return out;
+}
+
+// Phase Re Round Re-C2 augmenter — checks for an active APPROVED plan
+// with pending steps and surfaces the resume context blurb.
+const resumePlanAugmenter: SystemInstructionAugmenter = async (ctx) => {
+  await expireStalePlans({
+    storeId: ctx.storeId,
+    conversationId: ctx.conversationId,
+    now: ctx.now,
+  });
+  const activePlan = await findActivePlan(ctx.storeId, ctx.conversationId);
+  if (!activePlan) return null;
+  const resumeBlurb = buildResumeContext({ plan: activePlan });
+  if (!resumeBlurb) return null;
+  log.info("agent-loop: injecting resume context for active plan", {
+    storeId: ctx.storeId,
+    conversationId: ctx.conversationId,
+    planId: activePlan.id,
+    currentStepIndex: activePlan.currentStepIndex,
+    totalSteps: activePlan.steps.length,
+  });
+  return {
+    heading: "Active plan (Re-C2 resume context)",
+    body: resumeBlurb,
+  };
+};
+
+// Phase Wf Round Wf-A augmenter — matches the merchant's last message
+// (plus capped prior assistant text for continuation context) against
+// each workflow's frontmatter `triggers`. Surfaces top-N as suggestions
+// the CEO is told to read via `read_workflow` before acting.
+const triggerSuggestionAugmenter: SystemInstructionAugmenter = async (ctx) => {
+  if (!ctx.lastUserText) return null;
+  const index = loadWorkflowIndex();
+  const matches = matchTriggers(ctx.lastUserText, ctx.lastAssistantText, index);
+  if (matches.length === 0) return null;
+  const body = formatTriggerSuggestionsBlock(matches);
+  if (!body) return null;
+  log.info("agent-loop: injecting workflow trigger suggestions", {
+    storeId: ctx.storeId,
+    conversationId: ctx.conversationId,
+    matchedCount: matches.length,
+    topMatch: matches[0]?.name,
+  });
+  return {
+    heading: "Suggested workflows for this turn (Wf-A)",
+    body,
+  };
+};
+
+// Extract the most recent user-role text from the Gemini contents array.
+// Gemini Content.parts can be text, functionCall, or functionResponse —
+// only `text` parts are merchant prose. Returns "" when the last user
+// turn carries no text (e.g., synthesized tool_result-only turn).
+function extractLastUserText(contents: Content[]): string {
+  for (let i = contents.length - 1; i >= 0; i--) {
+    const c = contents[i];
+    if (c.role !== "user") continue;
+    const texts = (c.parts ?? [])
+      .map((p) => (typeof p.text === "string" ? p.text : ""))
+      .filter((t) => t.length > 0);
+    if (texts.length === 0) continue;
+    return texts.join(" ").trim();
+  }
+  return "";
+}
+
+// Extract the last assistant-role text. Used as continuation context for
+// triggers like "do that for the rest" — without it the matcher misses
+// follow-ups whose keyword lives in the prior assistant turn.
+function extractLastAssistantText(contents: Content[]): string {
+  for (let i = contents.length - 1; i >= 0; i--) {
+    const c = contents[i];
+    if (c.role !== "model" && c.role !== "assistant") continue;
+    const texts = (c.parts ?? [])
+      .map((p) => (typeof p.text === "string" ? p.text : ""))
+      .filter((t) => t.length > 0);
+    if (texts.length === 0) continue;
+    return texts.join(" ").trim();
+  }
+  return "";
+}
 
 // Mirrors the inline `emit` helper that used to live in api.chat.tsx.
 // Signature stays string-based so SSE byte-identity is trivially
@@ -106,45 +231,30 @@ export async function runAgentLoop(
 
   const ai = getGeminiClient();
 
-  // Phase Re Round Re-C2 — resume detection. At the START of the
-  // outermost turn (before any Gemini call), check if this conversation
-  // has a stale APPROVED plan that should expire, and whether there's
-  // an active plan with pending steps the agent should know about. If
-  // so, append a single short context blurb to the systemInstruction so
-  // the agent surfaces the pending step naturally instead of restarting
-  // the conversation from scratch.
+  // Phase Wf Round Wf-A — augmenter pipeline. Multiple rounds inject
+  // labeled context blocks into the systemInstruction at turn-start
+  // (Re-C2 resume context, Wf-A workflow triggers, Wf-C lessons in a
+  // future round). Defining the pipeline once + registering augmenters
+  // into it (in explicit order) avoids the bug class where one round's
+  // string-concat quietly clobbers another's.
   //
-  // Best-effort: any DB error here is swallowed so a hiccup never
-  // blocks the loop. The CEO works fine without resume context — the
+  // Each augmenter is best-effort: a thrown error or null return is
+  // silently skipped. The CEO works fine without any augmenter — the
   // merchant just sees a worse experience for that one turn.
-  let effectiveSystemInstruction = systemInstruction;
-  try {
-    await expireStalePlans({
-      storeId,
-      conversationId,
-      now: new Date(),
-    });
-    const activePlan = await findActivePlan(storeId, conversationId);
-    if (activePlan) {
-      const resumeBlurb = buildResumeContext({ plan: activePlan });
-      if (resumeBlurb) {
-        effectiveSystemInstruction = `${systemInstruction}\n\n## Active plan (Re-C2 resume context)\n\n${resumeBlurb}`;
-        log.info("agent-loop: injecting resume context for active plan", {
-          storeId,
-          conversationId,
-          planId: activePlan.id,
-          currentStepIndex: activePlan.currentStepIndex,
-          totalSteps: activePlan.steps.length,
-        });
-      }
-    }
-  } catch (err) {
-    log.error("agent-loop: resume detection failed (continuing without)", {
-      storeId,
-      conversationId,
-      err: err instanceof Error ? err.message : String(err),
-    });
-  }
+  const lastUserText = extractLastUserText(contents);
+  const lastAssistantText = extractLastAssistantText(contents);
+  const augmenterCtx: AugmenterCtx = {
+    storeId,
+    conversationId,
+    now: new Date(),
+    lastUserText,
+    lastAssistantText,
+  };
+  const effectiveSystemInstruction = await runAugmenters(
+    systemInstruction,
+    [resumePlanAugmenter, triggerSuggestionAugmenter],
+    augmenterCtx,
+  );
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // Per-storeId Gemini RPM guard. Free-tier 2.5 Flash is 10 RPM;

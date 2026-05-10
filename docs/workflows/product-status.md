@@ -1,6 +1,8 @@
 ---
 department: products
 summary: Changing a product's lifecycle status — DRAFT / ACTIVE / ARCHIVED
+triggers: [archive, archive product, publish, unpublish, draft, active, hide product]
+priority: 6
 ---
 
 # Workflow: Changing a product's lifecycle status

@@ -1,6 +1,8 @@
 ---
 department: products
 summary: Rewriting a product's description body (use propose_artifact for canvas)
+triggers: [description, rewrite description, product copy, marketing copy, write copy]
+priority: 5
 ---
 
 # Workflow: Updating a product's description
