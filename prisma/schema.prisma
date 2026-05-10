@@ -90,6 +90,7 @@ model Store {
   clusterRuns          ClusterRun[]
   abandonmentClusters  AbandonmentCluster[]
   conversationFailures ConversationFailure[]
+  workflowProposals    WorkflowProposal[]
 }
 
 // ---- Chat thread per store+user ----
@@ -625,4 +626,33 @@ model ConversationFailure {
 
   @@index([conversationId, createdAt(sort: Desc)])
   @@index([storeId])
+}
+
+// Phase Wf Round Wf-E — Skill Creator. The nightly Abandonment Brain
+// pass authors NEW workflow SOPs from recurring failure clusters and
+// persists them here as PENDING. Operator reviews at
+// /app/settings/workflow-proposals; on Approve, the proposal is
+// merged into loadWorkflowIndex(storeId) for THAT store only — DB-only
+// storage; no autonomous git changes. fingerprint dedupes against the
+// cluster centroid; rejected fingerprints are permanently blocked.
+model WorkflowProposal {
+  id          String   @id @default(cuid())
+  storeId     String
+  name        String   // kebab-case workflow name
+  summary     String
+  body        String   // Markdown following _FORMAT.md
+  triggers    String[] // matches WorkflowIndexEntry.triggers shape
+  evidence    Json     // { clusterIds[], sampleTurnIds[], commonTools[], commonRouterReason }
+  status      String   @default("PENDING") // PENDING | ACCEPTED | REJECTED | REVISED
+  fingerprint String   // cluster centroid fingerprint for dedupe
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, name])
+  @@index([storeId, status])
+  @@index([fingerprint])
 }

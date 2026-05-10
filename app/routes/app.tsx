@@ -44,6 +44,7 @@ export default function App() {
           <Link to="/app/settings/system-health">System health</Link>
           <Link to="/app/settings/eval-runs">Eval runs</Link>
           <Link to="/app/settings/abandonment-diagnoses">Abandonment</Link>
+          <Link to="/app/settings/workflow-proposals">Workflow proposals</Link>
         </NavMenu>
         <Outlet />
       </PolarisAppProvider>

@@ -287,6 +287,14 @@ export function loadWorkflowsByDepartment(): Record<string, string> {
 // index (filename + summary + owning tool), and the new `read_workflow`
 // tool fetches the full body on demand. Saves ~4,000 tokens per turn vs.
 // inlining every workflow body.
+//
+// Phase Wf Round Wf-E — when a storeId is provided, ACCEPTED
+// WorkflowProposal rows for THAT store are merged into the filesystem
+// index. DB-only storage; no autonomous git changes; per-store
+// versioning for free. DB rows shadow filesystem ones if a name
+// collides (the @@unique([storeId, name]) prevents that within DB,
+// and the propose helper's pre-check prevents collisions with the
+// filesystem set).
 export function loadWorkflowIndex(): WorkflowIndexEntry[] {
   return loadAll().parsed.map((wf) => ({
     name: wf.filename.replace(/\.md$/, ""),
@@ -298,11 +306,60 @@ export function loadWorkflowIndex(): WorkflowIndexEntry[] {
   }));
 }
 
+// Phase Wf Round Wf-E — per-store index that merges filesystem +
+// ACCEPTED DB workflows. Caller passes storeId; DB queries scope to it.
+// Returns the same WorkflowIndexEntry shape, so all downstream code
+// (matcher, prompt assembler) treats DB workflows identically to
+// filesystem ones.
+//
+// Best-effort: a DB error logs + falls back to filesystem-only so a
+// hiccup never blocks the agent loop.
+export async function loadWorkflowIndexForStore(
+  storeId: string,
+): Promise<WorkflowIndexEntry[]> {
+  const fs = loadWorkflowIndex();
+  let dbEntries: WorkflowIndexEntry[] = [];
+  try {
+    const { default: prisma } = await import("../../db.server");
+    const proposals = await prisma.workflowProposal.findMany({
+      where: { storeId, status: "ACCEPTED" },
+      select: {
+        name: true,
+        summary: true,
+        triggers: true,
+      },
+    });
+    dbEntries = proposals.map((p) => ({
+      name: p.name,
+      department: null, // proposed workflows are cross-cutting by default
+      summary: p.summary,
+      toolName: null,
+      triggers: p.triggers,
+      priority: 5,
+    }));
+  } catch (err) {
+    log.error("workflow-loader: DB merge failed (falling back to fs)", {
+      storeId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return fs;
+  }
+  // DB workflows shadow filesystem ones on name collision (defensive —
+  // propose.server.ts's @@unique([storeId, name]) blocks this in
+  // practice, but we keep the merge stable just in case).
+  const dbNames = new Set(dbEntries.map((e) => e.name));
+  return [...fs.filter((e) => !dbNames.has(e.name)), ...dbEntries];
+}
+
 // Look up a single workflow body by its index name (filename without .md).
 // Returns null for unknown names. The read_workflow tool exposes this; the
 // regex in the tool's parametersJsonSchema (^[a-z0-9_-]+$) prevents path
 // traversal even before this call, but we also defensively reject any
 // name that doesn't match that shape here.
+//
+// Phase Wf Round Wf-E — when a storeId is provided, ACCEPTED DB
+// workflows are checked FIRST (per-store specifics shadow global
+// filesystem ones).
 export function loadWorkflowBodyByName(name: string): string | null {
   if (!/^[a-z0-9_-]+$/i.test(name)) return null;
   const target = `${name}.md`;
@@ -310,6 +367,30 @@ export function loadWorkflowBodyByName(name: string): string | null {
     if (wf.filename === target) return wf.body;
   }
   return null;
+}
+
+export async function loadWorkflowBodyByNameForStore(
+  storeId: string,
+  name: string,
+): Promise<string | null> {
+  if (!/^[a-z0-9_-]+$/i.test(name)) return null;
+  // DB first.
+  try {
+    const { default: prisma } = await import("../../db.server");
+    const row = await prisma.workflowProposal.findFirst({
+      where: { storeId, name, status: "ACCEPTED" },
+      select: { body: true },
+    });
+    if (row?.body) return row.body;
+  } catch (err) {
+    log.error("workflow-loader: DB body lookup failed (falling back to fs)", {
+      storeId,
+      name,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+  // Filesystem fallback.
+  return loadWorkflowBodyByName(name);
 }
 
 // Test seam — lets unit tests reset the cache between runs.

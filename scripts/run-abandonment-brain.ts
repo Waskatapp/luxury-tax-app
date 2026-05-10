@@ -4,6 +4,7 @@ import {
   gcOldClusterRuns,
   runAbandonmentBrainForStore,
 } from "../app/lib/agent/abandonment/cluster.server";
+import { runWorkflowProposalPass } from "../app/lib/agent/workflows/propose.server";
 
 // Phase Ab Round Ab-A — Abandonment Brain cron entrypoint.
 // Invoked nightly by .github/workflows/abandonment-brain.yml.
@@ -64,6 +65,10 @@ async function main(): Promise<void> {
     errored: 0,
     totalTurnsScanned: 0,
     totalClusters: 0,
+    proposalsScanned: 0,
+    proposalsCreated: 0,
+    proposalsSkipped: 0,
+    proposalsErrored: 0,
   };
 
   for (const s of stores) {
@@ -81,6 +86,32 @@ async function main(): Promise<void> {
       console.log(
         `[ab-brain] ${s.shopDomain}: ${result.clusters.length} cluster(s) from ${turnsScanned} turns (${result.durationMs}ms)`,
       );
+
+      // Phase Wf Round Wf-E — Skill Creator pass. Authors workflow
+      // proposals from the largest abandonment clusters. Cost-bounded
+      // to 5 LLM calls per store per nightly run; spam-guard skips
+      // fingerprints already proposed in the last 7 days. Fail-soft
+      // per cluster — never blocks the rest of the cron.
+      try {
+        const proposals = await runWorkflowProposalPass({
+          storeId: s.id,
+          now,
+        });
+        counts.proposalsScanned += proposals.scanned;
+        counts.proposalsCreated += proposals.proposed;
+        counts.proposalsSkipped += proposals.skipped;
+        counts.proposalsErrored += proposals.errored;
+        if (proposals.proposed > 0 || proposals.errored > 0) {
+          console.log(
+            `[ab-brain] ${s.shopDomain}: workflow proposals — scanned:${proposals.scanned} proposed:${proposals.proposed} skipped:${proposals.skipped} errored:${proposals.errored}`,
+          );
+        }
+      } catch (err) {
+        // Defensive — runWorkflowProposalPass already swallows internally,
+        // but a bug could escape. Don't let it fail the whole cron.
+        console.error(`[ab-brain] proposal pass non-fatal for ${s.id}`, err);
+        counts.proposalsErrored += 1;
+      }
     } catch (err) {
       counts.errored += 1;
       console.error(`[ab-brain] fatal for ${s.id}`, err);
@@ -90,7 +121,7 @@ async function main(): Promise<void> {
   clearTimeout(deadline);
   const totalDurationMs = Date.now() - startedAt;
   console.log(
-    `[ab-brain] done — processed:${counts.processed} errored:${counts.errored} turnsScanned:${counts.totalTurnsScanned} totalClusters:${counts.totalClusters} | total:${totalDurationMs}ms`,
+    `[ab-brain] done — processed:${counts.processed} errored:${counts.errored} turnsScanned:${counts.totalTurnsScanned} totalClusters:${counts.totalClusters} proposals(scanned:${counts.proposalsScanned} created:${counts.proposalsCreated} skipped:${counts.proposalsSkipped} errored:${counts.proposalsErrored}) | total:${totalDurationMs}ms`,
   );
 }
 
