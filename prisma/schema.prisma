@@ -87,6 +87,8 @@ model Store {
   insights             Insight[]
   decisions            Decision[]
   systemHealthFindings SystemHealthFinding[]
+  clusterRuns          ClusterRun[]
+  abandonmentClusters  AbandonmentCluster[]
 }
 
 // ---- Chat thread per store+user ----
@@ -523,4 +525,66 @@ model EvalRun {
   createdAt      DateTime @default(now())
 
   @@index([runAt])
+}
+
+// Phase Ab — Abandonment Brain. ONE row per per-store nightly run of
+// the clustering pass. Aggregates how many abandoned/clarified turns
+// were scanned + how many clusters emerged. Garbage-collected after
+// 14 days (older runs are not useful for trending — Ab-C does
+// cross-run matching via AbandonmentCluster.centroidEmbedding, not
+// via ClusterRun joins).
+//
+// Tenant-scoped — every query filters by storeId. NEVER read by the
+// CEO prompt; operator-only at every surface.
+model ClusterRun {
+  id                  String   @id @default(cuid())
+  storeId             String
+  runAt               DateTime
+  totalAbandonedTurns Int
+  totalClarifiedTurns Int
+  clusterCount        Int
+  durationMs          Int
+  createdAt           DateTime @default(now())
+
+  store    Store                @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  clusters AbandonmentCluster[]
+
+  @@index([storeId, runAt])
+}
+
+// Phase Ab — one cluster of abandoned/clarified turns sharing a
+// failure pattern (semantic similarity of user message). Computed
+// nightly via DBSCAN with cosine distance.
+//
+// Round Ab-A persists the cluster + sample turn IDs. Rounds Ab-B/C/D
+// add diagnosis hypothesis + lifecycle status by linking from a
+// separate AbandonmentDiagnosis table to clusters via fingerprint.
+//
+// centroidEmbedding is the average user-message embedding across the
+// cluster's turns; used in Ab-C to match new clusters to existing
+// diagnoses across nightly runs (cosine sim >= 0.85 -> same pattern).
+//
+// fingerprint is a stable hash of the centroid (first 4 dims, fixed
+// precision) so a cluster's identity survives a re-run as long as
+// the centroid is close. Cheaper than an embedding lookup for
+// no-change cases.
+model AbandonmentCluster {
+  id                 String   @id @default(cuid())
+  clusterRunId       String
+  storeId            String
+  size               Int
+  sampleTurnIds      String[]
+  commonTools        String[]
+  commonRouterReason String?
+  dominantOutcome    String   // "abandoned" | "clarified"
+  centroidEmbedding  Float[]
+  fingerprint        String
+  createdAt          DateTime @default(now())
+
+  store      Store      @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  clusterRun ClusterRun @relation(fields: [clusterRunId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, createdAt])
+  @@index([clusterRunId])
+  @@index([storeId, fingerprint])
 }
