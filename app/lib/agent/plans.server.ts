@@ -11,12 +11,31 @@ import { log } from "../log.server";
 //                        ApprovalCard)
 //   PENDING → REJECTED  (merchant clicked Reject; CEO acknowledges)
 //
-// We deliberately don't track step-level state in this model. Each step
-// becomes a separate tool call as the CEO works through the plan; those
-// tool calls already have their own AuditLog rows + PendingAction rows.
-// Bringing step-level state here would just duplicate that.
+// Phase Re Round Re-C1 — per-step state machine added. The plan-level
+// PENDING/APPROVED/REJECTED status still tells you whether the merchant
+// signed off on the plan as a whole; the new currentStepIndex +
+// per-step `status` field tell you which step the agent is executing
+// next and which already finished/failed/skipped. This is what enables
+// Re-C2's resume-on-next-turn behavior — opening the conversation
+// later, the agent can ask "we still had step 3 pending — keep going?"
+// instead of restarting from scratch.
 
 export type PlanStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+// Phase Re Round Re-C1 — per-step lifecycle. Step transitions:
+//   pending → in_progress (executor dispatches the tool for this step)
+//   in_progress → completed (tool returned ok)
+//   in_progress → failed   (tool returned non-retryable error)
+//   pending     → skipped  (operator/CEO chose to bypass — Re-C2)
+// The `currentStepIndex` advances only on completed (and on skipped).
+// A failed step blocks: currentStepIndex stays put, lastStepFailureCode
+// is populated, and the resume detection in Re-C2 surfaces it.
+export type PlanStepStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "skipped";
 
 export const PLAN_DEPARTMENT_VALUES = [
   "products",
@@ -54,13 +73,16 @@ export const ProposePlanInputSchema = z.object({
 export type PlanStep = z.infer<typeof PlanStepSchema>;
 export type ProposePlanInput = z.infer<typeof ProposePlanInputSchema>;
 
-// Persisted shape of `Plan.steps` JSON. Identical to PlanStep but
-// re-declared so callers don't need to import the Zod-derived type
-// just to read a row.
+// Persisted shape of `Plan.steps` JSON. Adds Phase Re Round Re-C1
+// per-step status fields. Existing rows backfill via the migration
+// (`status: "pending"`); brand-new rows initialize via createPlan().
 export type StoredPlanStep = {
   description: string;
   departmentId: string;
   estimatedTool?: string | undefined;
+  status: PlanStepStatus;
+  completedAt?: string | undefined;
+  failureCode?: string | undefined;
 };
 
 export type PlanRow = {
@@ -72,11 +94,28 @@ export type PlanRow = {
   summary: string;
   steps: StoredPlanStep[];
   status: PlanStatus;
+  // Phase Re Round Re-C1 — per-step pointer + last-failure metadata.
+  currentStepIndex: number;
+  lastStepFailureCode: string | null;
+  lastStepFailureAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
 function toRow(p: Plan): PlanRow {
+  // Defensive backfill on read: if a row predates the Re-C1 migration
+  // and somehow has steps without a `status` field (shouldn't happen
+  // post-migration, but JSON is loose), normalize them to "pending"
+  // so downstream code doesn't have to defend against undefined.
+  const rawSteps = (p.steps as unknown as Array<Partial<StoredPlanStep>>) ?? [];
+  const steps: StoredPlanStep[] = rawSteps.map((s) => ({
+    description: s.description ?? "",
+    departmentId: s.departmentId ?? "",
+    estimatedTool: s.estimatedTool,
+    status: s.status ?? "pending",
+    completedAt: s.completedAt,
+    failureCode: s.failureCode,
+  }));
   return {
     id: p.id,
     storeId: p.storeId,
@@ -84,8 +123,13 @@ function toRow(p: Plan): PlanRow {
     toolCallId: p.toolCallId,
     parentPlanId: p.parentPlanId,
     summary: p.summary,
-    steps: (p.steps as unknown as StoredPlanStep[]) ?? [],
+    steps,
     status: p.status as PlanStatus,
+    currentStepIndex: p.currentStepIndex,
+    lastStepFailureCode: p.lastStepFailureCode ?? null,
+    lastStepFailureAt: p.lastStepFailureAt
+      ? p.lastStepFailureAt.toISOString()
+      : null,
     createdAt: p.createdAt.toISOString(),
     updatedAt: p.updatedAt.toISOString(),
   };
@@ -107,6 +151,14 @@ export async function createPlan(opts: {
   steps: PlanStep[];
   parentPlanId?: string | null;
 }): Promise<PlanRow> {
+  // Phase Re Round Re-C1 — initialize every step at `pending` so the
+  // executor's step-state transitions have something to advance from.
+  const stepsWithStatus: StoredPlanStep[] = opts.steps.map((s) => ({
+    description: s.description,
+    departmentId: s.departmentId,
+    estimatedTool: s.estimatedTool,
+    status: "pending",
+  }));
   const row = await prisma.plan.upsert({
     where: { toolCallId: opts.toolCallId },
     create: {
@@ -115,8 +167,9 @@ export async function createPlan(opts: {
       toolCallId: opts.toolCallId,
       parentPlanId: opts.parentPlanId ?? null,
       summary: opts.summary,
-      steps: opts.steps as unknown as object,
+      steps: stepsWithStatus as unknown as object,
       status: "PENDING",
+      currentStepIndex: 0,
     },
     update: {},
   });
@@ -271,4 +324,149 @@ export async function findPlanById(
     where: { id, storeId },
   });
   return row ? toRow(row) : null;
+}
+
+// Phase Re Round Re-C1 — find the active APPROVED plan for a
+// conversation, if any. Active = APPROVED status + currentStepIndex
+// hasn't reached step count. Used by the executor to decide whether
+// a tool dispatch is part of a plan step (and which step). Returns
+// null when there's no plan, the plan is PENDING/REJECTED, or every
+// step is already completed/skipped.
+//
+// IMPORTANT: when multiple APPROVED plans exist on the same
+// conversation (e.g., merchant approved a replan after the original),
+// returns the most-recently-updated one. Step-advance only fires on
+// THE active plan; older approved-but-superseded plans don't advance.
+export async function findActivePlan(
+  storeId: string,
+  conversationId: string,
+): Promise<PlanRow | null> {
+  const rows = await prisma.plan.findMany({
+    where: { storeId, conversationId, status: "APPROVED" },
+    orderBy: { updatedAt: "desc" },
+    take: 5, // bound the scan; reading 5 plans is cheap
+  });
+  for (const r of rows) {
+    const row = toRow(r);
+    if (row.currentStepIndex < row.steps.length) {
+      return row;
+    }
+  }
+  return null;
+}
+
+// Phase Re Round Re-C1 — atomically advance a step to a new status.
+// Uses an updateMany with a guard on the expected currentStepIndex so
+// concurrent dispatches (rare but possible) don't double-advance. The
+// caller passes the planId + the index they observed; if the index has
+// already moved (another dispatch won the race), this is a no-op and
+// returns false.
+//
+// Step transitions allowed:
+//   pending → in_progress
+//   in_progress → completed (advances currentStepIndex)
+//   in_progress → failed   (does NOT advance; pins lastStepFailure*)
+//   pending → skipped      (advances currentStepIndex)
+//
+// On `completed`/`skipped`, currentStepIndex bumps by 1.
+// On `failed`, currentStepIndex stays put — Re-C2's resume detection
+// uses lastStepFailureCode to surface the block to the merchant.
+async function transitionStep(opts: {
+  planId: string;
+  storeId: string;
+  expectedIndex: number;
+  newStatus: Exclude<PlanStepStatus, "pending">;
+  failureCode?: string;
+}): Promise<boolean> {
+  // Read-modify-write would race; instead, do a guarded single-update
+  // by reading the row, computing the new steps array, then updating
+  // with a `where: { currentStepIndex: expectedIndex }` clause that
+  // makes the update atomic.
+  const plan = await prisma.plan.findFirst({
+    where: { id: opts.planId, storeId: opts.storeId },
+    select: { steps: true, currentStepIndex: true },
+  });
+  if (!plan) return false;
+  if (plan.currentStepIndex !== opts.expectedIndex) return false;
+
+  const steps = (plan.steps as unknown as StoredPlanStep[]).slice();
+  if (opts.expectedIndex < 0 || opts.expectedIndex >= steps.length) {
+    return false;
+  }
+  const target = steps[opts.expectedIndex];
+  const updated: StoredPlanStep = { ...target, status: opts.newStatus };
+  if (opts.newStatus === "completed" || opts.newStatus === "skipped") {
+    updated.completedAt = new Date().toISOString();
+  }
+  if (opts.newStatus === "failed" && opts.failureCode) {
+    updated.failureCode = opts.failureCode;
+  }
+  steps[opts.expectedIndex] = updated;
+
+  const advance =
+    opts.newStatus === "completed" || opts.newStatus === "skipped";
+  const data: {
+    steps: object;
+    currentStepIndex?: number;
+    lastStepFailureCode?: string | null;
+    lastStepFailureAt?: Date | null;
+  } = {
+    steps: steps as unknown as object,
+  };
+  if (advance) data.currentStepIndex = opts.expectedIndex + 1;
+  if (opts.newStatus === "failed") {
+    data.lastStepFailureCode = opts.failureCode ?? "UNKNOWN";
+    data.lastStepFailureAt = new Date();
+  }
+
+  // Atomic guard: only update if currentStepIndex still matches what we
+  // observed. If a concurrent dispatch advanced it first, we no-op.
+  const result = await prisma.plan.updateMany({
+    where: {
+      id: opts.planId,
+      storeId: opts.storeId,
+      currentStepIndex: opts.expectedIndex,
+    },
+    data,
+  });
+  return result.count > 0;
+}
+
+export function markStepInProgress(opts: {
+  planId: string;
+  storeId: string;
+  expectedIndex: number;
+}): Promise<boolean> {
+  return transitionStep({ ...opts, newStatus: "in_progress" });
+}
+
+export function markStepCompleted(opts: {
+  planId: string;
+  storeId: string;
+  expectedIndex: number;
+}): Promise<boolean> {
+  return transitionStep({ ...opts, newStatus: "completed" });
+}
+
+export function markStepFailed(opts: {
+  planId: string;
+  storeId: string;
+  expectedIndex: number;
+  failureCode: string;
+}): Promise<boolean> {
+  return transitionStep({
+    planId: opts.planId,
+    storeId: opts.storeId,
+    expectedIndex: opts.expectedIndex,
+    newStatus: "failed",
+    failureCode: opts.failureCode,
+  });
+}
+
+export function markStepSkipped(opts: {
+  planId: string;
+  storeId: string;
+  expectedIndex: number;
+}): Promise<boolean> {
+  return transitionStep({ ...opts, newStatus: "skipped" });
 }

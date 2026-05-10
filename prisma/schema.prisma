@@ -242,8 +242,18 @@ model Plan {
   toolCallId     String   @unique
   parentPlanId   String?
   summary        String
-  steps          Json // PlanStep[] — see app/lib/agent/plans.server.ts
+  steps          Json // StoredPlanStep[] — see app/lib/agent/plans.server.ts
   status         String   @default("PENDING")
+  // Phase Re Round Re-C1 — per-step state machine. currentStepIndex is
+  // the step the agent should execute next (0-indexed). It advances on
+  // tool dispatch (in_progress → completed → currentStepIndex++).
+  // lastStepFailureCode + lastStepFailureAt capture the most recent
+  // step failure so Re-C2's resume detection can phrase "the previous
+  // step failed with: …" cleanly. All three fields backfill safely on
+  // existing plans (default 0 / null).
+  currentStepIndex   Int       @default(0)
+  lastStepFailureCode String?
+  lastStepFailureAt   DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

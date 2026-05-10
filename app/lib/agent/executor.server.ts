@@ -35,7 +35,10 @@ import type { ShopifyAdmin } from "../shopify/graphql-client.server";
 import { upsertMemory } from "../memory/store-memory.server";
 import {
   ProposePlanInputSchema,
+  findActivePlan,
   findPlanById,
+  markStepCompleted,
+  markStepFailed,
   safeCreatePlan,
 } from "./plans.server";
 import {
@@ -156,6 +159,55 @@ export function coerceHandlerResult(
 ): ToolResult {
   if (result.ok) return result;
   return fail(result.error);
+}
+
+// Phase Re Round Re-C1 — try to advance the active plan's step
+// pointer based on a tool-dispatch result. No-op when:
+//   - no conversationId in scope (cron/eval-harness paths)
+//   - no APPROVED plan exists for the conversation
+//   - the tool's department doesn't match the current step's department
+//   - currentStepIndex is past the last step (defensive)
+//
+// On match, transitions pending → completed (success) or pending →
+// failed (failure). markStepCompleted bumps currentStepIndex; markStepFailed
+// pins lastStepFailureCode for Re-C2's resume detection. Both helpers
+// are atomic (guarded updateMany) so concurrent dispatches don't
+// double-advance.
+//
+// Best-effort: any error here (DB blip, race, etc.) is logged + swallowed
+// so a bug in step tracking can never break the underlying tool result.
+async function tryAdvancePlanStep(opts: {
+  storeId: string;
+  conversationId: string | undefined;
+  toolDepartmentId: string | null;
+  result: ToolResult;
+}): Promise<void> {
+  if (!opts.conversationId) return;
+  if (!opts.toolDepartmentId) return;
+  try {
+    const plan = await findActivePlan(opts.storeId, opts.conversationId);
+    if (!plan) return;
+    const idx = plan.currentStepIndex;
+    if (idx >= plan.steps.length) return;
+    const step = plan.steps[idx];
+    if (step.departmentId !== opts.toolDepartmentId) return;
+    if (opts.result.ok) {
+      await markStepCompleted({
+        planId: plan.id,
+        storeId: opts.storeId,
+        expectedIndex: idx,
+      });
+    } else {
+      await markStepFailed({
+        planId: plan.id,
+        storeId: opts.storeId,
+        expectedIndex: idx,
+        failureCode: opts.result.code,
+      });
+    }
+  } catch {
+    // Step tracking is observational; never break the underlying tool.
+  }
 }
 
 // Phase Re Round Re-B — auto-retry harness. Wraps a tool-execution thunk
@@ -555,13 +607,35 @@ export async function executeTool(
         // Convert SubAgentResult into a tool_result the CEO can read.
         // Different result kinds get different shapes; the CEO's prompt
         // explains how to interpret them.
-        return {
+        const toolResult: ToolResult = {
           ok: true,
           data: {
             department: parsed.data.department,
             result,
           },
         };
+        // Phase Re Round Re-C1 — advance the active plan's step pointer
+        // when this delegation matches the current step's department.
+        // Sub-agent kind:"error" is treated as failure for step purposes.
+        const subAgentSucceeded =
+          result.kind === "completed" ||
+          result.kind === "proposed_writes" ||
+          result.kind === "needs_clarification";
+        const stepResult: ToolResult = subAgentSucceeded
+          ? toolResult
+          : fail(result.kind === "error" ? result.reason : "sub-agent failed", {
+              code: (result.kind === "error" && result.code
+                ? result.code
+                : "UNKNOWN") as ErrorCode,
+              retryable: false,
+            });
+        await tryAdvancePlanStep({
+          storeId: ctx.storeId,
+          conversationId: ctx.conversationId,
+          toolDepartmentId: parsed.data.department,
+          result: stepResult,
+        });
+        return toolResult;
       }
 
       default:
@@ -829,6 +903,18 @@ export async function executeApprovedWrite(
     // approving the NEW one). Coarse invalidation: drop everything
     // cached for the conversation rather than try to map fields →
     // affected entities.
+    // Phase Re Round Re-C1 — advance the active plan's step pointer
+    // when the dispatched write tool's department matches the current
+    // step's department. Best-effort + tolerant of "no plan in scope"
+    // (most writes happen outside any plan). Done BEFORE cache
+    // invalidation so the step state reflects the in-flight result.
+    await tryAdvancePlanStep({
+      storeId: ctx.storeId,
+      conversationId: ctx.conversationId,
+      toolDepartmentId: ownerDepartmentId,
+      result,
+    });
+
     if (result.ok && ctx.conversationId) {
       readCacheInvalidate(ctx.conversationId, [
         "read_products",
