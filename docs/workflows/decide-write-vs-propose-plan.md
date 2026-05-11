@@ -46,3 +46,18 @@ Tool: `propose_plan` (or any single write)
 - "Rewrite the description, then archive the old SKU, then create a draft for the new model" → `propose_plan` with 3 steps (3 different ops, ordered).
 - "Audit my catalog and lower anything overpriced" → first `delegate_parallel` (Insights + Products) to find candidates; then `propose_plan` if action is warranted.
 - "Set up a Black Friday sale" → `propose_plan` (cross-dept: Pricing creates the discount, Marketing announces, Products may flag stock).
+
+## Decision payload (required before next tool call)
+
+Phase Mn Round Mn-2 — after walking this decision tree, emit your decision as a fenced ```json block in your message text IMMEDIATELY before calling the next tool. Required shape:
+
+```json
+{
+  "workflow": "decide-write-vs-propose-plan",
+  "path": "<single_write | bulk_write | propose_plan | explore_first | ask>",
+  "step_count": <integer — number of steps in the plan, or 1 for a single write, or 0 for explore/ask>,
+  "rationale": "<one short sentence citing the node above that fired>"
+}
+```
+
+If you didn't read this workflow you don't need to emit the payload.

@@ -44,3 +44,19 @@ Tool: `(varies — bulk_update_*, individual update tool, or propose_plan)`
 - "Lower price on the 5 hoodies in the Winter collection" → `bulk_update_prices` (5 IDs ≥ 3 threshold; collection scope helps the resolver).
 - "Archive these two — Cat Food and Dog Food" → 2× individual `update_product_status` calls (count = 2 < 3 threshold; named individually).
 - "Archive my slow movers" → ambiguous. Ask: "Which products count as slow movers — under N units sold over the last 30 days, or specific ones you'll name?"
+
+## Decision payload (required before next tool call)
+
+Phase Mn Round Mn-2 — after walking this decision tree, emit your decision as a fenced ```json block in your message text IMMEDIATELY before calling the next tool. Required shape:
+
+```json
+{
+  "workflow": "decide-bulk-vs-individual",
+  "approach": "<bulk | individual | ask-merchant | plan>",
+  "item_count": <integer — count of items in scope, or 0 if asking>,
+  "rationale": "<one short sentence citing the node above that fired>",
+  "next_tool": "<bulk_update_titles | bulk_update_tags | bulk_update_status | bulk_update_prices | update_product_title | update_product_status | ... | ask_clarifying_question | propose_plan>"
+}
+```
+
+If you didn't read this workflow you don't need to emit the payload.

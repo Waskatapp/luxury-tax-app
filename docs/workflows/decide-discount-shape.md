@@ -48,3 +48,19 @@ Walk the questions in order. The first **yes** wins; stop and route.
 - "20% off snowboards + boots when bought together" → `create_bundle_discount` (find both via Products first)
 - "Site-wide 15% sale for Black Friday" → `create_discount` (automatic storefront; targets all collections)
 - "Create a discount" (no qualifier) → ask one clarifying question: "Storefront sale, or a code customers enter?"
+
+## Decision payload (required before next tool call)
+
+Phase Mn Round Mn-2 — after walking this decision tree, emit your decision as a fenced ```json block in your message text IMMEDIATELY before calling the next tool. Operators read these payloads in the audit trail to audit your reasoning quality without parsing prose. Required shape:
+
+```json
+{
+  "workflow": "decide-discount-shape",
+  "shape": "<bundle | per_product | code_based | storefront_automatic>",
+  "scope_count": <integer — number of products affected, 0 if storefront-wide>,
+  "rationale": "<one short sentence citing the node above that fired (e.g. 'merchant said \"code\" so node 1 won')>",
+  "next_tool": "<create_discount | create_discount_code | create_bundle_discount>"
+}
+```
+
+If you didn't read this workflow you don't need to emit the payload. If you DID read it, skipping the payload is a constitutional violation — the operator can't audit the routing decision.
