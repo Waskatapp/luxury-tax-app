@@ -668,20 +668,37 @@ model ConversationObservation {
 // merged into loadWorkflowIndex(storeId) for THAT store only — DB-only
 // storage; no autonomous git changes. fingerprint dedupes against the
 // cluster centroid; rejected fingerprints are permanently blocked.
+// Phase Ab Round Ab-C-prime — workflow proposal verification loop. After
+// an operator approves, the next nightly run snapshots the cluster's
+// baseline size; 7 days later, the verify pass compares current cluster
+// size against baseline. ≥50% shrink → VERIFIED_FIXED; otherwise →
+// FIX_DIDNT_HELP and Wf-E auto-re-authors with the prior failed body as
+// context. Hard cap of 3 attempts before FIX_DIDNT_HELP_GIVING_UP locks.
 model WorkflowProposal {
-  id          String   @id @default(cuid())
-  storeId     String
-  name        String   // kebab-case workflow name
-  summary     String
-  body        String   // Markdown following _FORMAT.md
-  triggers    String[] // matches WorkflowIndexEntry.triggers shape
-  evidence    Json     // { clusterIds[], sampleTurnIds[], commonTools[], commonRouterReason }
-  status      String   @default("PENDING") // PENDING | ACCEPTED | REJECTED | REVISED
-  fingerprint String   // cluster centroid fingerprint for dedupe
-  reviewedBy  String?
-  reviewedAt  DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                   String   @id @default(cuid())
+  storeId              String
+  name                 String   // kebab-case workflow name
+  summary              String
+  body                 String   // Markdown following _FORMAT.md
+  triggers             String[] // matches WorkflowIndexEntry.triggers shape
+  evidence             Json     // { clusterIds[], sampleTurnIds[], commonTools[], commonRouterReason }
+  // status values (string set, not Prisma enum so we add states without
+  // a destructive migration):
+  //   PENDING | ACCEPTED (legacy) | REJECTED | REVISED |
+  //   FIX_SHIPPED | VERIFIED_FIXED | FIX_DIDNT_HELP | FIX_DIDNT_HELP_GIVING_UP
+  status               String   @default("PENDING")
+  fingerprint          String   // cluster centroid fingerprint for dedupe
+  reviewedBy           String?
+  reviewedAt           DateTime?
+  // Ab-C-prime — verification loop columns. Nullable so legacy rows
+  // (pre-Ab-C-prime ACCEPTED) keep working.
+  shippedAt            DateTime?
+  baselineClusterSize  Int?
+  verifiedAt           DateTime?
+  verificationAttempts Int      @default(0)
+  lastVerifyError      String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
 

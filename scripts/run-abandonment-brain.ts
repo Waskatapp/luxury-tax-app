@@ -4,6 +4,7 @@ import {
   gcOldClusterRuns,
   runAbandonmentBrainForStore,
 } from "../app/lib/agent/abandonment/cluster.server";
+import { verifyWorkflowProposalFixes } from "../app/lib/agent/abandonment/verify.server";
 import { runWorkflowProposalPass } from "../app/lib/agent/workflows/propose.server";
 
 // Phase Ab Round Ab-A — Abandonment Brain cron entrypoint.
@@ -69,6 +70,12 @@ async function main(): Promise<void> {
     proposalsCreated: 0,
     proposalsSkipped: 0,
     proposalsErrored: 0,
+    // Phase Ab Round Ab-C-prime — verification loop counters.
+    verificationsScanned: 0,
+    verificationsVerified: 0,
+    verificationsDidntHelp: 0,
+    verificationsGivingUp: 0,
+    verificationsErrored: 0,
   };
 
   for (const s of stores) {
@@ -86,6 +93,33 @@ async function main(): Promise<void> {
       console.log(
         `[ab-brain] ${s.shopDomain}: ${result.clusters.length} cluster(s) from ${turnsScanned} turns (${result.durationMs}ms)`,
       );
+
+      // Phase Ab Round Ab-C-prime — verification pass. Checks
+      // FIX_SHIPPED proposals whose shippedAt + 7d ≤ now and compares
+      // the cluster's current size to the baseline snapshot. Runs
+      // BEFORE Wf-E so the spam guard sees the latest status flips
+      // (FIX_DIDNT_HELP unlocks the fingerprint for re-author).
+      try {
+        const verifications = await verifyWorkflowProposalFixes({
+          storeId: s.id,
+          now,
+        });
+        counts.verificationsScanned += verifications.scanned;
+        counts.verificationsVerified += verifications.verified;
+        counts.verificationsDidntHelp += verifications.didntHelp;
+        counts.verificationsGivingUp += verifications.givingUp;
+        counts.verificationsErrored += verifications.errored;
+        if (verifications.scanned > 0) {
+          console.log(
+            `[ab-brain] ${s.shopDomain}: verifications — scanned:${verifications.scanned} verified:${verifications.verified} didntHelp:${verifications.didntHelp} givingUp:${verifications.givingUp} errored:${verifications.errored}`,
+          );
+        }
+      } catch (err) {
+        // Defensive — verifyWorkflowProposalFixes already swallows
+        // per-proposal errors, but a bug could escape.
+        console.error(`[ab-brain] verify pass non-fatal for ${s.id}`, err);
+        counts.verificationsErrored += 1;
+      }
 
       // Phase Wf Round Wf-E — Skill Creator pass. Authors workflow
       // proposals from the largest abandonment clusters. Cost-bounded
@@ -121,7 +155,7 @@ async function main(): Promise<void> {
   clearTimeout(deadline);
   const totalDurationMs = Date.now() - startedAt;
   console.log(
-    `[ab-brain] done — processed:${counts.processed} errored:${counts.errored} turnsScanned:${counts.totalTurnsScanned} totalClusters:${counts.totalClusters} proposals(scanned:${counts.proposalsScanned} created:${counts.proposalsCreated} skipped:${counts.proposalsSkipped} errored:${counts.proposalsErrored}) | total:${totalDurationMs}ms`,
+    `[ab-brain] done — processed:${counts.processed} errored:${counts.errored} turnsScanned:${counts.totalTurnsScanned} totalClusters:${counts.totalClusters} proposals(scanned:${counts.proposalsScanned} created:${counts.proposalsCreated} skipped:${counts.proposalsSkipped} errored:${counts.proposalsErrored}) verifications(scanned:${counts.verificationsScanned} verified:${counts.verificationsVerified} didntHelp:${counts.verificationsDidntHelp} givingUp:${counts.verificationsGivingUp} errored:${counts.verificationsErrored}) | total:${totalDurationMs}ms`,
   );
 }
 

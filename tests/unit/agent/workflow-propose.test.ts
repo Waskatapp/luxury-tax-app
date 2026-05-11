@@ -263,6 +263,113 @@ describe("containsUnsafeContent — Mn-1 prompt-injection guard", () => {
   });
 });
 
+describe("buildProposalPrompt — Ab-C-prime priorFailedAttempts", () => {
+  it("includes the prior-failed-attempts section when one is provided", () => {
+    const prompt = buildProposalPrompt({
+      cluster: {
+        id: "c1",
+        storeId: "s1",
+        size: 8,
+        sampleTurnIds: ["t1"],
+        commonTools: ["update_product_status"],
+        commonRouterReason: "stale-bulk-archive",
+        dominantOutcome: "abandoned",
+        fingerprint: "fp1",
+      },
+      sampleTurns: [
+        {
+          userMessage: "archive these 15 products",
+          assistantSummary: "I'll need IDs",
+          outcome: "abandoned",
+        },
+      ],
+      priorFailedAttempts: [
+        {
+          name: "handle-bulk-archive-v1",
+          summary: "Surface missing IDs and ask",
+          body: "# Workflow: Handle bulk archive\n\n…body content…",
+          verificationAttempt: 1,
+        },
+      ],
+    });
+    expect(prompt).toContain("PRIOR FAILED ATTEMPTS");
+    expect(prompt).toContain("handle-bulk-archive-v1");
+    expect(prompt).toContain("Surface missing IDs and ask");
+    expect(prompt).toContain("Don't repeat their approach");
+    expect(prompt).toContain("attempt #1");
+  });
+
+  it("includes multiple prior attempts in order", () => {
+    const prompt = buildProposalPrompt({
+      cluster: {
+        id: "c1",
+        storeId: "s1",
+        size: 8,
+        sampleTurnIds: [],
+        commonTools: [],
+        commonRouterReason: null,
+        dominantOutcome: "abandoned",
+        fingerprint: "fp1",
+      },
+      sampleTurns: [],
+      priorFailedAttempts: [
+        {
+          name: "attempt-one",
+          summary: "first try",
+          body: "body-one",
+          verificationAttempt: 1,
+        },
+        {
+          name: "attempt-two",
+          summary: "second try",
+          body: "body-two",
+          verificationAttempt: 2,
+        },
+      ],
+    });
+    const idxOne = prompt.indexOf("attempt-one");
+    const idxTwo = prompt.indexOf("attempt-two");
+    expect(idxOne).toBeGreaterThan(0);
+    expect(idxTwo).toBeGreaterThan(idxOne);
+  });
+
+  it("omits the prior-attempts section entirely when none are provided (backward compatible)", () => {
+    const prompt = buildProposalPrompt({
+      cluster: {
+        id: "c1",
+        storeId: "s1",
+        size: 8,
+        sampleTurnIds: [],
+        commonTools: [],
+        commonRouterReason: null,
+        dominantOutcome: "abandoned",
+        fingerprint: "fp1",
+      },
+      sampleTurns: [],
+    });
+    expect(prompt).not.toContain("PRIOR FAILED ATTEMPTS");
+    expect(prompt).not.toContain("Don't repeat their approach");
+  });
+
+  it("backward compat — same shape when priorFailedAttempts is empty array", () => {
+    const prompt = buildProposalPrompt({
+      cluster: {
+        id: "c1",
+        storeId: "s1",
+        size: 8,
+        sampleTurnIds: [],
+        commonTools: [],
+        commonRouterReason: null,
+        dominantOutcome: "abandoned",
+        fingerprint: "fp1",
+      },
+      sampleTurns: [],
+      priorFailedAttempts: [],
+    });
+    expect(prompt).not.toContain("PRIOR FAILED ATTEMPTS");
+  });
+});
+
 describe("Wf-E constants", () => {
   it("exposes a hard-coded cost cap (no env var)", () => {
     expect(MAX_PROPOSALS_PER_STORE_PER_RUN).toBe(5);

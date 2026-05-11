@@ -66,33 +66,57 @@ export type ProposalDraft = {
   body: string;
 };
 
+// Phase Ab Round Ab-C-prime — statuses that permanently block re-proposal
+// for a fingerprint. REJECTED = operator said no; FIX_DIDNT_HELP_GIVING_UP
+// = 3 attempts failed verification; FIX_SHIPPED + VERIFIED_FIXED = the
+// fix is working or awaiting verification, don't pile on duplicates.
+const FINGERPRINT_PERMANENT_BLOCK_STATUSES = [
+  "REJECTED",
+  "FIX_SHIPPED",
+  "VERIFIED_FIXED",
+  "FIX_DIDNT_HELP_GIVING_UP",
+] as const;
+
 // Decide whether to skip a cluster on spam-guard / fingerprint-block grounds.
 // Pure-ish (single DB query); separated for unit-testable boundaries.
+//
+// Ab-C-prime — extended block matrix:
+//   REJECTED                        → permanent block (operator rejected)
+//   FIX_SHIPPED                     → permanent block (waiting on verify)
+//   VERIFIED_FIXED                  → permanent block (workflow is working)
+//   FIX_DIDNT_HELP_GIVING_UP        → permanent block (3 attempts failed)
+//   FIX_DIDNT_HELP (any age)        → NOT a block (re-author is the point)
+//   PENDING / ACCEPTED / REVISED within 7d → block (don't pile on)
+//   PENDING / ACCEPTED / REVISED older than 7d → not blocked
 export async function shouldSkipFingerprint(opts: {
   storeId: string;
   fingerprint: string;
   now: Date;
 }): Promise<{ skip: true; reason: string } | { skip: false }> {
-  // REJECTED fingerprints permanently block (no time window).
-  const rejected = await prisma.workflowProposal.findFirst({
+  // Permanently-blocked statuses (operator decision OR exhausted retries).
+  const permanent = await prisma.workflowProposal.findFirst({
     where: {
       storeId: opts.storeId,
       fingerprint: opts.fingerprint,
-      status: "REJECTED",
+      status: { in: [...FINGERPRINT_PERMANENT_BLOCK_STATUSES] },
     },
-    select: { id: true },
+    select: { id: true, status: true },
   });
-  if (rejected) {
-    return { skip: true, reason: "fingerprint permanently blocked (REJECTED)" };
+  if (permanent) {
+    return {
+      skip: true,
+      reason: `fingerprint permanently blocked (status=${permanent.status})`,
+    };
   }
-  // PENDING / ACCEPTED / REVISED within dedupe window blocks.
+  // FIX_DIDNT_HELP at any age → eligible for re-author; don't block here.
+  // PENDING / ACCEPTED / REVISED within 7d → block.
   const cutoff = new Date(opts.now.getTime() - PROPOSAL_DEDUPE_WINDOW_MS);
   const recent = await prisma.workflowProposal.findFirst({
     where: {
       storeId: opts.storeId,
       fingerprint: opts.fingerprint,
       createdAt: { gt: cutoff },
-      status: { not: "REJECTED" },
+      status: { in: ["PENDING", "ACCEPTED", "REVISED"] },
     },
     select: { id: true },
   });
@@ -102,10 +126,58 @@ export async function shouldSkipFingerprint(opts: {
   return { skip: false };
 }
 
+// Phase Ab Round Ab-C-prime — prior attempts that didn't verify.
+// runWorkflowProposalPass loads these for a fingerprint that has a
+// FIX_DIDNT_HELP row and threads them into buildProposalPrompt so the
+// model authors a DIFFERENT shape, not the same one again.
+export type PriorFailedAttempt = {
+  name: string;
+  summary: string;
+  body: string;
+  verificationAttempt: number; // 1, 2, ...
+};
+
+// Load prior FIX_DIDNT_HELP proposals for a fingerprint so the next
+// re-author run sees them. Ordered by verificationAttempts ascending so
+// the prompt shows attempt #1, #2, ... in chronological order. Returns
+// [] when there are no prior failed attempts (the common case — most
+// proposals never enter the re-author loop).
+export async function loadPriorFailedAttempts(opts: {
+  storeId: string;
+  fingerprint: string;
+}): Promise<PriorFailedAttempt[]> {
+  const rows = await prisma.workflowProposal.findMany({
+    where: {
+      storeId: opts.storeId,
+      fingerprint: opts.fingerprint,
+      status: "FIX_DIDNT_HELP",
+    },
+    orderBy: { verificationAttempts: "asc" },
+    select: {
+      name: true,
+      summary: true,
+      body: true,
+      verificationAttempts: true,
+    },
+  });
+  return rows.map((r) => ({
+    name: r.name,
+    summary: r.summary,
+    body: r.body,
+    verificationAttempt: r.verificationAttempts,
+  }));
+}
+
 // Build the prompt for one cluster. Pure — testable without LLM.
+// Phase Ab Round Ab-C-prime — when priorFailedAttempts is non-empty,
+// inject a section instructing the model to differ from those approaches.
+// This is the ADAPT signal: the prior workflow shipped, didn't move the
+// cluster size enough in 7 days; the next attempt has to try something
+// substantively different.
 export function buildProposalPrompt(opts: {
   cluster: ProposalSeedCluster;
   sampleTurns: ProposalSampleTurn[];
+  priorFailedAttempts?: PriorFailedAttempt[];
 }): string {
   const samples = opts.sampleTurns
     .slice(0, 5)
@@ -118,6 +190,22 @@ export function buildProposalPrompt(opts: {
     ? opts.cluster.commonTools.join(", ")
     : "(none)";
   const routerReason = opts.cluster.commonRouterReason ?? "(unknown)";
+
+  const priorAttempts = opts.priorFailedAttempts ?? [];
+  const priorSection = priorAttempts.length > 0
+    ? [
+        "",
+        "PRIOR FAILED ATTEMPTS for THIS exact failure pattern (same fingerprint).",
+        `${priorAttempts.length} previous workflow(s) shipped for this cluster but did NOT reduce its size by ≥50% over 7 days of post-ship traffic. Don't repeat their approach — try a substantively different angle (a different decision tree, a different tool order, a different clarifying question, or a different anti-pattern focus). Use the prior bodies to see what's been tried; pick a different lever.`,
+        "",
+        ...priorAttempts.map(
+          (a) =>
+            `--- Prior attempt #${a.verificationAttempt} (name: ${a.name}) ---\nSummary: ${a.summary}\nBody:\n${a.body}\n--- end attempt #${a.verificationAttempt} ---`,
+        ),
+        "",
+      ].join("\n")
+    : "";
+
   return [
     "You are a workflow author for a Shopify Merchant Copilot. Your job is to look at a cluster of merchant chat turns where the agent failed (the merchant abandoned, or the agent errored unrecoverably) and write a NEW workflow SOP that would have PREVENTED or SHORT-CIRCUITED the failure.",
     "",
@@ -130,7 +218,7 @@ export function buildProposalPrompt(opts: {
     "Sample turns from the cluster:",
     "",
     samples,
-    "",
+    priorSection,
     "Author a workflow following these constraints:",
     "- Output ONLY a JSON object. No markdown wrapping, no prose. The shape:",
     `  { "name": "kebab-case-workflow-name", "summary": "One-line description ≤ 140 chars", "triggers": ["keyword", "multi word phrase"], "body": "Markdown body following the workflow format spec" }`,
@@ -227,9 +315,12 @@ export function parseProposalDraft(raw: string): ProposalDraft | null {
 
 // Run one cluster through the LLM. Returns the parsed draft or null
 // (failure soft, logged). Uses Flash-Lite per the cost cap rationale.
+// Ab-C-prime — priorFailedAttempts threads through to the prompt so
+// re-author calls see what's been tried before.
 export async function generateProposalDraft(opts: {
   cluster: ProposalSeedCluster;
   sampleTurns: ProposalSampleTurn[];
+  priorFailedAttempts?: PriorFailedAttempt[];
 }): Promise<ProposalDraft | null> {
   let ai: GoogleGenAI;
   try {
@@ -362,6 +453,13 @@ export async function runWorkflowProposalPass(opts: {
         counters.skipped += 1;
         continue;
       }
+      // Phase Ab Round Ab-C-prime — if this fingerprint has prior
+      // FIX_DIDNT_HELP attempts, load them so the model authors a
+      // different shape instead of repeating the failed pattern.
+      const priorFailedAttempts = await loadPriorFailedAttempts({
+        storeId: opts.storeId,
+        fingerprint: c.fingerprint,
+      });
       const draft = await generateProposalDraft({
         cluster: {
           id: c.id,
@@ -374,6 +472,7 @@ export async function runWorkflowProposalPass(opts: {
           fingerprint: c.fingerprint,
         },
         sampleTurns,
+        priorFailedAttempts,
       });
       if (!draft) {
         counters.errored += 1;

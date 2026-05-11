@@ -314,6 +314,19 @@ export function loadWorkflowIndex(): WorkflowIndexEntry[] {
 //
 // Best-effort: a DB error logs + falls back to filesystem-only so a
 // hiccup never blocks the agent loop.
+// Phase Ab Round Ab-C-prime — statuses that count as "live workflow"
+// for the CEO's playbook. ACCEPTED is legacy (pre-Ab-C-prime); FIX_SHIPPED
+// + VERIFIED_FIXED + FIX_DIDNT_HELP + FIX_DIDNT_HELP_GIVING_UP are all
+// approved-but-now-in-the-verification-lifecycle. Rejected proposals are
+// never live; PENDING ones haven't been approved yet.
+const LIVE_WORKFLOW_STATUSES = [
+  "ACCEPTED",
+  "FIX_SHIPPED",
+  "VERIFIED_FIXED",
+  "FIX_DIDNT_HELP",
+  "FIX_DIDNT_HELP_GIVING_UP",
+] as const;
+
 export async function loadWorkflowIndexForStore(
   storeId: string,
 ): Promise<WorkflowIndexEntry[]> {
@@ -322,7 +335,7 @@ export async function loadWorkflowIndexForStore(
   try {
     const { default: prisma } = await import("../../db.server");
     const proposals = await prisma.workflowProposal.findMany({
-      where: { storeId, status: "ACCEPTED" },
+      where: { storeId, status: { in: [...LIVE_WORKFLOW_STATUSES] } },
       select: {
         name: true,
         summary: true,
@@ -378,7 +391,7 @@ export async function loadWorkflowBodyByNameForStore(
   try {
     const { default: prisma } = await import("../../db.server");
     const row = await prisma.workflowProposal.findFirst({
-      where: { storeId, name, status: "ACCEPTED" },
+      where: { storeId, name, status: { in: [...LIVE_WORKFLOW_STATUSES] } },
       select: { body: true },
     });
     if (row?.body) return row.body;

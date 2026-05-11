@@ -47,6 +47,13 @@ type ProposalRow = {
   reviewedBy: string | null;
   reviewedAt: string | null;
   createdAt: string;
+  // Phase Ab Round Ab-C-prime — verification loop fields.
+  shippedAt: string | null;
+  baselineClusterSize: number | null;
+  verifiedAt: string | null;
+  verificationAttempts: number;
+  lastVerifyError: string | null;
+  currentClusterSize: number | null; // computed at loader time
   evidence: {
     clusterIds: string[];
     sampleTurnIds: string[];
@@ -62,6 +69,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
     take: PAGE_SIZE,
   });
+
+  // Phase Ab Round Ab-C-prime — fetch current cluster size per fingerprint
+  // so the verification math can render in the UI. One query, grouped by
+  // fingerprint; we pick the most-recent cluster row per fingerprint.
+  const fingerprints = Array.from(new Set(rows.map((r) => r.fingerprint)));
+  const currentClusters =
+    fingerprints.length > 0
+      ? await prisma.abandonmentCluster.findMany({
+          where: { storeId: store.id, fingerprint: { in: fingerprints } },
+          orderBy: { createdAt: "desc" },
+          select: { fingerprint: true, size: true, createdAt: true },
+        })
+      : [];
+  const currentSizeByFingerprint = new Map<string, number>();
+  for (const c of currentClusters) {
+    if (!currentSizeByFingerprint.has(c.fingerprint)) {
+      currentSizeByFingerprint.set(c.fingerprint, c.size);
+    }
+  }
+
   const proposals: ProposalRow[] = rows.map((r) => ({
     id: r.id,
     name: r.name,
@@ -73,6 +100,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     reviewedBy: r.reviewedBy,
     reviewedAt: r.reviewedAt ? r.reviewedAt.toISOString() : null,
     createdAt: r.createdAt.toISOString(),
+    shippedAt: r.shippedAt ? r.shippedAt.toISOString() : null,
+    baselineClusterSize: r.baselineClusterSize,
+    verifiedAt: r.verifiedAt ? r.verifiedAt.toISOString() : null,
+    verificationAttempts: r.verificationAttempts,
+    lastVerifyError: r.lastVerifyError,
+    currentClusterSize: currentSizeByFingerprint.get(r.fingerprint) ?? null,
     evidence: r.evidence as ProposalRow["evidence"],
   }));
   return { proposals };
@@ -99,35 +132,65 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // Verify the proposal belongs to this store before flipping.
   const existing = await prisma.workflowProposal.findFirst({
     where: { id: parsed.data.id, storeId: store.id },
-    select: { id: true, status: true },
+    select: { id: true, status: true, fingerprint: true },
   });
   if (!existing) {
     return { ok: false, error: "not found" };
   }
-  const newStatus =
-    parsed.data.intent === "approve" ? "ACCEPTED" : "REJECTED";
+  const now = new Date();
   const userEmail =
     session.onlineAccessInfo?.associated_user?.email ?? store.ownerEmail ?? null;
+
+  if (parsed.data.intent === "reject") {
+    await prisma.workflowProposal.update({
+      where: { id: existing.id },
+      data: {
+        status: "REJECTED",
+        reviewedBy: userEmail,
+        reviewedAt: now,
+      },
+    });
+    return { ok: true, intent: "reject" };
+  }
+
+  // Phase Ab Round Ab-C-prime — Approve. Snapshot the baseline cluster
+  // size so 7d later the verify pass has something to compare against.
+  // Look up the most-recent AbandonmentCluster matching the proposal's
+  // fingerprint. May return null if the cluster was GC'd between
+  // proposal creation and approval (14-day TTL on ClusterRun) — in that
+  // case we ship with baselineClusterSize=null and the verify pass will
+  // flag it as `no_baseline` to the operator.
+  const baseline = await prisma.abandonmentCluster.findFirst({
+    where: { storeId: store.id, fingerprint: existing.fingerprint },
+    orderBy: { createdAt: "desc" },
+    select: { size: true },
+  });
   await prisma.workflowProposal.update({
     where: { id: existing.id },
     data: {
-      status: newStatus,
+      status: "FIX_SHIPPED",
       reviewedBy: userEmail,
-      reviewedAt: new Date(),
+      reviewedAt: now,
+      shippedAt: now,
+      baselineClusterSize: baseline?.size ?? null,
     },
   });
-  return { ok: true, intent: parsed.data.intent };
+  return { ok: true, intent: "approve" };
 };
 
 export const headers: HeadersFunction = (args) => boundary.headers(args);
 
 function statusTone(
   status: string,
-): "warning" | "success" | "critical" | "info" | undefined {
+): "warning" | "success" | "critical" | "info" | "attention" | undefined {
   if (status === "PENDING") return "warning";
-  if (status === "ACCEPTED") return "success";
+  if (status === "ACCEPTED") return "success"; // legacy
   if (status === "REJECTED") return "critical";
   if (status === "REVISED") return "info";
+  if (status === "FIX_SHIPPED") return "warning";
+  if (status === "VERIFIED_FIXED") return "success";
+  if (status === "FIX_DIDNT_HELP") return "attention";
+  if (status === "FIX_DIDNT_HELP_GIVING_UP") return "critical";
   return undefined;
 }
 
@@ -135,12 +198,53 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleString();
 }
 
+// Phase Ab Round Ab-C-prime — compute verification math for display.
+// Returns null when the data isn't there yet (still pending, or no
+// baseline captured at ship time).
+function verificationSummary(p: ProposalRow): string | null {
+  if (p.baselineClusterSize === null) {
+    if (
+      p.status === "FIX_SHIPPED" ||
+      p.status === "VERIFIED_FIXED" ||
+      p.status === "FIX_DIDNT_HELP" ||
+      p.status === "FIX_DIDNT_HELP_GIVING_UP"
+    ) {
+      return "no baseline captured at ship time";
+    }
+    return null;
+  }
+  const current = p.currentClusterSize ?? 0;
+  const baseline = p.baselineClusterSize;
+  if (baseline <= 0) return null;
+  const pct = Math.round((1 - current / baseline) * 100);
+  return `${baseline} → ${current} (${pct >= 0 ? `${pct}% reduction` : `${-pct}% increase`})`;
+}
+
+// Days remaining until verification fires (negative = overdue, which
+// should only show transiently between when shippedAt+7d hits and when
+// the cron sweeps).
+function daysUntilVerify(shippedAt: string): number {
+  const elapsed = Date.now() - new Date(shippedAt).getTime();
+  const remainingMs = 7 * 24 * 60 * 60 * 1000 - elapsed;
+  return Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
+}
+
 export default function WorkflowProposalsPage() {
   const { proposals } = useLoaderData<typeof loader>();
   const fetcher = useFetcher();
 
+  // Phase Ab Round Ab-C-prime — group by lifecycle stage.
   const pending = proposals.filter((p) => p.status === "PENDING");
-  const reviewed = proposals.filter((p) => p.status !== "PENDING");
+  const shipped = proposals.filter((p) => p.status === "FIX_SHIPPED");
+  const verified = proposals.filter((p) => p.status === "VERIFIED_FIXED");
+  const didntHelp = proposals.filter((p) => p.status === "FIX_DIDNT_HELP");
+  const givingUp = proposals.filter(
+    (p) => p.status === "FIX_DIDNT_HELP_GIVING_UP",
+  );
+  const rejected = proposals.filter((p) => p.status === "REJECTED");
+  const legacyAccepted = proposals.filter(
+    (p) => p.status === "ACCEPTED" || p.status === "REVISED",
+  );
 
   return (
     <Page title="Workflow proposals">
@@ -149,22 +253,25 @@ export default function WorkflowProposalsPage() {
           <Box padding="400">
             <BlockStack gap="200">
               <Text variant="headingMd" as="h2">
-                Phase Wf Round Wf-E — Skill Creator
+                Phase Wf Round Wf-E — Skill Creator + Ab-C-prime verification
               </Text>
               <Text as="p" variant="bodySm" tone="subdued">
                 Operator-only. The nightly Abandonment Brain pass authors
                 workflow SOPs from recurring failure clusters (size ≥ 5).
-                Approving merges a proposal into THIS store's playbook —
-                the CEO sees the new workflow on the next conversation
-                via <code>read_workflow</code>. Rejecting permanently
-                blocks the cluster fingerprint from re-proposing.
+                Approving merges a proposal into THIS store's playbook
+                AND snapshots the cluster's baseline size. 7 days later,
+                the verify pass compares the cluster's current size to
+                the baseline — ≥50% shrink → <strong>verified working</strong>;
+                less than that → <strong>didn't help</strong> and Wf-E
+                re-authors a different shape (up to 3 attempts).
+                Rejecting permanently blocks the cluster fingerprint.
                 Cost-bounded: 5 LLM calls per store per nightly run.
               </Text>
             </BlockStack>
           </Box>
         </Card>
 
-        {pending.length === 0 && reviewed.length === 0 && (
+        {proposals.length === 0 && (
           <Card>
             <EmptyState heading="No proposals yet" image="">
               <p>
@@ -210,14 +317,89 @@ export default function WorkflowProposalsPage() {
           </Card>
         )}
 
-        {reviewed.length > 0 && (
+        {shipped.length > 0 && (
           <Card>
             <Box padding="400">
               <BlockStack gap="300">
                 <Text variant="headingSm" as="h3">
-                  Reviewed ({reviewed.length})
+                  Shipped — awaiting verification ({shipped.length})
                 </Text>
-                {reviewed.map((p) => (
+                {shipped.map((p) => (
+                  <ProposalRowView key={p.id} proposal={p} readOnly />
+                ))}
+              </BlockStack>
+            </Box>
+          </Card>
+        )}
+
+        {verified.length > 0 && (
+          <Card>
+            <Box padding="400">
+              <BlockStack gap="300">
+                <Text variant="headingSm" as="h3">
+                  Verified working ({verified.length})
+                </Text>
+                {verified.map((p) => (
+                  <ProposalRowView key={p.id} proposal={p} readOnly />
+                ))}
+              </BlockStack>
+            </Box>
+          </Card>
+        )}
+
+        {didntHelp.length > 0 && (
+          <Card>
+            <Box padding="400">
+              <BlockStack gap="300">
+                <Text variant="headingSm" as="h3">
+                  Didn't help — re-author scheduled ({didntHelp.length})
+                </Text>
+                {didntHelp.map((p) => (
+                  <ProposalRowView key={p.id} proposal={p} readOnly />
+                ))}
+              </BlockStack>
+            </Box>
+          </Card>
+        )}
+
+        {givingUp.length > 0 && (
+          <Card>
+            <Box padding="400">
+              <BlockStack gap="300">
+                <Text variant="headingSm" as="h3">
+                  Locked — gave up after 3 attempts ({givingUp.length})
+                </Text>
+                {givingUp.map((p) => (
+                  <ProposalRowView key={p.id} proposal={p} readOnly />
+                ))}
+              </BlockStack>
+            </Box>
+          </Card>
+        )}
+
+        {rejected.length > 0 && (
+          <Card>
+            <Box padding="400">
+              <BlockStack gap="300">
+                <Text variant="headingSm" as="h3">
+                  Rejected ({rejected.length})
+                </Text>
+                {rejected.map((p) => (
+                  <ProposalRowView key={p.id} proposal={p} readOnly />
+                ))}
+              </BlockStack>
+            </Box>
+          </Card>
+        )}
+
+        {legacyAccepted.length > 0 && (
+          <Card>
+            <Box padding="400">
+              <BlockStack gap="300">
+                <Text variant="headingSm" as="h3">
+                  Legacy accepted (pre-Ab-C-prime, no verification math) ({legacyAccepted.length})
+                </Text>
+                {legacyAccepted.map((p) => (
                   <ProposalRowView
                     key={p.id}
                     proposal={p}
@@ -283,6 +465,7 @@ function ProposalRowView({
           {proposal.evidence.commonTools.length > 0 &&
             ` · common tools: ${proposal.evidence.commonTools.join(", ")}`}
         </Text>
+        <VerificationInfo proposal={proposal} />
         <InlineStack gap="200">
           <Button
             onClick={() => setShowBody((v) => !v)}
@@ -337,13 +520,64 @@ function ProposalRowView({
         </Collapsible>
         {proposal.reviewedBy && proposal.reviewedAt && (
           <Text as="p" variant="bodySm" tone="subdued">
-            {proposal.status === "ACCEPTED" ? "Approved" : "Rejected"} by{" "}
+            {proposal.status === "REJECTED" ? "Rejected" : "Approved"} by{" "}
             {proposal.reviewedBy} on {formatDate(proposal.reviewedAt)}
           </Text>
         )}
       </BlockStack>
     </Box>
   );
+}
+
+// Phase Ab Round Ab-C-prime — per-row verification status display.
+// Renders different things per lifecycle state: shipped (countdown),
+// verified (math + verifiedAt), didn't help (math + attempt counter),
+// giving up (math + final attempt count). Returns null for PENDING /
+// REJECTED / legacy ACCEPTED where there's no verification math to show.
+function VerificationInfo({ proposal }: { proposal: ProposalRow }) {
+  const summary = verificationSummary(proposal);
+
+  if (proposal.status === "FIX_SHIPPED" && proposal.shippedAt) {
+    const days = daysUntilVerify(proposal.shippedAt);
+    return (
+      <Text as="p" variant="bodySm" tone="subdued">
+        Shipped {formatDate(proposal.shippedAt)}
+        {summary ? ` · baseline ${proposal.baselineClusterSize ?? "?"}` : ""}
+        {" · "}
+        {days > 0 ? `verifies in ${days} day${days === 1 ? "" : "s"}` : "verification due — runs at next 07:13 UTC cron"}
+        {proposal.lastVerifyError ? ` · error: ${proposal.lastVerifyError}` : ""}
+      </Text>
+    );
+  }
+
+  if (proposal.status === "VERIFIED_FIXED") {
+    return (
+      <Text as="p" variant="bodySm" tone="success">
+        ✓ Verified working — {summary ?? "math unavailable"}
+        {proposal.verifiedAt ? ` · verified ${formatDate(proposal.verifiedAt)}` : ""}
+      </Text>
+    );
+  }
+
+  if (proposal.status === "FIX_DIDNT_HELP") {
+    return (
+      <Text as="p" variant="bodySm" tone="caution">
+        Didn't help — {summary ?? "math unavailable"} · attempt{" "}
+        {proposal.verificationAttempts}/3 — Wf-E will re-author on next nightly run
+      </Text>
+    );
+  }
+
+  if (proposal.status === "FIX_DIDNT_HELP_GIVING_UP") {
+    return (
+      <Text as="p" variant="bodySm" tone="critical">
+        Locked after {proposal.verificationAttempts} failed attempt
+        {proposal.verificationAttempts === 1 ? "" : "s"} — {summary ?? "math unavailable"}
+      </Text>
+    );
+  }
+
+  return null;
 }
 
 export function ErrorBoundary() {
