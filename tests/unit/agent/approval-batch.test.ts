@@ -261,6 +261,7 @@ describe("buildApproveToolResults", () => {
         after: { price: "50" },
         error: null,
         skip: false,
+        brief: null,
       },
     ]);
     expect(blocks).toHaveLength(1);
@@ -295,6 +296,7 @@ describe("buildApproveToolResults", () => {
         after: { key: "brand_voice", value: "casual" },
         error: null,
         skip: false,
+        brief: null,
       },
     ]);
     if (block.type === "tool_result") {
@@ -316,6 +318,7 @@ describe("buildApproveToolResults", () => {
         after: null,
         error: "Price must be > 0",
         skip: false,
+        brief: null,
       },
     ]);
     if (block.type === "tool_result") {
@@ -335,6 +338,7 @@ describe("buildApproveToolResults", () => {
         after: null,
         error: null,
         skip: true,
+        brief: null,
       },
     ]);
     if (block.type === "tool_result") {

@@ -12,6 +12,7 @@ import type {
 } from "./departments/department-spec";
 import type { DepartmentId } from "./departments";
 import { classifyError } from "./error-codes";
+import { injectBriefIntoWriteDeclarations } from "./brief-field.server";
 
 // V-Sub-1 — Phase Sub-Agents dispatcher. Runs a focused Gemini turn for
 // a single department. Loaded only that department's tools — the CEO's
@@ -73,11 +74,19 @@ export async function runSubAgent(
   // Phase Wf Round Wf-D — when invoked under read-only mode, filter the
   // tool declarations to ONLY classification.read entries. Structural
   // guarantee: the model never sees a write tool, so it can't propose one.
-  const effectiveDeclarations = opts.allowOnlyReadOnly
+  const filteredDeclarations = opts.allowOnlyReadOnly
     ? spec.toolDeclarations.filter((d) =>
         spec.classification.read.has(d.name ?? ""),
       )
     : spec.toolDeclarations;
+  // Phase Mn Round Mn-1 — inject optional `brief` into every write tool's
+  // parametersJsonSchema so the manager can emit a one-line intent string
+  // alongside each proposed write. We carry it through ProposedWrite →
+  // PendingAction → AuditLog so operators see WHY a write happened.
+  const effectiveDeclarations = injectBriefIntoWriteDeclarations(
+    filteredDeclarations,
+    spec.classification.write,
+  );
   if (opts.allowOnlyReadOnly && effectiveDeclarations.length === 0) {
     return {
       kind: "error",
@@ -96,6 +105,20 @@ export async function runSubAgent(
     (opts.conversationContext
       ? `${opts.task}\n\n---\nContext from the merchant's main conversation:\n${opts.conversationContext}`
       : opts.task) + readOnlyNote;
+
+  // Phase Mn Round Mn-1 — `brief` field instruction. Every write tool's
+  // FunctionDeclaration now declares an optional `brief` parameter
+  // (injected above). Tell the manager to include it so operators reading
+  // /app/settings/audit see WHY each write happened, not just WHAT.
+  const BRIEF_INSTRUCTION =
+    "\n\n---\nWhen proposing any write (approval-gated) tool call, include " +
+    "a `brief` argument: one short sentence (≤200 chars) explaining WHY " +
+    "this action is being taken. The merchant's operator reads this in " +
+    "the audit log. Examples: \"Merchant requested weekend sale price drop\", " +
+    "\"Cleaning up demo snowboard products before US launch\", \"Bundle " +
+    "discount aligns with the Q2 promo plan\". Skip `brief` only for " +
+    "merchant-obvious trivial calls.";
+  const effectiveSystemPrompt = spec.systemPrompt + BRIEF_INSTRUCTION;
 
   // History accumulates across internal rounds so each call sees the
   // model's prior tool calls + their results.
@@ -127,7 +150,7 @@ export async function runSubAgent(
         model: GEMINI_CHAT_MODEL,
         contents: history,
         config: {
-          systemInstruction: spec.systemPrompt,
+          systemInstruction: effectiveSystemPrompt,
           tools: [{ functionDeclarations: effectiveDeclarations }],
           maxOutputTokens: MAX_OUTPUT_TOKENS,
         },
@@ -150,7 +173,7 @@ export async function runSubAgent(
             model: GEMINI_CHAT_MODEL,
             contents: history,
             config: {
-              systemInstruction: spec.systemPrompt,
+              systemInstruction: effectiveSystemPrompt,
               tools: [{ functionDeclarations: effectiveDeclarations }],
               maxOutputTokens: MAX_OUTPUT_TOKENS,
             },
@@ -295,9 +318,13 @@ export async function runSubAgent(
         seenWriteKeys.add(writeKey);
 
         // Approval-gated write. Collect for return; don't execute.
+        // Mn-1 — `brief` rides INSIDE toolInput end-to-end. agent-loop
+        // hoists it onto PendingAction.brief at create time; handler Zod
+        // schemas silently strip it via default .strip() behavior.
+        const rawArgs = (call.args ?? {}) as Record<string, unknown>;
         proposedWrites.push({
           toolName,
-          toolInput: (call.args ?? {}) as Record<string, unknown>,
+          toolInput: rawArgs,
         });
         // Feed the model a synthetic "queued for merchant approval"
         // result so it can finalize its rationale on the next round

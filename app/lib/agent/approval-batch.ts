@@ -12,6 +12,9 @@ export type PendingRow = {
   toolName: string;
   toolInput: Record<string, unknown> | null;
   status: "PENDING" | "APPROVED" | "REJECTED" | "EXECUTED" | "FAILED";
+  // Phase Mn Round Mn-1 — operator-facing intent string, threaded through
+  // from PendingAction to AuditLog so /app/settings/audit answers WHY.
+  brief?: string | null;
 };
 
 export type RowResult = {
@@ -29,6 +32,9 @@ export type ProcessedApproveRow = {
   after: unknown;
   error: string | null;
   skip: boolean;
+  // Mn-1 — inherited from the originating PendingAction; persisted on
+  // the AuditLog row written downstream in api.tool-approve.tsx.
+  brief: string | null;
 };
 
 export type ProcessedRejectRow = {
@@ -176,6 +182,7 @@ export async function processApproveBatch(params: {
         after: null,
         error: null,
         skip: true,
+        brief: existing.brief ?? null,
       });
       continue;
     }
@@ -197,6 +204,7 @@ export async function processApproveBatch(params: {
       after,
       error,
       skip: false,
+      brief: existing.brief ?? null,
     });
     responseResults.push({
       toolCallId: id,

@@ -150,6 +150,38 @@ export function buildProposalPrompt(opts: {
   ].join("\n");
 }
 
+// Phase Mn Round Mn-1 — content-safety scan. Wf-E persists proposals
+// from an autonomous LLM pass; the body becomes part of the next CEO's
+// system prompt once an operator approves. A body containing
+// `[SYSTEM]` sentinels, prompt-injection role markers, or raw HTML
+// like `<script>` could poison the prompt or render unsafely in the
+// operator UI. Reject at parse-time so unsafe bodies never persist.
+//
+// Scan looks for:
+//   - HTML tags that execute or embed: <script>, <iframe>, <style>,
+//     <object>, <embed>, <svg> (case-insensitive, opening-tag only)
+//   - Prompt-injection sentinels: [SYSTEM] / [ASSISTANT] / [USER] in
+//     square brackets, Gemini-style <|im_start|>, <|im_end|>,
+//     <|endoftext|>
+//   - Role-marker lines (start-of-line, lowercase): "system:" /
+//     "assistant:" / "user:" — common LLM-prompt-format injection
+//
+// Markdown code fences and prose containing "system" as a word stay
+// safe — we match anchored patterns, not substrings.
+const UNSAFE_HTML_TAG_RE =
+  /<\s*(?:script|iframe|style|object|embed|svg)\b/i;
+const PROMPT_INJECTION_SENTINEL_RE =
+  /\[(?:SYSTEM|ASSISTANT|USER)\]|<\|(?:im_start|im_end|endoftext)\|>/i;
+const ROLE_MARKER_LINE_RE = /^\s*(?:system|assistant|user)\s*:/im;
+
+export function containsUnsafeContent(body: string): boolean {
+  return (
+    UNSAFE_HTML_TAG_RE.test(body) ||
+    PROMPT_INJECTION_SENTINEL_RE.test(body) ||
+    ROLE_MARKER_LINE_RE.test(body)
+  );
+}
+
 // Parse + validate the LLM's JSON output. Returns null on any malformed
 // shape — caller logs and skips. Strips wrapping ```json blocks if the
 // model added them despite instructions.
@@ -176,6 +208,9 @@ export function parseProposalDraft(raw: string): ProposalDraft | null {
   if (!/^[a-z][a-z0-9-]{2,39}$/.test(name)) return null;
   if (summary.length === 0 || summary.length > 200) return null;
   if (body.length < 100 || body.length > 12_000) return null;
+  // Mn-1 content safety scan — reject bodies carrying prompt-injection
+  // patterns or unsafe HTML before persistence.
+  if (containsUnsafeContent(body)) return null;
 
   const triggers: string[] = [];
   for (const t of rawTriggers) {

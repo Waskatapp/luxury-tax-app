@@ -139,6 +139,8 @@ model Message {
 }
 
 // toolCallId @unique prevents double-execution (CLAUDE.md rule 10, section 7).
+// `brief` (Mn-1) carries the CEO's one-line intent string per tool call so
+// the AuditLog answers WHY, not just WHAT.
 model PendingAction {
   id             String              @id @default(cuid())
   storeId        String
@@ -146,6 +148,7 @@ model PendingAction {
   toolCallId     String              @unique
   toolName       String
   toolInput      Json
+  brief          String?
   status         PendingActionStatus @default(PENDING)
   beforeSnapshot Json?
   createdAt      DateTime            @default(now())
@@ -197,12 +200,15 @@ model SuggestionEvent {
 }
 
 // Immutable. before + after snapshots. Never deleted.
+// `brief` (Mn-1) is the CEO's one-line intent string, inherited from
+// the originating PendingAction.
 model AuditLog {
   id        String   @id @default(cuid())
   storeId   String
   userId    String?
   action    String
   toolName  String?
+  brief     String?
   before    Json?
   after     Json?
   createdAt DateTime @default(now())

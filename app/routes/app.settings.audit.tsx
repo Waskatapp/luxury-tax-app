@@ -30,6 +30,9 @@ type AuditRow = {
   id: string;
   action: string;
   toolName: string | null;
+  // Phase Mn Round Mn-1 — operator-facing "why" string, inherited from
+  // the originating PendingAction.
+  brief: string | null;
   before: unknown;
   after: unknown;
   createdAt: string;
@@ -56,6 +59,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       id: true,
       action: true,
       toolName: true,
+      brief: true,
       before: true,
       after: true,
       createdAt: true,
@@ -79,6 +83,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       id: r.id,
       action: r.action,
       toolName: r.toolName,
+      brief: r.brief,
       before: r.before,
       after: r.after,
       createdAt: r.createdAt.toISOString(),
@@ -138,6 +143,7 @@ export default function AuditPage() {
       {e.action}
     </Badge>,
     e.toolName ?? "—",
+    e.brief ?? "—",
     <Button key={`d-${e.id}`} variant="plain" onClick={() => setActiveRow(e)}>
       View diff
     </Button>,
@@ -182,8 +188,8 @@ export default function AuditPage() {
               </EmptyState>
             ) : (
               <DataTable
-                columnContentTypes={["text", "text", "text", "text"]}
-                headings={["When", "Action", "Tool", "Diff"]}
+                columnContentTypes={["text", "text", "text", "text", "text"]}
+                headings={["When", "Action", "Tool", "Why", "Diff"]}
                 rows={rows}
               />
             )}
@@ -225,6 +231,13 @@ function DiffModal({
         <Text as="p" variant="bodySm" tone="subdued">
           {new Date(entry.createdAt).toLocaleString()}
         </Text>
+        {entry.brief ? (
+          <Box paddingBlockStart="200">
+            <Text as="p" variant="bodyMd">
+              <strong>Why:</strong> {entry.brief}
+            </Text>
+          </Box>
+        ) : null}
       </Modal.Section>
       <Modal.Section>
         <BlockStack gap="300">

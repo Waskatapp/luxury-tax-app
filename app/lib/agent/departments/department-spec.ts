@@ -147,6 +147,13 @@ export type SubAgentReadCall = {
 // A write the sub-agent wants the merchant to approve. The toolName must
 // belong to the same department that produced this — the dispatcher
 // validates and the executor enforces (via department-registry.lookup).
+//
+// Phase Mn Round Mn-1 — the optional `brief` field rides INSIDE toolInput
+// as `toolInput.brief` (declared on every write tool's parametersJsonSchema
+// via injectBriefIntoWriteDeclarations). agent-loop hoists it onto
+// PendingAction.brief at create time; handler Zod schemas silently strip
+// it via default .strip() behavior. No dedicated field here — single
+// source of truth lives in toolInput.brief.
 export type ProposedWrite = {
   toolName: string;
   toolInput: Record<string, unknown>;

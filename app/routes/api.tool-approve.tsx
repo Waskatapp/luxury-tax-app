@@ -61,6 +61,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       conversationId: true,
       toolName: true,
       toolInput: true,
+      brief: true,
       status: true,
     },
   });
@@ -72,6 +73,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     conversationId: r.conversationId,
     toolName: r.toolName,
     toolInput: (r.toolInput ?? {}) as Record<string, unknown> | null,
+    brief: r.brief,
     status: r.status as PendingRow["status"],
   }));
 
@@ -150,6 +152,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             storeId: store.id,
             action: p.error ? "tool_failed" : "tool_executed",
             toolName: p.toolName,
+            brief: p.brief,
             before: (p.before ?? null) as never,
             after: (p.after ?? (p.error ? { error: p.error } : null)) as never,
           },

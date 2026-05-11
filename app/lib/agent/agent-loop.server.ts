@@ -24,6 +24,7 @@ import {
 } from "./tool-classifier";
 import { executeTool, withRetry } from "./executor.server";
 import { classifyError } from "./error-codes";
+import { extractBrief, stripBrief } from "./brief-field.server";
 import { buildResumeContext, expireStalePlans, findActivePlan } from "./plans.server";
 import { loadWorkflowIndex } from "./workflow-loader.server";
 import {
@@ -674,12 +675,19 @@ export async function runAgentLoop(
       // Upsert ALL pending writes + emit one tool_use_start each.
       // toolCallId @unique is the dedupe key (idempotent).
       for (const tu of pendingWrites) {
+        // Mn-1 — hoist `brief` from input onto a dedicated PendingAction
+        // column so AuditLog can read WHY without un-jsonning toolInput.
+        // Stripped from the persisted toolInput so the JSON column stays
+        // clean (Zod handlers would strip it on parse anyway).
+        const briefValue = extractBrief(tu.input);
+        const cleanInput = stripBrief(tu.input) as object;
         await prisma.pendingAction.upsert({
           where: { toolCallId: tu.id },
           create: {
             toolCallId: tu.id,
             toolName: tu.name,
-            toolInput: tu.input as object,
+            toolInput: cleanInput,
+            brief: briefValue,
             storeId,
             conversationId,
             status: "PENDING",
@@ -689,7 +697,7 @@ export async function runAgentLoop(
         emit("tool_use_start", {
           tool_call_id: tu.id,
           tool_name: tu.name,
-          tool_input: tu.input,
+          tool_input: cleanInput,
         });
       }
       lastAssistantContent = assistantContent;
