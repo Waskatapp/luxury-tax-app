@@ -25,7 +25,8 @@
     "audit:tuning": "tsx scripts/tuning-audit-report.ts",
     "run:evaluator": "tsx scripts/run-evaluator.ts",
     "run:eval-harness": "tsx scripts/run-eval-harness.ts",
-    "run:ab-brain": "tsx scripts/run-abandonment-brain.ts"
+    "run:ab-brain": "tsx scripts/run-abandonment-brain.ts",
+    "seed:ab-e-demo": "tsx scripts/seed-ab-e-demo.ts"
   },
   "type": "module",
   "engines": {
