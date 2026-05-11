@@ -500,3 +500,105 @@ describe("bulkUpdateStatus — stale ID partitioning (Phase Re Round Re-D)", () 
     expect(result.data.missing).toEqual([]);
   });
 });
+
+describe("bulkUpdateStatus — bulk re-fetch query format (regression: 2026-05-10 silent all-missing)", () => {
+  // Production trace 2026-05-10: archiving 18 dev-store demo products via
+  // bulk_update_status returned "every requested productId is missing" for
+  // products that clearly existed. Root cause: the bulk re-fetch was
+  // building `query: "id:gid://shopify/Product/123 OR id:gid://..."` —
+  // Shopify's products(query:) `id:` filter accepts the NUMERIC id only.
+  // The `:` and `/` chars in full GIDs break the search parser, so the
+  // query returns zero matches and every input lands in missing[]. Fix
+  // strips the GID prefix when building the filter while keeping full GIDs
+  // as the lookup map keys (Shopify's response carries full GIDs back).
+  it("strips gid://shopify/Product/ prefix when building the products(query:) filter", async () => {
+    const admin = fakeAdmin([
+      {
+        kind: "data",
+        body: {
+          products: {
+            edges: [
+              {
+                node: bulkProductNode(
+                  "gid://shopify/Product/7637962784881",
+                  "Snowboard A",
+                  "ACTIVE",
+                ),
+              },
+              {
+                node: bulkProductNode(
+                  "gid://shopify/Product/7634835669105",
+                  "Snowboard B",
+                  "ACTIVE",
+                ),
+              },
+            ],
+          },
+        },
+      },
+      productUpdateOk(
+        "gid://shopify/Product/7637962784881",
+        "Snowboard A",
+        "ARCHIVED",
+      ),
+      productUpdateOk(
+        "gid://shopify/Product/7634835669105",
+        "Snowboard B",
+        "ARCHIVED",
+      ),
+    ]);
+    const result = await bulkUpdateStatus(admin, {
+      productIds: [
+        "gid://shopify/Product/7637962784881",
+        "gid://shopify/Product/7634835669105",
+      ],
+      status: "ARCHIVED",
+    });
+    expect(result.ok).toBe(true);
+    const fetchCall = admin.calls[0];
+    const fetchedQuery = String(fetchCall.variables?.query ?? "");
+    // The query MUST contain bare numeric IDs.
+    expect(fetchedQuery).toContain("id:7637962784881");
+    expect(fetchedQuery).toContain("id:7634835669105");
+    // The query MUST NOT contain the GID prefix — those break Shopify's
+    // search parser and were the production bug.
+    expect(fetchedQuery).not.toContain("gid://shopify/Product/");
+    // OR-joined.
+    expect(fetchedQuery).toContain(" OR ");
+  });
+
+  it("preserves full GIDs in the result payload even though the search uses numeric IDs", async () => {
+    const admin = fakeAdmin([
+      {
+        kind: "data",
+        body: {
+          products: {
+            edges: [
+              {
+                node: bulkProductNode(
+                  "gid://shopify/Product/7637962784881",
+                  "Snowboard A",
+                  "ACTIVE",
+                ),
+              },
+            ],
+          },
+        },
+      },
+      productUpdateOk(
+        "gid://shopify/Product/7637962784881",
+        "Snowboard A",
+        "ARCHIVED",
+      ),
+    ]);
+    const result = await bulkUpdateStatus(admin, {
+      productIds: ["gid://shopify/Product/7637962784881"],
+      status: "ARCHIVED",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.changes[0].productId).toBe(
+      "gid://shopify/Product/7637962784881",
+    );
+  });
+});

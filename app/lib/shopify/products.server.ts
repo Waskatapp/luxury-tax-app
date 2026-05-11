@@ -1947,10 +1947,14 @@ async function resolveBulkProductScope(
   }
 
   if (scope.productIds && scope.productIds.length > 0) {
-    // Build a Shopify search query: `id:GID OR id:GID OR ...`.
-    // GIDs don't contain spaces or quote characters, so they pass
-    // unescaped into the search syntax.
-    const queryStr = scope.productIds.map((id) => `id:${id}`).join(" OR ");
+    // Shopify's `products(query: ...)` filter `id:` accepts the bare
+    // numeric ID only — full GIDs like `gid://shopify/Product/123` break
+    // the search parser (the `:` and `/` chars are reserved syntax), so
+    // every requested ID would silently fall into `missing[]`. Strip the
+    // GID prefix when building the filter, then keep the full GID as the
+    // lookup key (Shopify's response carries full GIDs back).
+    const numericIds = scope.productIds.map((id) => id.split("/").pop() ?? id);
+    const queryStr = numericIds.map((n) => `id:${n}`).join(" OR ");
     const r = await graphqlRequest<FetchBulkProductsResponse>(
       admin,
       FETCH_BULK_PRODUCTS_QUERY,
