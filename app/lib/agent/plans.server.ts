@@ -61,6 +61,12 @@ export const PlanStepSchema = z.object({
     .max(40)
     .regex(/^[a-z][a-z0-9-]*$/, "departmentId must be kebab-case"),
   estimatedTool: z.string().min(1).max(80).optional(),
+  // Phase Mn Round Mn-4 — optional phase label for grouping in PlanCard
+  // when the plan has 5+ steps (e.g. "Setup", "Pricing", "Marketing").
+  // PlanCard renders steps without phase as a flat list; mixing is
+  // allowed (steps with no phase render under an "Other" group). Short
+  // title-cased labels recommended; agent picks the names.
+  phase: z.string().min(1).max(40).optional(),
 });
 
 export const ProposePlanInputSchema = z.object({
@@ -85,6 +91,8 @@ export type StoredPlanStep = {
   description: string;
   departmentId: string;
   estimatedTool?: string | undefined;
+  // Phase Mn Round Mn-4 — optional phase label; see PlanStepSchema.
+  phase?: string | undefined;
   status: PlanStepStatus;
   completedAt?: string | undefined;
   failureCode?: string | undefined;

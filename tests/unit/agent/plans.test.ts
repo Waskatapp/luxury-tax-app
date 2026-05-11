@@ -62,6 +62,47 @@ describe("PlanStepSchema", () => {
     });
     expect(r.success).toBe(true);
   });
+
+  it("Mn-4 — accepts optional `phase` label", () => {
+    const r = PlanStepSchema.safeParse({
+      description: "ok",
+      departmentId: "products",
+      phase: "Setup",
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.phase).toBe("Setup");
+    }
+  });
+
+  it("Mn-4 — phase is optional; omitting it stays backward-compatible", () => {
+    const r = PlanStepSchema.safeParse({
+      description: "ok",
+      departmentId: "products",
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.phase).toBeUndefined();
+    }
+  });
+
+  it("Mn-4 — rejects empty-string phase", () => {
+    const r = PlanStepSchema.safeParse({
+      description: "ok",
+      departmentId: "products",
+      phase: "",
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("Mn-4 — rejects phase > 40 chars", () => {
+    const r = PlanStepSchema.safeParse({
+      description: "ok",
+      departmentId: "products",
+      phase: "x".repeat(41),
+    });
+    expect(r.success).toBe(false);
+  });
 });
 
 describe("ProposePlanInputSchema", () => {

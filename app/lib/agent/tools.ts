@@ -163,6 +163,11 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
                 description:
                   "Optional. The tool name you expect to call for this step (e.g. \"update_product_price\"). For info, not enforcement — actual tool calls happen later.",
               },
+              phase: {
+                type: "string",
+                description:
+                  "Optional. Short title-cased phase label (e.g. \"Setup\", \"Pricing\", \"Marketing\", \"Compliance\") for grouping in the merchant's PlanCard. Use ONLY for plans with 5+ steps where named phases meaningfully group the work. Omit for plans ≤4 steps — the grouping adds noise without value at small scale. Consecutive same-phase steps render under one heading; phase transitions create new group boundaries.",
+              },
             },
             required: ["description", "departmentId"],
           },

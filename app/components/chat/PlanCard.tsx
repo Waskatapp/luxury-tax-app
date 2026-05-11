@@ -29,10 +29,42 @@ export type PlanStep = {
   description: string;
   departmentId: string;
   estimatedTool?: string | undefined;
+  // Phase Mn Round Mn-4 — optional phase label for grouped rendering.
+  // When ANY step in a plan carries `phase`, PlanCard renders consecutive
+  // same-phase steps under a shared heading. When NO step carries phase,
+  // the card renders as a flat list (backward-compatible with all
+  // existing plans).
+  phase?: string | undefined;
   status?: PlanStepStatus | undefined;
   completedAt?: string | undefined;
   failureCode?: string | undefined;
 };
+
+// Phase Mn Round Mn-4 — pure helper exported for unit tests. Splits a
+// flat steps array into consecutive same-phase groups, preserving the
+// global index of each step (so rendering still shows the original 1.,
+// 2., 3., ... numbering). Steps with no phase land in their own
+// "no-phase" group; multiple no-phase groups can exist if non-empty
+// phases interleave (rare, but handled).
+export type PlanStepGroup = {
+  phase: string | null; // null = ungrouped (no phase label)
+  steps: Array<{ step: PlanStep; index: number }>;
+};
+
+export function groupStepsByPhase(steps: PlanStep[]): PlanStepGroup[] {
+  if (steps.length === 0) return [];
+  const groups: PlanStepGroup[] = [];
+  let current: PlanStepGroup | null = null;
+  steps.forEach((step, idx) => {
+    const phase = step.phase ?? null;
+    if (!current || current.phase !== phase) {
+      current = { phase, steps: [] };
+      groups.push(current);
+    }
+    current.steps.push({ step, index: idx });
+  });
+  return groups;
+}
 
 // Phase Re Round Re-C2 — Plan.status gains EXPIRED for plans whose
 // last activity is older than the resume TTL (24h). Expired plans
@@ -182,59 +214,72 @@ export function PlanCard({
           {summary}
         </Text>
 
-        <BlockStack gap="200">
-          {steps.map((step, idx) => {
-            const stepStatus: PlanStepStatus = step.status ?? "pending";
-            const sb = stepStatusBadge(stepStatus);
-            const isFailed = stepStatus === "failed";
-            const isSkipped = stepStatus === "skipped";
-            return (
-              <InlineStack
-                key={`${toolCallId}-${idx}`}
-                gap="200"
-                blockAlign="start"
-                wrap={false}
-              >
-                <Box minWidth="22px">
-                  <Text
-                    as="span"
-                    variant="bodyMd"
-                    fontWeight="semibold"
-                    tone="subdued"
-                    textDecorationLine={isSkipped ? "line-through" : undefined}
-                  >
-                    {idx + 1}.
+        <BlockStack gap="300">
+          {(() => {
+            const anyHasPhase = steps.some((s) => s.phase);
+            const groups = groupStepsByPhase(steps);
+            return groups.map((group, gi) => (
+              <BlockStack gap="200" key={`${toolCallId}-grp-${gi}`}>
+                {anyHasPhase && group.phase ? (
+                  <Text as="h3" variant="headingSm">
+                    {group.phase}
                   </Text>
-                </Box>
-                <BlockStack gap="050">
-                  <Text
-                    as="p"
-                    variant="bodyMd"
-                    textDecorationLine={isSkipped ? "line-through" : undefined}
-                    tone={isSkipped ? "subdued" : undefined}
-                  >
-                    {step.description}
-                  </Text>
-                  <InlineStack gap="100" blockAlign="center">
-                    <Badge tone={DEPT_TONE[step.departmentId] ?? "info"}>
-                      {DEPT_LABEL[step.departmentId] ?? step.departmentId}
-                    </Badge>
-                    <Badge tone={sb.tone}>{sb.label}</Badge>
-                    {isFailed && step.failureCode ? (
-                      <Text as="span" variant="bodySm" tone="critical">
-                        ({step.failureCode})
-                      </Text>
-                    ) : null}
-                    {step.estimatedTool ? (
-                      <Text as="span" variant="bodySm" tone="subdued">
-                        {step.estimatedTool}
-                      </Text>
-                    ) : null}
-                  </InlineStack>
-                </BlockStack>
-              </InlineStack>
-            );
-          })}
+                ) : null}
+                {group.steps.map(({ step, index: idx }) => {
+                  const stepStatus: PlanStepStatus = step.status ?? "pending";
+                  const sb = stepStatusBadge(stepStatus);
+                  const isFailed = stepStatus === "failed";
+                  const isSkipped = stepStatus === "skipped";
+                  return (
+                    <InlineStack
+                      key={`${toolCallId}-${idx}`}
+                      gap="200"
+                      blockAlign="start"
+                      wrap={false}
+                    >
+                      <Box minWidth="22px">
+                        <Text
+                          as="span"
+                          variant="bodyMd"
+                          fontWeight="semibold"
+                          tone="subdued"
+                          textDecorationLine={isSkipped ? "line-through" : undefined}
+                        >
+                          {idx + 1}.
+                        </Text>
+                      </Box>
+                      <BlockStack gap="050">
+                        <Text
+                          as="p"
+                          variant="bodyMd"
+                          textDecorationLine={isSkipped ? "line-through" : undefined}
+                          tone={isSkipped ? "subdued" : undefined}
+                        >
+                          {step.description}
+                        </Text>
+                        <InlineStack gap="100" blockAlign="center">
+                          <Badge tone={DEPT_TONE[step.departmentId] ?? "info"}>
+                            {DEPT_LABEL[step.departmentId] ?? step.departmentId}
+                          </Badge>
+                          <Badge tone={sb.tone}>{sb.label}</Badge>
+                          {isFailed && step.failureCode ? (
+                            <Text as="span" variant="bodySm" tone="critical">
+                              ({step.failureCode})
+                            </Text>
+                          ) : null}
+                          {step.estimatedTool ? (
+                            <Text as="span" variant="bodySm" tone="subdued">
+                              {step.estimatedTool}
+                            </Text>
+                          ) : null}
+                        </InlineStack>
+                      </BlockStack>
+                    </InlineStack>
+                  );
+                })}
+              </BlockStack>
+            ));
+          })()}
         </BlockStack>
 
         {isPending ? (
