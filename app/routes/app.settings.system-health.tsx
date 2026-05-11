@@ -21,6 +21,7 @@ import {
   DataTable,
   EmptyState,
   InlineStack,
+  Link,
   Modal,
   Page,
   Select,
@@ -38,6 +39,10 @@ import {
   type FindingRow,
   type Severity,
 } from "../lib/agent/system-health.server";
+import {
+  ABANDONMENT_COMPONENT_PREFIX,
+  parseAbandonmentEvidence,
+} from "../lib/agent/abandonment/lifecycle";
 
 // V6.6 — Phase 6.6 IT Diagnostic settings page. Operator-only — gated to
 // STORE_OWNER. Shows SystemHealthFinding rows written by the daily cron's
@@ -45,14 +50,25 @@ import {
 
 const PAGE_SIZE = 100;
 
+// Ab-E — operator can scope to just the abandonment lifecycle findings
+// (VERIFIED_FIXED celebrations + GIVING_UP locks). Component prefix lives
+// in app/lib/agent/abandonment/lifecycle.ts so unit tests can import it
+// without the Shopify-app boot chain.
+const SCAN_FILTER_ABANDONMENT = "abandonment";
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { store } = await requireStoreAccess(request, UserRole.STORE_OWNER);
   const url = new URL(request.url);
   const severity = url.searchParams.get("severity") ?? "ALL";
   const showAcknowledged = url.searchParams.get("showAcknowledged") === "1";
+  const scanFilter = url.searchParams.get("scanFilter") ?? "ALL";
   const all = await listFindings(store.id, {
     includeAcknowledged: showAcknowledged,
     limit: PAGE_SIZE,
+    componentPrefix:
+      scanFilter === SCAN_FILTER_ABANDONMENT
+        ? ABANDONMENT_COMPONENT_PREFIX
+        : undefined,
   });
   const filtered =
     severity === "ALL"
@@ -61,6 +77,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     findings: filtered,
     selectedSeverity: severity,
+    selectedScanFilter: scanFilter,
     showAcknowledged,
   };
 };
@@ -133,8 +150,12 @@ function statusLabel(f: FindingRow, now: number): string {
 }
 
 export default function SystemHealthSettingsPage() {
-  const { findings, selectedSeverity, showAcknowledged } =
-    useLoaderData<typeof loader>();
+  const {
+    findings,
+    selectedSeverity,
+    selectedScanFilter,
+    showAcknowledged,
+  } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<{ ok: boolean; error?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeRow, setActiveRow] = useState<FindingRow | null>(null);
@@ -146,6 +167,13 @@ export default function SystemHealthSettingsPage() {
     const next = new URLSearchParams(searchParams);
     if (value === "ALL") next.delete("severity");
     else next.set("severity", value);
+    setSearchParams(next);
+  };
+
+  const onScanFilterChange = (value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value === "ALL") next.delete("scanFilter");
+    else next.set("scanFilter", value);
     setSearchParams(next);
   };
 
@@ -165,6 +193,11 @@ export default function SystemHealthSettingsPage() {
     { label: "Critical", value: "critical" },
     { label: "Warn", value: "warn" },
     { label: "Info", value: "info" },
+  ];
+
+  const scanFilterOptions = [
+    { label: "All scans", value: "ALL" },
+    { label: "Abandonment lifecycle", value: SCAN_FILTER_ABANDONMENT },
   ];
 
   const rows = findings.map((f) => {
@@ -241,6 +274,15 @@ export default function SystemHealthSettingsPage() {
                     options={filterOptions}
                     value={selectedSeverity}
                     onChange={onSeverityChange}
+                  />
+                </Box>
+                <Box width="220px">
+                  <Select
+                    label="Scan filter"
+                    labelHidden
+                    options={scanFilterOptions}
+                    value={selectedScanFilter}
+                    onChange={onScanFilterChange}
                   />
                 </Box>
                 <Checkbox
@@ -342,24 +384,7 @@ function FindingModal({
             <Text as="h3" variant="headingSm">
               Evidence
             </Text>
-            <Box
-              padding="200"
-              background="bg-surface-secondary"
-              borderRadius="200"
-            >
-              <pre
-                style={{
-                  margin: 0,
-                  fontFamily:
-                    "ui-monospace, SFMono-Regular, Menlo, monospace",
-                  fontSize: "12px",
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-word",
-                }}
-              >
-                {JSON.stringify(row.evidence, null, 2)}
-              </pre>
-            </Box>
+            <FindingEvidence row={row} />
           </BlockStack>
           <Text as="p" tone="subdued" variant="bodySm">
             Scan: {row.scanName}
@@ -367,6 +392,126 @@ function FindingModal({
         </BlockStack>
       </Modal.Section>
     </Modal>
+  );
+}
+
+// Ab-E — structured renderer for workflow_proposal:<id> findings. Falls
+// through to the raw JSON dump for any other component so existing
+// findings (embedding pipeline, prompt cap, etc.) render unchanged.
+//
+// The scan names + evidence shapes are owned by
+// app/lib/agent/abandonment/file-finding.server.ts and locked in by
+// tests/unit/agent/abandonment-file-finding.test.ts. If those change,
+// this renderer must follow.
+export function FindingEvidence({ row }: { row: FindingRow }) {
+  const parsed = parseAbandonmentEvidence(row);
+  if (parsed === null) {
+    return (
+      <Box
+        padding="200"
+        background="bg-surface-secondary"
+        borderRadius="200"
+      >
+        <pre
+          style={{
+            margin: 0,
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, monospace",
+            fontSize: "12px",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          {JSON.stringify(row.evidence, null, 2)}
+        </pre>
+      </Box>
+    );
+  }
+
+  return (
+    <BlockStack gap="200">
+      <InlineStack gap="200" blockAlign="center">
+        {parsed.kind === "verified" ? (
+          <Badge tone="success">Verified working</Badge>
+        ) : parsed.kind === "giving_up" ? (
+          <Badge tone="critical">Locked after attempts</Badge>
+        ) : (
+          <Badge>Abandonment lifecycle</Badge>
+        )}
+        <Text as="span" tone="subdued" variant="bodySm">
+          Proposal · {parsed.proposalName}
+        </Text>
+      </InlineStack>
+
+      <Box
+        padding="300"
+        background="bg-surface-secondary"
+        borderRadius="200"
+      >
+        <BlockStack gap="150">
+          {parsed.baselineClusterSize !== undefined &&
+          parsed.currentClusterSize !== null ? (
+            <Text as="p" variant="bodySm">
+              <Text as="span" tone="subdued" variant="bodySm">
+                Cluster size:
+              </Text>{" "}
+              {parsed.baselineClusterSize === null
+                ? "no baseline"
+                : parsed.baselineClusterSize}{" "}
+              → {parsed.currentClusterSize}
+              {parsed.reductionPct !== null
+                ? ` (${parsed.reductionPct}% reduction)`
+                : ""}
+            </Text>
+          ) : null}
+
+          {parsed.verificationAttempts !== null ? (
+            <Text as="p" variant="bodySm">
+              <Text as="span" tone="subdued" variant="bodySm">
+                Workflow attempts:
+              </Text>{" "}
+              {parsed.verificationAttempts} of 3 — none reduced the cluster by
+              ≥50% over 7 days
+            </Text>
+          ) : null}
+
+          {parsed.verifiedAt ? (
+            <Text as="p" variant="bodySm">
+              <Text as="span" tone="subdued" variant="bodySm">
+                Verified at:
+              </Text>{" "}
+              {new Date(parsed.verifiedAt).toLocaleString()}
+            </Text>
+          ) : null}
+
+          {parsed.fingerprintShort ? (
+            <Text as="p" variant="bodySm">
+              <Text as="span" tone="subdued" variant="bodySm">
+                Cluster fingerprint:
+              </Text>{" "}
+              <Text as="span" variant="bodySm">
+                {parsed.fingerprintShort}…
+              </Text>
+            </Text>
+          ) : null}
+        </BlockStack>
+      </Box>
+
+      <InlineStack gap="300">
+        <Link
+          url={`/app/settings/workflow-proposals#proposal-${parsed.proposalId}`}
+        >
+          View proposal →
+        </Link>
+        {parsed.fingerprint ? (
+          <Link
+            url={`/app/settings/abandonment-diagnoses#cluster-${parsed.fingerprint}`}
+          >
+            View cluster samples →
+          </Link>
+        ) : null}
+      </InlineStack>
+    </BlockStack>
   );
 }
 

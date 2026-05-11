@@ -933,14 +933,35 @@ export async function runSystemHealthScansForStore(opts: {
 
 // Lists findings for the operator's settings page. Default behavior:
 // hide acknowledged, newest first, capped at 100. Tenant-scoped.
-export async function listFindings(
+// Pure where-clause builder, exported for unit tests. Lets us assert the
+// filter shape (storeId + acknowledgedAt + optional component prefix)
+// without standing up a Prisma mock.
+export function buildListFindingsWhere(
   storeId: string,
-  opts: { includeAcknowledged?: boolean; limit?: number } = {},
-): Promise<FindingRow[]> {
-  const limit = opts.limit ?? 100;
-  const where = opts.includeAcknowledged
+  opts: {
+    includeAcknowledged?: boolean;
+    componentPrefix?: string;
+  } = {},
+): Record<string, unknown> {
+  const base: Record<string, unknown> = opts.includeAcknowledged
     ? { storeId }
     : { storeId, acknowledgedAt: null };
+  if (opts.componentPrefix) {
+    return { ...base, component: { startsWith: opts.componentPrefix } };
+  }
+  return base;
+}
+
+export async function listFindings(
+  storeId: string,
+  opts: {
+    includeAcknowledged?: boolean;
+    limit?: number;
+    componentPrefix?: string;
+  } = {},
+): Promise<FindingRow[]> {
+  const limit = opts.limit ?? 100;
+  const where = buildListFindingsWhere(storeId, opts);
   const rows = await prisma.systemHealthFinding.findMany({
     where,
     orderBy: { createdAt: "desc" },

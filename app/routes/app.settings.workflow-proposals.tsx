@@ -15,6 +15,7 @@ import {
   Collapsible,
   EmptyState,
   InlineStack,
+  Link,
   Page,
   Text,
 } from "@shopify/polaris";
@@ -24,6 +25,10 @@ import { z } from "zod";
 
 import prisma from "../db.server";
 import { requireStoreAccess } from "../lib/auth.server";
+import {
+  buildTimelineEvents,
+  verificationSummary as verificationSummaryHelper,
+} from "../lib/agent/abandonment/lifecycle";
 
 // Phase Wf Round Wf-E — operator UI for autonomously-authored workflow
 // proposals. STORE_OWNER-gated. Shows PENDING proposals from the
@@ -200,24 +205,10 @@ function formatDate(iso: string): string {
 
 // Phase Ab Round Ab-C-prime — compute verification math for display.
 // Returns null when the data isn't there yet (still pending, or no
-// baseline captured at ship time).
+// baseline captured at ship time). Implementation lives in the pure
+// lifecycle helper module; this is a thin route-level adapter.
 function verificationSummary(p: ProposalRow): string | null {
-  if (p.baselineClusterSize === null) {
-    if (
-      p.status === "FIX_SHIPPED" ||
-      p.status === "VERIFIED_FIXED" ||
-      p.status === "FIX_DIDNT_HELP" ||
-      p.status === "FIX_DIDNT_HELP_GIVING_UP"
-    ) {
-      return "no baseline captured at ship time";
-    }
-    return null;
-  }
-  const current = p.currentClusterSize ?? 0;
-  const baseline = p.baselineClusterSize;
-  if (baseline <= 0) return null;
-  const pct = Math.round((1 - current / baseline) * 100);
-  return `${baseline} → ${current} (${pct >= 0 ? `${pct}% reduction` : `${-pct}% increase`})`;
+  return verificationSummaryHelper(p);
 }
 
 // Days remaining until verification fires (negative = overdue, which
@@ -245,6 +236,20 @@ export default function WorkflowProposalsPage() {
   const legacyAccepted = proposals.filter(
     (p) => p.status === "ACCEPTED" || p.status === "REVISED",
   );
+
+  // Ab-E — for the verification timeline, each proposal needs its
+  // re-authored siblings (other proposals matching the same fingerprint).
+  // These already live in the loader's flat list — group once here.
+  const siblingsByFingerprint = new Map<string, ProposalRow[]>();
+  for (const p of proposals) {
+    const arr = siblingsByFingerprint.get(p.fingerprint) ?? [];
+    arr.push(p);
+    siblingsByFingerprint.set(p.fingerprint, arr);
+  }
+  const siblingsFor = (p: ProposalRow): ProposalRow[] =>
+    (siblingsByFingerprint.get(p.fingerprint) ?? []).filter(
+      (s) => s.id !== p.id,
+    );
 
   return (
     <Page title="Workflow proposals">
@@ -297,6 +302,7 @@ export default function WorkflowProposalsPage() {
                   <ProposalRowView
                     key={p.id}
                     proposal={p}
+                    siblings={siblingsFor(p)}
                     onApprove={(id) =>
                       fetcher.submit(
                         { intent: "approve", id },
@@ -325,7 +331,12 @@ export default function WorkflowProposalsPage() {
                   Shipped — awaiting verification ({shipped.length})
                 </Text>
                 {shipped.map((p) => (
-                  <ProposalRowView key={p.id} proposal={p} readOnly />
+                  <ProposalRowView
+                    key={p.id}
+                    proposal={p}
+                    siblings={siblingsFor(p)}
+                    readOnly
+                  />
                 ))}
               </BlockStack>
             </Box>
@@ -340,7 +351,12 @@ export default function WorkflowProposalsPage() {
                   Verified working ({verified.length})
                 </Text>
                 {verified.map((p) => (
-                  <ProposalRowView key={p.id} proposal={p} readOnly />
+                  <ProposalRowView
+                    key={p.id}
+                    proposal={p}
+                    siblings={siblingsFor(p)}
+                    readOnly
+                  />
                 ))}
               </BlockStack>
             </Box>
@@ -355,7 +371,12 @@ export default function WorkflowProposalsPage() {
                   Didn't help — re-author scheduled ({didntHelp.length})
                 </Text>
                 {didntHelp.map((p) => (
-                  <ProposalRowView key={p.id} proposal={p} readOnly />
+                  <ProposalRowView
+                    key={p.id}
+                    proposal={p}
+                    siblings={siblingsFor(p)}
+                    readOnly
+                  />
                 ))}
               </BlockStack>
             </Box>
@@ -370,7 +391,12 @@ export default function WorkflowProposalsPage() {
                   Locked — gave up after 3 attempts ({givingUp.length})
                 </Text>
                 {givingUp.map((p) => (
-                  <ProposalRowView key={p.id} proposal={p} readOnly />
+                  <ProposalRowView
+                    key={p.id}
+                    proposal={p}
+                    siblings={siblingsFor(p)}
+                    readOnly
+                  />
                 ))}
               </BlockStack>
             </Box>
@@ -385,7 +411,12 @@ export default function WorkflowProposalsPage() {
                   Rejected ({rejected.length})
                 </Text>
                 {rejected.map((p) => (
-                  <ProposalRowView key={p.id} proposal={p} readOnly />
+                  <ProposalRowView
+                    key={p.id}
+                    proposal={p}
+                    siblings={siblingsFor(p)}
+                    readOnly
+                  />
                 ))}
               </BlockStack>
             </Box>
@@ -403,6 +434,7 @@ export default function WorkflowProposalsPage() {
                   <ProposalRowView
                     key={p.id}
                     proposal={p}
+                    siblings={siblingsFor(p)}
                     readOnly
                   />
                 ))}
@@ -417,12 +449,14 @@ export default function WorkflowProposalsPage() {
 
 function ProposalRowView({
   proposal,
+  siblings,
   onApprove,
   onReject,
   busy,
   readOnly,
 }: {
   proposal: ProposalRow;
+  siblings?: ProposalRow[];
   onApprove?: (id: string) => void;
   onReject?: (id: string) => void;
   busy?: boolean;
@@ -431,6 +465,7 @@ function ProposalRowView({
   const [showBody, setShowBody] = useState(false);
   return (
     <Box
+      id={`proposal-${proposal.id}`}
       padding="300"
       background="bg-surface-secondary"
       borderColor="border"
@@ -465,7 +500,15 @@ function ProposalRowView({
           {proposal.evidence.commonTools.length > 0 &&
             ` · common tools: ${proposal.evidence.commonTools.join(", ")}`}
         </Text>
+        <InlineStack gap="300">
+          <Link
+            url={`/app/settings/abandonment-diagnoses#cluster-${proposal.fingerprint}`}
+          >
+            View cluster samples →
+          </Link>
+        </InlineStack>
         <VerificationInfo proposal={proposal} />
+        <ProposalTimeline proposal={proposal} siblings={siblings ?? []} />
         <InlineStack gap="200">
           <Button
             onClick={() => setShowBody((v) => !v)}
@@ -578,6 +621,45 @@ function VerificationInfo({ proposal }: { proposal: ProposalRow }) {
   }
 
   return null;
+}
+
+function ProposalTimeline({
+  proposal,
+  siblings,
+}: {
+  proposal: ProposalRow;
+  siblings: ProposalRow[];
+}) {
+  const events = buildTimelineEvents(proposal, siblings);
+  // For PENDING with no siblings, the timeline is just "Proposed …" —
+  // VerificationInfo already returns null and the row's createdAt is
+  // already shown at the top, so suppress to avoid duplication.
+  if (
+    events.length === 1 &&
+    proposal.status === "PENDING" &&
+    siblings.length === 0
+  ) {
+    return null;
+  }
+  return (
+    <Box paddingBlockStart="100">
+      <BlockStack gap="100">
+        <Text as="p" variant="bodySm" tone="subdued" fontWeight="medium">
+          Lifecycle timeline
+        </Text>
+        {events.map((e, idx) => (
+          <Text
+            key={`${e.when}-${idx}`}
+            as="p"
+            variant="bodySm"
+            tone={e.tone === "subdued" ? "subdued" : e.tone}
+          >
+            • {formatDate(e.when)} — {e.what}
+          </Text>
+        ))}
+      </BlockStack>
+    </Box>
+  );
 }
 
 export function ErrorBoundary() {

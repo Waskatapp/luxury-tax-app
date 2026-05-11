@@ -11,6 +11,7 @@ import {
   Card,
   EmptyState,
   InlineStack,
+  Link,
   Page,
   Text,
 } from "@shopify/polaris";
@@ -45,11 +46,19 @@ type SerializedSample = {
 
 type SerializedCluster = {
   id: string;
+  fingerprint: string;
   size: number;
   dominantOutcome: string;
   commonTools: string[];
   commonRouterReason: string | null;
   samples: SerializedSample[];
+  // Ab-E — most-recent WorkflowProposal matching this cluster's
+  // fingerprint, if any. Null when no proposal has been authored.
+  proposal: {
+    id: string;
+    name: string;
+    status: string;
+  } | null;
 };
 
 type SerializedRun = {
@@ -138,6 +147,39 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const tsByID = new Map(sampleTurnSignals.map((ts) => [ts.id, ts]));
 
+  // Ab-E — for each cluster fingerprint, pull the most-recent
+  // WorkflowProposal so the cluster card can show "Authored: name (status)"
+  // with a deep link. Single query, grouped by fingerprint client-side.
+  const fingerprints = Array.from(
+    new Set(latestRun.clusters.map((c) => c.fingerprint)),
+  );
+  const allProposals =
+    fingerprints.length > 0
+      ? await prisma.workflowProposal.findMany({
+          where: { storeId: store.id, fingerprint: { in: fingerprints } },
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            name: true,
+            status: true,
+            fingerprint: true,
+          },
+        })
+      : [];
+  const proposalByFingerprint = new Map<
+    string,
+    { id: string; name: string; status: string }
+  >();
+  for (const p of allProposals) {
+    if (!proposalByFingerprint.has(p.fingerprint)) {
+      proposalByFingerprint.set(p.fingerprint, {
+        id: p.id,
+        name: p.name,
+        status: p.status,
+      });
+    }
+  }
+
   const run: SerializedRun = {
     id: latestRun.id,
     runAt: latestRun.runAt.toISOString(),
@@ -147,10 +189,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     durationMs: latestRun.durationMs,
     clusters: latestRun.clusters.map((c) => ({
       id: c.id,
+      fingerprint: c.fingerprint,
       size: c.size,
       dominantOutcome: c.dominantOutcome,
       commonTools: c.commonTools,
       commonRouterReason: c.commonRouterReason,
+      proposal: proposalByFingerprint.get(c.fingerprint) ?? null,
       samples: c.sampleTurnIds
         .map((id): SerializedSample | null => {
           const ts = tsByID.get(id);
@@ -200,6 +244,19 @@ function outcomeBadge(outcome: string) {
   if (outcome === "abandoned") return <Badge tone="critical">abandoned</Badge>;
   if (outcome === "clarified") return <Badge tone="warning">clarified</Badge>;
   return <Badge>{outcome}</Badge>;
+}
+
+// Ab-E — tone-map proposal status for the inline cluster→proposal pill.
+function proposalStatusTone(
+  status: string,
+): "warning" | "success" | "critical" | "info" | "attention" | undefined {
+  if (status === "PENDING") return "warning";
+  if (status === "FIX_SHIPPED") return "warning";
+  if (status === "VERIFIED_FIXED" || status === "ACCEPTED") return "success";
+  if (status === "FIX_DIDNT_HELP") return "attention";
+  if (status === "FIX_DIDNT_HELP_GIVING_UP" || status === "REJECTED")
+    return "critical";
+  return "info";
 }
 
 export default function AbandonmentDiagnosesPage() {
@@ -280,7 +337,8 @@ export default function AbandonmentDiagnosesPage() {
         )}
 
         {run.clusters.map((c, i) => (
-          <Card key={c.id}>
+          <Box key={c.id} id={`cluster-${c.fingerprint}`}>
+            <Card>
             <Box padding="400">
               <BlockStack gap="200">
                 <InlineStack align="space-between">
@@ -292,6 +350,21 @@ export default function AbandonmentDiagnosesPage() {
                     {outcomeBadge(c.dominantOutcome)}
                   </InlineStack>
                 </InlineStack>
+                {c.proposal !== null && (
+                  <InlineStack gap="200" blockAlign="center">
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      Authored:
+                    </Text>
+                    <Badge tone={proposalStatusTone(c.proposal.status)}>
+                      {c.proposal.status}
+                    </Badge>
+                    <Link
+                      url={`/app/settings/workflow-proposals#proposal-${c.proposal.id}`}
+                    >
+                      {c.proposal.name} →
+                    </Link>
+                  </InlineStack>
+                )}
                 {c.commonTools.length > 0 && (
                   <Text as="p" variant="bodySm" tone="subdued">
                     Common tools: {c.commonTools.join(", ")}
@@ -331,7 +404,8 @@ export default function AbandonmentDiagnosesPage() {
                 </Box>
               </BlockStack>
             </Box>
-          </Card>
+            </Card>
+          </Box>
         ))}
       </BlockStack>
     </Page>
