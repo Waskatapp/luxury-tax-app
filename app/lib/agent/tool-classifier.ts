@@ -168,6 +168,10 @@ export const INLINE_WRITE_TOOLS = new Set<string>([
   // sub-agent is locked to read-only tools and returns aggregated
   // summaries the CEO surfaces back to the merchant.
   "delegate_parallel",
+  // Phase Mn Round Mn-3 — note_observation persists in-conversation
+  // observations to ConversationObservation so a later turn can
+  // reference them without re-reading. Memory-only; no approval needed.
+  "note_observation",
 ]);
 
 // Phase Re Round Re-B — idempotency registry for the auto-retry harness.

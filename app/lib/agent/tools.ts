@@ -72,6 +72,32 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "note_observation",
+    description:
+      "Phase Mn Round Mn-3 — save a non-obvious observation you've gained in THIS turn so future turns of the SAME conversation can use it without re-fetching. Executes inline — NO approval card; memory-only.\n\nUse when you've just learned something the agent will likely need 2-5 turns later: a catalog category breakdown after a read_products fan-out (\"70 products in 5 categories: snowboards (15), winter gear (20), apparel (35)\"), a merchant preference revealed in passing (\"merchant ships from Vancouver and won't price below cost+30%\"), the shape of a returned list (\"top 5 sellers are A, B, C, D, E\"), a count or aggregate the merchant might ask about again.\n\nDon't save trivial facts. NOT for: greetings, single-fact tool outputs that the merchant already saw rendered, anything that's already in StoreMemory, ephemeral state from the current tool call. If in doubt, skip — the cost of re-reading is small; the cost of polluting the observation feed is operator-visible.\n\nThe system surfaces the most-recent 5 observations (deduped by kind) at every turn-start under 'Observations so far in this conversation.' Before re-reading data, scan that block.",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          description:
+            "Short kebab-case tag for this observation type. Examples: 'catalog-summary', 'merchant-preference', 'top-sellers', 'category-counts', 'price-range'. ≤40 chars. New kinds replace prior observations of the same kind within the conversation (most-recent wins).",
+        },
+        summary: {
+          type: "string",
+          description:
+            "One short sentence (≤500 chars) capturing what you learned. Compact, factual, no fluff. Example: '70 products in 5 categories: snowboards (15), winter gear (20), apparel (35), accessories (8), demo (2).'",
+        },
+        sourceToolName: {
+          type: "string",
+          description:
+            "Optional — the tool that produced this observation (e.g., 'read_products', 'get_analytics'). Helps operators trace provenance.",
+        },
+      },
+      required: ["kind", "summary"],
+    },
+  },
+  {
     name: "ask_clarifying_question",
     description:
       "**This is the ONLY way to ask the merchant a clarifying question.** Whenever you would otherwise type a question in your reply (\"Which product?\", \"By how much?\", \"What price?\"), call this tool instead. The merchant gets clickable option buttons + a typed-answer fallback — much faster than retyping context. Typing the question as plain prose is wrong and breaks the UX even when it feels natural.\n\nUse ONLY when intent is genuinely ambiguous AND the answer would change the action AND can't be inferred from history, store memory, or current store state. NEVER ask for product IDs, variant IDs, or currency — look those up yourself with read_products / read_collections.\n\nFormat: one short question, no preamble (no \"I can help with that — \" filler). Provide 2–4 short concrete options when the answer space is small (e.g. options: [\"The cat one\", \"The dog one\"]). Omit options entirely for genuinely free-form questions. The system pauses the turn after this call and waits for the merchant's reply, so don't combine it with other tool calls in the same turn.",

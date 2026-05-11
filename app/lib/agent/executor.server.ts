@@ -34,6 +34,10 @@ import { fetchInventoryLevels } from "../shopify/inventory.server";
 import type { ShopifyAdmin } from "../shopify/graphql-client.server";
 import { upsertMemory } from "../memory/store-memory.server";
 import {
+  pruneOldObservations,
+  recordObservation,
+} from "./conversation-observations.server";
+import {
   ProposePlanInputSchema,
   findActivePlan,
   findPlanById,
@@ -76,6 +80,20 @@ import {
   type ErrorCode,
 } from "./error-codes";
 import { isIdempotent } from "./tool-classifier";
+
+// Phase Mn Round Mn-3 — note_observation meta-tool input. Mirrors
+// MAX_OBSERVATION_KIND_LEN + MAX_OBSERVATION_SUMMARY_LEN bounds from
+// conversation-observations.server.ts so Zod rejects oversize inputs
+// before they reach the DB writer.
+const NoteObservationInput = z.object({
+  kind: z
+    .string()
+    .min(1)
+    .max(40)
+    .regex(/^[a-z][a-z0-9-]*$/, "kind must be kebab-case (a-z, 0-9, hyphen)"),
+  summary: z.string().min(1).max(500),
+  sourceToolName: z.string().min(1).max(80).optional(),
+});
 
 const UpdateStoreMemoryInput = z.object({
   category: z.enum([
@@ -580,6 +598,36 @@ export async function executeTool(
             key: saved.key,
             value: saved.value,
             updatedAt: saved.updatedAt.toISOString(),
+          },
+        };
+      }
+
+      case "note_observation": {
+        // Phase Mn Round Mn-3 — save an in-conversation observation. No
+        // approval, memory-only. Best-effort: recordObservation swallows
+        // its own errors so a transient DB hiccup never blocks the loop.
+        const parsed = NoteObservationInput.safeParse(input);
+        if (!parsed.success) {
+          return fail(`invalid input: ${parsed.error.message}`, { code: "INVALID_INPUT", retryable: false });
+        }
+        if (!ctx.conversationId) {
+          return fail("note_observation requires conversationId", { code: "INVALID_INPUT", retryable: false });
+        }
+        await recordObservation({
+          storeId: ctx.storeId,
+          conversationId: ctx.conversationId,
+          kind: parsed.data.kind,
+          summary: parsed.data.summary,
+          sourceToolName: parsed.data.sourceToolName ?? null,
+        });
+        // Opportunistic prune so the table stays bounded for active convs.
+        await pruneOldObservations(ctx.conversationId);
+        return {
+          ok: true,
+          data: {
+            kind: parsed.data.kind,
+            summary: parsed.data.summary,
+            recorded: true,
           },
         };
       }

@@ -252,13 +252,15 @@ describe("buildCeoSystemInstruction", () => {
       }),
     );
     // V5.3 target: prompt should be ≥ 32k (cache-eligible) but well under
-    // 64k (room for retrieved decisions/insights/observations on top).
-    // Cap evolution: 60k → 62k (Phase Re Round Re-D, bulk-missing-IDs rule)
-    // → 64k (Phase Wf Round Wf-A, suggested-workflows rule + triggers in index).
-    // Constitution allows "~32–60k approximate"; 64k is still 16x under
-    // Flash's 1M context window.
+    // the rolling cap (room for retrieved decisions/insights/observations
+    // on top). Cap evolution: 60k → 62k (Phase Re Round Re-D, bulk-missing-
+    // IDs rule) → 64k (Phase Wf Round Wf-A, suggested-workflows rule +
+    // triggers in index) → 66k (Phase Mn Round Mn-2/Mn-3, decision-payload
+    // + observation rules). Constitution allows "~32–60k approximate" in
+    // CHARS; 66k chars ≈ 16k tokens which is still well under Flash's 1M
+    // context window. We watch this number every round.
     expect(out.length).toBeGreaterThanOrEqual(32_000);
-    expect(out.length).toBeLessThan(64_000);
+    expect(out.length).toBeLessThan(66_000);
   });
 });
 

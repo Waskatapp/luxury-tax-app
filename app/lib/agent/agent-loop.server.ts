@@ -37,6 +37,10 @@ import {
   recentFailures,
   recordFailure,
 } from "./conversation-failures.server";
+import {
+  formatObservationsBlock,
+  recentObservations,
+} from "./conversation-observations.server";
 import type { ModelRouterDecision } from "./model-router";
 import { checkGeminiRateLimit } from "../security/rate-limit.server";
 import { log } from "../log.server";
@@ -167,6 +171,26 @@ const failureLessonsAugmenter: SystemInstructionAugmenter = async (ctx) => {
   };
 };
 
+// Phase Mn Round Mn-3 augmenter — surfaces recent ConversationObservation
+// rows so the agent doesn't re-read the same data 5 turns later. Pulls
+// most-recent distinct-kind observations for this conversation; formats
+// as an "Observations so far in this conversation" block.
+const observationAugmenter: SystemInstructionAugmenter = async (ctx) => {
+  const observations = await recentObservations(ctx.storeId, ctx.conversationId);
+  if (observations.length === 0) return null;
+  const body = formatObservationsBlock(observations);
+  if (!body) return null;
+  log.info("agent-loop: injecting conversation observations", {
+    storeId: ctx.storeId,
+    conversationId: ctx.conversationId,
+    distinctKinds: observations.length,
+  });
+  return {
+    heading: "Observations so far in this conversation (Mn-3)",
+    body,
+  };
+};
+
 // Extract the most recent user-role text from the Gemini contents array.
 // Gemini Content.parts can be text, functionCall, or functionResponse —
 // only `text` parts are merchant prose. Returns "" when the last user
@@ -283,6 +307,7 @@ export async function runAgentLoop(
       resumePlanAugmenter, // Re-C2 — active plan resume context
       triggerSuggestionAugmenter, // Wf-A — workflow auto-trigger
       failureLessonsAugmenter, // Wf-C — failures recorded in this conversation
+      observationAugmenter, // Mn-3 — positive observations recorded in this conversation
     ],
     augmenterCtx,
   );
