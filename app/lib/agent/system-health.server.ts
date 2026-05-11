@@ -126,9 +126,15 @@ export async function shouldFileSystemHealthFinding(
   return blocking === null;
 }
 
-// Internal: write one finding to the DB. Pure side-effect; orchestrator
-// has already gated on spam guard.
-async function fileFinding(
+// Write one finding to the DB. Pure side-effect; caller has already
+// gated on spam guard.
+//
+// Exported so cross-file modules (Phase Ab Round Ab-D —
+// abandonment/file-finding.server.ts) can reuse the writer without
+// duplicating the prisma call shape. The shouldFileSystemHealthFinding
+// gate is still mandatory before this — never call fileFinding without
+// checking spam guard first.
+export async function fileFinding(
   storeId: string,
   raw: RawFinding,
 ): Promise<SystemHealthFinding> {

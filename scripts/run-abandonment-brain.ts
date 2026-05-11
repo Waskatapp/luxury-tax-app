@@ -5,6 +5,7 @@ import {
   runAbandonmentBrainForStore,
 } from "../app/lib/agent/abandonment/cluster.server";
 import { verifyWorkflowProposalFixes } from "../app/lib/agent/abandonment/verify.server";
+import { crossFileAbandonmentFindings } from "../app/lib/agent/abandonment/file-finding.server";
 import { runWorkflowProposalPass } from "../app/lib/agent/workflows/propose.server";
 
 // Phase Ab Round Ab-A — Abandonment Brain cron entrypoint.
@@ -76,6 +77,11 @@ async function main(): Promise<void> {
     verificationsDidntHelp: 0,
     verificationsGivingUp: 0,
     verificationsErrored: 0,
+    // Phase Ab Round Ab-D — cross-file findings counters.
+    findingsScanned: 0,
+    findingsFiled: 0,
+    findingsSpamSkipped: 0,
+    findingsErrored: 0,
   };
 
   for (const s of stores) {
@@ -146,6 +152,32 @@ async function main(): Promise<void> {
         console.error(`[ab-brain] proposal pass non-fatal for ${s.id}`, err);
         counts.proposalsErrored += 1;
       }
+
+      // Phase Ab Round Ab-D — cross-file lifecycle transitions as
+      // SystemHealthFinding rows. Runs AFTER verify + Wf-E so the latest
+      // VERIFIED_FIXED / FIX_DIDNT_HELP_GIVING_UP transitions are visible.
+      // Per-proposal spam guard (`workflow_proposal:<id>` component)
+      // prevents re-firing across runs.
+      try {
+        const findings = await crossFileAbandonmentFindings({
+          storeId: s.id,
+          now,
+        });
+        counts.findingsScanned += findings.scanned;
+        counts.findingsFiled += findings.filed;
+        counts.findingsSpamSkipped += findings.skippedSpamGuard;
+        counts.findingsErrored += findings.errored;
+        if (findings.filed > 0 || findings.errored > 0) {
+          console.log(
+            `[ab-brain] ${s.shopDomain}: cross-file findings — scanned:${findings.scanned} filed:${findings.filed} spamSkipped:${findings.skippedSpamGuard} errored:${findings.errored}`,
+          );
+        }
+      } catch (err) {
+        // Defensive — crossFileAbandonmentFindings already swallows
+        // per-proposal errors, but a bug could escape.
+        console.error(`[ab-brain] cross-file pass non-fatal for ${s.id}`, err);
+        counts.findingsErrored += 1;
+      }
     } catch (err) {
       counts.errored += 1;
       console.error(`[ab-brain] fatal for ${s.id}`, err);
@@ -155,7 +187,7 @@ async function main(): Promise<void> {
   clearTimeout(deadline);
   const totalDurationMs = Date.now() - startedAt;
   console.log(
-    `[ab-brain] done — processed:${counts.processed} errored:${counts.errored} turnsScanned:${counts.totalTurnsScanned} totalClusters:${counts.totalClusters} proposals(scanned:${counts.proposalsScanned} created:${counts.proposalsCreated} skipped:${counts.proposalsSkipped} errored:${counts.proposalsErrored}) verifications(scanned:${counts.verificationsScanned} verified:${counts.verificationsVerified} didntHelp:${counts.verificationsDidntHelp} givingUp:${counts.verificationsGivingUp} errored:${counts.verificationsErrored}) | total:${totalDurationMs}ms`,
+    `[ab-brain] done — processed:${counts.processed} errored:${counts.errored} turnsScanned:${counts.totalTurnsScanned} totalClusters:${counts.totalClusters} proposals(scanned:${counts.proposalsScanned} created:${counts.proposalsCreated} skipped:${counts.proposalsSkipped} errored:${counts.proposalsErrored}) verifications(scanned:${counts.verificationsScanned} verified:${counts.verificationsVerified} didntHelp:${counts.verificationsDidntHelp} givingUp:${counts.verificationsGivingUp} errored:${counts.verificationsErrored}) findings(scanned:${counts.findingsScanned} filed:${counts.findingsFiled} spamSkipped:${counts.findingsSpamSkipped} errored:${counts.findingsErrored}) | total:${totalDurationMs}ms`,
   );
 }
 
